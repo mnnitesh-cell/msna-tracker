@@ -381,7 +381,7 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount }) {
     { id:"reports",    icon:"chart",    label:"Reports",        roles:["partner"] },
     { id:"profitability", icon:"target", label:"Profitability",  roles:["partner"] },
     { id:"audit",      icon:"history",  label:"Audit Trail",    roles:["partner"] },
-    { id:"users",      icon:"users",    label:"User Management",roles:["partner"], adminOnly:true },
+    { id:"users",      icon:"users",    label:"User Management",roles:["partner"] },
   ].filter(n=>n.roles.includes(user.role)&&(!n.adminOnly||isAdmin));
 
   return (
@@ -1124,7 +1124,7 @@ function AuditTrail({ audit=[] }) {
 // ══════════════════════════════════════════════════════════════
 // USER MANAGEMENT
 // ══════════════════════════════════════════════════════════════
-function UserManagement({ user, users=[], setUsers }) {
+function UserManagement({ user, users=[], setUsers, isPartner=false }) {
   const [showM,setSM]   =useState(false);
   const [editU,setEU]   =useState(null);
   const [form,setF]     =useState({name:"",email:"",role:"intern",billingRate:"",password:""});
@@ -1151,11 +1151,21 @@ function UserManagement({ user, users=[], setUsers }) {
   };
 
   const toggle=id=>{setUsers(p=>p.map(u=>u.id===id?{...u,active:!u.active}:u));addAudit(user.id,user.name,"TOGGLE_USER",`Toggled ${id}`);};
+  const deleteUser=id=>{
+    const target=users.find(u=>u.id===id);
+    if(!target) return;
+    if(target.email===ADMIN_EMAIL){ alert("The Admin account cannot be deleted."); return; }
+    if(!window.confirm(`Delete ${target.name}? Their timesheets will be kept for records but they will no longer be able to log in.`)) return;
+    setUsers(p=>p.filter(u=>u.id!==id));
+    // Remove their password from Firestore
+    fsDel("passwords", btoa(target.email));
+    addAudit(user.id,user.name,"DELETE_USER",`Deleted user ${target.email}`);
+  };
 
   return (
     <div>
-      <div className="sh"><div><div className="card-title">User Management</div><div className="card-sub mt4 ts">Admin-only — manage accounts & billing rates</div></div>
-        <button className="btn bp" onClick={openAdd}><I n="plus" s={15}/>Add Staff</button>
+      <div className="sh"><div><div className="card-title">User Management</div><div className="card-sub mt4 ts">Manage staff accounts and billing rates</div></div>
+        {user.email===ADMIN_EMAIL&&<button className="btn bp" onClick={openAdd}><I n="plus" s={15}/>Add Staff</button>}
       </div>
       <div className="card">
         <div className="tw"><table>
@@ -1168,8 +1178,9 @@ function UserManagement({ user, users=[], setUsers }) {
               <td className="fw6">{fmtCurrency(u.billingRate)}<span className="tx tsl">/hr</span></td>
               <td><span className={`bdg ${u.active?"bac":"bcl"}`}>{u.active?"Active":"Inactive"}</span></td>
               <td><div className="fx g8">
-                <button className="btn bgh bic bsm" onClick={()=>openEdit(u)}><I n="edit" s={14}/></button>
+                {user.email===ADMIN_EMAIL&&<button className="btn bgh bic bsm" onClick={()=>openEdit(u)}><I n="edit" s={14}/></button>}
                 {u.id!==user.id&&<button className={`btn bsm ${u.active?"bd":"bsc"}`} onClick={()=>toggle(u.id)}>{u.active?"Deactivate":"Activate"}</button>}
+                {u.id!==user.id&&u.email!==ADMIN_EMAIL&&<button className="btn bd bic bsm" title="Delete user" onClick={()=>deleteUser(u.id)}><I n="trash" s={14}/></button>}
               </div></td>
             </tr>
           ))}</tbody>
@@ -1580,7 +1591,7 @@ export default function App() {
             {tab==="reports"    &&currentUser.role==="partner"&&<Reports  user={currentUser} {...db_props} setLocked={setLocked}/>}
             {tab==="profitability"&&currentUser.role==="partner"&&<Profitability {...db_props}/>}
             {tab==="audit"      &&currentUser.role==="partner"&&<AuditTrail audit={audit}/>}
-            {tab==="users"      &&currentUser.email===ADMIN_EMAIL&&<UserManagement user={currentUser} {...db_props}/>}
+            {tab==="users"      &&currentUser.role==="partner"&&<UserManagement user={currentUser} {...db_props}/>}
           </div>
         </div>
       </div>
