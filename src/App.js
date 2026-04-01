@@ -53,9 +53,25 @@ const initStorage = async () => {
     const snap = await getDoc(doc(db, "meta", "seeded"));
     if (!snap.exists()) {
       for (const u of SEED_USERS) await fsSet("users", u.id, u);
+      // Seed passwords into Firestore
+      for (const [email, pw] of Object.entries(SEED_PASSWORDS)) {
+        await fsSet("passwords", btoa(email), { email, pw });
+      }
       await fsSet("meta", "seeded", { at: new Date().toISOString() });
     }
   } catch(e) { console.error("initStorage error", e); }
+  // Migrate any localStorage passwords to Firestore (handles passwords set before this fix)
+  try {
+    const localPws = getStoreObj("msna_passwords");
+    for (const [email, pw] of Object.entries(localPws)) {
+      const existing = await getDoc(doc(db, "passwords", btoa(email))).catch(()=>null);
+      if (!existing || !existing.exists()) {
+        await fsSet("passwords", btoa(email), { email, pw });
+      }
+    }
+    // Also ensure Ashwini's new password is in Firestore
+    await fsSet("passwords", btoa("ashwini@msna.co.in"), { email:"ashwini@msna.co.in", pw:"11Feb2020@" });
+  } catch(e) {}
   if (!localStorage.getItem("msna_passwords")) localStorage.setItem("msna_passwords", JSON.stringify(SEED_PASSWORDS));
 };
 
@@ -304,11 +320,22 @@ tr:hover td{background:#fcfcfc;}
 // ══════════════════════════════════════════════════════════════
 function Login({ onLogin }) {
   const [email,setEmail]=useState(""); const [pw,setPw]=useState(""); const [err,setErr]=useState("");
-  const go = () => {
-    const users=SEED_USERS; const pws=getStoreObj("msna_passwords");
-    const u=users.find(x=>x.email.toLowerCase()===email.toLowerCase()&&x.active);
+  const go = async () => {
+    setErr("");
+    // Load users from Firestore
+    const usersSnap = await getDocs(collection(db, "users")).catch(()=>null);
+    const users = usersSnap && !usersSnap.empty ? usersSnap.docs.map(d=>({...d.data(),id:d.id})) : SEED_USERS;
+    const u = users.find(x=>x.email.toLowerCase()===email.toLowerCase()&&x.active);
     if(!u){ setErr("No active account found for this email."); return; }
-    if(pws[u.email]!==pw){ setErr("Incorrect password. Please try again."); return; }
+    // Check password from Firestore first, fall back to localStorage
+    const pwSnap = await getDoc(doc(db, "passwords", btoa(u.email))).catch(()=>null);
+    let storedPw = null;
+    if(pwSnap && pwSnap.exists()) {
+      storedPw = pwSnap.data().pw;
+    } else {
+      storedPw = getStoreObj("msna_passwords")[u.email];
+    }
+    if(storedPw !== pw){ setErr("Incorrect password. Please try again."); return; }
     onLogin(u);
   };
   return (
@@ -325,8 +352,8 @@ function Login({ onLogin }) {
           <div className="ltitle">Welcome back</div>
           <div className="lsub">Sign in with your MSNA email</div>
           {err&&<div className="err">{err}</div>}
-          <div className="fg"><label className="fl">Email</label><input className="fi" type="email" placeholder="you@msna.co.in" value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==="Enter"&&go()}/></div>
-          <div className="fg"><label className="fl">Password</label><input className="fi" type="password" placeholder="••••••••" value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={e=>e.key==="Enter"&&go()}/></div>
+          <div className="fg"><label className="fl">Email</label><input className="fi" type="email" placeholder="you@msna.co.in" value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={e=>{if(e.key==="Enter") go();}}/></div>
+          <div className="fg"><label className="fl">Password</label><input className="fi" type="password" placeholder="••••••••" value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={e=>{if(e.key==="Enter") go();}}/></div>
           <button className="btn bp bfl" style={{padding:"13px",marginTop:4}} onClick={go}><I n="lock" s={16}/>Sign In</button>
           <div className="demo-box">
             <strong>Demo accounts:</strong><br/>
@@ -666,7 +693,9 @@ function Timesheets({ user }) {
 // ══════════════════════════════════════════════════════════════
 // PROJECTS
 // ══════════════════════════════════════════════════════════════
-function AssignModal({ project, users, onSave, onClose }) {
+function AssignModal({ project, users: propUsers, onSave, onClose }) {
+  const [fsUsers] = useLS("users", SEED_USERS);
+  const users = fsUsers.length > 0 ? fsUsers : propUsers;
   const [staff,   setStaff]   = useState(project.assignedStaff||[]);
   const [managers,setManagers]= useState(project.assignedManagers||[]);
   const toggle = (id,role) => {
@@ -1119,16 +1148,15 @@ function UserManagement({ user }) {
   const save=()=>{
     if(!form.name||!form.email||!form.billingRate){setFerr("Name, email and billing rate are required.");return;}
     if(!form.email.endsWith("@msna.co.in")){setFerr("Must be an @msna.co.in address.");return;}
-    const pws=getStoreObj("msna_passwords");
     if(editU){
       setUsers(p=>p.map(u=>u.id===editU.id?{...u,name:form.name,role:form.role,billingRate:Number(form.billingRate)}:u));
-      if(form.password){pws[form.email]=form.password;localStorage.setItem("msna_passwords",JSON.stringify(pws));}
+      if(form.password){ fsSet("passwords", btoa(form.email), {email:form.email, pw:form.password}); }
       addAudit(user.id,user.name,"EDIT_USER",`Updated ${form.email}`);
     } else {
       if(!form.password){setFerr("Password is required for new users.");return;}
       if(users.find(u=>u.email.toLowerCase()===form.email.toLowerCase())){setFerr("Email already exists.");return;}
       setUsers(p=>[...p,{id:genId(),name:form.name,email:form.email,role:form.role,billingRate:Number(form.billingRate),active:true}]);
-      pws[form.email]=form.password;localStorage.setItem("msna_passwords",JSON.stringify(pws));
+      fsSet("passwords", btoa(form.email), {email:form.email, pw:form.password});
       addAudit(user.id,user.name,"CREATE_USER",`Created ${form.email} as ${form.role}`);
     }
     setSM(false);
