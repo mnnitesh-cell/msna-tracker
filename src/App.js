@@ -947,8 +947,6 @@ function Reports({ user }) {
 
   const totalH=approved.reduce((s,t)=>s+t.hours,0);
   const totalV=approved.filter(t=>t.billable).reduce((s,t)=>s+t.hours*(users.find(u=>u.id===t.userId)?.billingRate||0),0);
-  const sc=s=>s==="approved"?"ba":s==="rejected"?"br":s==="resubmitted"?"brs":"bp2";
-
   return (
     <div>
       <div className="sh"><div><div className="card-title">Reports & Analytics</div><div className="card-sub mt4 ts">Approved entries only</div></div>
