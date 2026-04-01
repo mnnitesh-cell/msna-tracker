@@ -632,7 +632,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
                 <td><span className={`bdg ${statusClass(ts.status)}`}>{ts.status}</span></td>
                 <td><div className="fx g8">
                   {canEdit&&<button className="btn bgh bic bsm" onClick={()=>openEdit(ts)}><I n="edit" s={14}/></button>}
-                  {isP&&!locked&&<button className="btn bd bic bsm" onClick={()=>del(ts.id)}><I n="trash" s={14}/></button>}
+                  {isP&&!locked&&(user.email===ADMIN_EMAIL||projects.find(p=>p.id===ts.projectId)?.assignedPartnerId===user.id)&&<button className="btn bd bic bsm" onClick={()=>del(ts.id)}><I n="trash" s={14}/></button>}
                 </div></td>
               </tr>;
             })}</tbody>
@@ -786,7 +786,7 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
                 <td><span className={`bdg ${statusClass(p.status)}`}>{p.status==="pending_approval"?"Pending":p.status.charAt(0).toUpperCase()+p.status.slice(1)}</span></td>
                 {isP&&<td><div className="fx g8" style={{flexWrap:"wrap"}}>
                   {p.status==="pending_approval"&&<><button className="btn bsc bsm" onClick={()=>approve(p.id)}><I n="check" s={12}/>Approve</button><button className="btn bd bsm" onClick={()=>reject(p.id)}><I n="x" s={12}/>Reject</button></>}
-                  {p.status==="active"&&<><button className="btn bp bsm" onClick={()=>setAM(p)}><I n="users" s={12}/>Assign</button><button className="btn bgh bsm" onClick={()=>close(p.id)}><I n="archive" s={12}/>Close</button></>}
+                  {p.status==="active"&&<><button className="btn bp bsm" onClick={()=>setAM(p)}><I n="users" s={12}/>Assign</button>{(user.email===ADMIN_EMAIL||p.assignedPartnerId===user.id)&&<button className="btn bgh bsm" onClick={()=>close(p.id)}><I n="archive" s={12}/>Close</button>}</>}
                 </div></td>}
               </tr>;
             })}</tbody>
@@ -919,7 +919,7 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
               return <tr key={ts.id}>
                 <td className="fw6">{u2?.name}<div className="tx tsl">{fmtCurrency(rate)}/hr</div></td>
                 <td>{fmtDate(ts.date)}</td>
-                <td><div className="fw6 mono">{p?.code}</div><div className="tx tsl">{p?.name}</div></td>
+                <td><div className="fw6 mono">{p?.code}</div><div className="tx tsl">{p?.clientName} — {p?.name}</div></td>
                 <td className="ts">{ts.category}</td>
                 <td className="fw6">{ts.hours}h{ts.billable&&<div className="tx tgo">{fmtCurrency(ts.hours*rate)}</div>}</td>
                 <td>{ts.billable?<span className="tsc fw6">✓</span>:<span className="tsl">—</span>}</td>
@@ -944,7 +944,7 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
               const u2=users.find(u=>u.id===ts.userId); const p=projects.find(p=>p.id===ts.projectId);
               return <tr key={ts.id}>
                 <td className="fw6">{u2?.name}</td><td>{fmtDate(ts.date)}</td>
-                <td className="mono">{p?.code}</td><td>{ts.hours}h</td>
+                <td><div className="mono fw6">{p?.code}</div><div className="tx tsl">{p?.clientName}</div></td><td>{ts.hours}h</td>
                 <td><span className={`bdg ${sc(ts.status)}`}>{ts.status}</span></td>
                 <td className="ts tsl">{ts.rejectReason||"—"}</td>
               </tr>;
