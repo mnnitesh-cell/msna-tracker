@@ -751,6 +751,7 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
   const approve=id=>{setProjects(p=>p.map(x=>x.id===id?{...x,status:"active",approvedBy:user.id,approvedAt:new Date().toISOString()}:x));addAudit(user.id,user.name,"APPROVE_PROJECT",`Approved ${id}`);};
   const reject =id=>{setProjects(p=>p.map(x=>x.id===id?{...x,status:"rejected"}:x));addAudit(user.id,user.name,"REJECT_PROJECT",`Rejected ${id}`);};
   const close  =id=>{if(!window.confirm("Close this engagement?"))return;setProjects(p=>p.map(x=>x.id===id?{...x,status:"closed",closedAt:new Date().toISOString()}:x));addAudit(user.id,user.name,"CLOSE_PROJECT",`Closed ${id}`);};
+  const deleteProject=id=>{if(!window.confirm("Permanently delete this project code? This cannot be undone."))return;setProjects(p=>p.filter(x=>x.id!==id));addAudit(user.id,user.name,"DELETE_PROJECT",`Deleted project ${id}`);};
   const saveAssign=(pid,staff,managers)=>{setProjects(p=>p.map(x=>x.id===pid?{...x,assignedStaff:staff,assignedManagers:managers}:x));addAudit(user.id,user.name,"ASSIGN_STAFF",`Updated assignments for ${pid}`);setAM(null);};
 
   const visible=isP?projects:projects.filter(p=>p.status==="active"&&[...(p.assignedStaff||[]),...(p.assignedManagers||[])].includes(user.id));
@@ -787,6 +788,7 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
                 {isP&&<td><div className="fx g8" style={{flexWrap:"wrap"}}>
                   {p.status==="pending_approval"&&<><button className="btn bsc bsm" onClick={()=>approve(p.id)}><I n="check" s={12}/>Approve</button><button className="btn bd bsm" onClick={()=>reject(p.id)}><I n="x" s={12}/>Reject</button></>}
                   {p.status==="active"&&<><button className="btn bp bsm" onClick={()=>setAM(p)}><I n="users" s={12}/>Assign</button>{(user.email===ADMIN_EMAIL||p.assignedPartnerId===user.id)&&<button className="btn bgh bsm" onClick={()=>close(p.id)}><I n="archive" s={12}/>Close</button>}</>}
+                  {(user.email===ADMIN_EMAIL||p.assignedPartnerId===user.id)&&<button className="btn bd bic bsm" title="Delete project" onClick={()=>deleteProject(p.id)}><I n="trash" s={13}/></button>}
                 </div></td>}
               </tr>;
             })}</tbody>
