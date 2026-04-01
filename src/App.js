@@ -1,4 +1,19 @@
 import { useState, useEffect, useCallback } from "react";
+import { initializeApp } from "firebase/app";
+import { getFirestore, collection, doc, onSnapshot, setDoc, deleteDoc, getDoc, getDocs } from "firebase/firestore";
+
+// ── FIREBASE CONFIG ──
+const firebaseConfig = {
+  apiKey: "AIzaSyDJCeqOJl1EGFj7NcGCGn470L51ipo2GeE",
+  authDomain: "msna-time-tracker.firebaseapp.com",
+  projectId: "msna-time-tracker",
+  storageBucket: "msna-time-tracker.firebasestorage.app",
+  messagingSenderId: "839069130181",
+  appId: "1:839069130181:web:d8b6873bfedf3d42603fac",
+  measurementId: "G-Z9ZCXNGYRC"
+};
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp);
 
 // ── CONSTANTS ──
 const ADMIN_EMAIL = "nitesh@msna.co.in";
@@ -24,17 +39,55 @@ const SEED_PASSWORDS = {
 };
 
 // ── STORAGE ──
-const initStorage = () => {
-  if (!localStorage.getItem("msna_users"))         localStorage.setItem("msna_users",         JSON.stringify(SEED_USERS));
-  if (!localStorage.getItem("msna_passwords"))     localStorage.setItem("msna_passwords",     JSON.stringify(SEED_PASSWORDS));
-  if (!localStorage.getItem("msna_projects"))      localStorage.setItem("msna_projects",      JSON.stringify([]));
-  if (!localStorage.getItem("msna_timesheets"))    localStorage.setItem("msna_timesheets",    JSON.stringify([]));
-  if (!localStorage.getItem("msna_locked_months")) localStorage.setItem("msna_locked_months", JSON.stringify([]));
-  if (!localStorage.getItem("msna_audit"))         localStorage.setItem("msna_audit",         JSON.stringify([]));
+// ── FIRESTORE HELPERS ──
+const fsSet = async (col, id, data) => {
+  try { await setDoc(doc(db, col, id), data); } catch(e) { console.error("fsSet error", e); }
 };
-const getStore    = k => { try { return JSON.parse(localStorage.getItem(k)||"[]"); } catch { return []; } };
-const setStore    = (k,v) => localStorage.setItem(k, JSON.stringify(v));
+const fsDel = async (col, id) => {
+  try { await deleteDoc(doc(db, col, id)); } catch(e) { console.error("fsDel error", e); }
+};
+
+// ── INIT: Seed Firestore with default users/passwords on first run ──
+const initStorage = async () => {
+  try {
+    const snap = await getDoc(doc(db, "meta", "seeded"));
+    if (!snap.exists()) {
+      for (const u of SEED_USERS) await fsSet("users", u.id, u);
+      await fsSet("meta", "seeded", { at: new Date().toISOString() });
+    }
+  } catch(e) { console.error("initStorage error", e); }
+  if (!localStorage.getItem("msna_passwords")) localStorage.setItem("msna_passwords", JSON.stringify(SEED_PASSWORDS));
+};
+
+// Keep for password lookups only (passwords stay local, never in cloud)
 const getStoreObj = k => { try { return JSON.parse(localStorage.getItem(k)||"{}"); } catch { return {}; } };
+
+// ── FIRESTORE REAL-TIME HOOK (replaces useLS) ──
+function useLS(colName, fallback=[]) {
+  const [data, setData] = useState(fallback);
+  const isArr = Array.isArray(fallback);
+  useEffect(() => {
+    if (!isArr) return; // passwords handled separately
+    const unsub = onSnapshot(collection(db, colName), snap => {
+      setData(snap.docs.map(d => ({ ...d.data(), id: d.id })));
+    }, err => console.error("onSnapshot error", colName, err));
+    return unsub;
+  }, [colName]);
+
+  const set = useCallback(async (updater) => {
+    setData(prev => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      // Sync to Firestore
+      const prevIds = new Set(prev.map(x=>x.id));
+      const nextIds = new Set(next.map(x=>x.id));
+      next.forEach(item => fsSet(colName, item.id, item));
+      [...prevIds].filter(id=>!nextIds.has(id)).forEach(id=>fsDel(colName, id));
+      return next;
+    });
+  }, [colName]);
+
+  return [data, set];
+}
 
 // ── UTILS ──
 const genId       = () => Math.random().toString(36).slice(2,10);
@@ -53,9 +106,8 @@ function getWeekDates(offsetWeeks=0) {
 function minDate() { const d=new Date(); d.setDate(d.getDate()-MAX_BACKDATE_DAYS); return d.toISOString().slice(0,10); }
 
 function addAudit(userId, userName, action, detail) {
-  const audit = getStore("msna_audit");
-  audit.unshift({ id:genId(), userId, userName, action, detail, ts: new Date().toISOString() });
-  setStore("msna_audit", audit.slice(0,500));
+  const id = genId();
+  fsSet("audit", id, { id, userId, userName, action, detail, ts: new Date().toISOString() });
 }
 
 // ── ICONS (filled, material-style) ──
@@ -245,12 +297,7 @@ tr:hover td{background:#fcfcfc;}
 .audit-ts{font-size:11px;color:var(--slate-light);}
 `;
 
-// ── useLS hook ──
-function useLS(key, fallback) {
-  const [v, setV] = useState(() => { try { const s=localStorage.getItem(key); return s!=null?JSON.parse(s):fallback; } catch { return fallback; } });
-  const set = useCallback(upd => { setV(prev => { const next=typeof upd==="function"?upd(prev):upd; localStorage.setItem(key,JSON.stringify(next)); return next; }); }, [key]);
-  return [v, set];
-}
+// useLS is defined above using Firestore
 
 // ══════════════════════════════════════════════════════════════
 // LOGIN
@@ -258,7 +305,7 @@ function useLS(key, fallback) {
 function Login({ onLogin }) {
   const [email,setEmail]=useState(""); const [pw,setPw]=useState(""); const [err,setErr]=useState("");
   const go = () => {
-    const users=getStore("msna_users"); const pws=getStoreObj("msna_passwords");
+    const users=SEED_USERS; const pws=getStoreObj("msna_passwords");
     const u=users.find(x=>x.email.toLowerCase()===email.toLowerCase()&&x.active);
     if(!u){ setErr("No active account found for this email."); return; }
     if(pws[u.email]!==pw){ setErr("Incorrect password. Please try again."); return; }
@@ -339,7 +386,9 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount }) {
 // DASHBOARD
 // ══════════════════════════════════════════════════════════════
 function Dashboard({ user }) {
-  const users=getStore("msna_users"); const projects=getStore("msna_projects"); const tss=getStore("msna_timesheets");
+  const [users]    = useLS("users", SEED_USERS);
+  const [projects] = useLS("projects", []);
+  const [tss]      = useLS("timesheets", []);
   const isP=user.role==="partner";
   const mySheets = isP?tss:tss.filter(t=>t.userId===user.id);
   const approved = mySheets.filter(t=>t.status==="approved");
@@ -405,7 +454,8 @@ function Dashboard({ user }) {
 // ══════════════════════════════════════════════════════════════
 function WeekView({ user }) {
   const [offset,setOffset]=useState(0);
-  const tss=getStore("msna_timesheets"); const projects=getStore("msna_projects");
+  const [tss]      = useLS("timesheets", []);
+  const [projects] = useLS("projects", []);
   const week=getWeekDates(offset); const td=todayStr();
   const mine=tss.filter(t=>t.userId===user.id);
   const dayNames=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
@@ -476,10 +526,10 @@ function WeekView({ user }) {
 // TIMESHEETS
 // ══════════════════════════════════════════════════════════════
 function Timesheets({ user }) {
-  const [tss,setTss]         = useLS("msna_timesheets",[]);
-  const [users]              = useLS("msna_users",SEED_USERS);
-  const [projects]           = useLS("msna_projects",[]);
-  const [lockedMonths]       = useLS("msna_locked_months",[]);
+  const [tss,setTss]         = useLS("timesheets",[]);
+  const [users]              = useLS("users",SEED_USERS);
+  const [projects]           = useLS("projects",[]);
+  const [lockedMonths]       = useLS("locked_months",[]);
   const [showM,setSM]        = useState(false);
   const [editE,setEE]        = useState(null);
   const [fs,setFs]           = useState("all");
@@ -652,8 +702,9 @@ function AssignModal({ project, users, onSave, onClose }) {
 }
 
 function Projects({ user }) {
-  const [projects,setProjects]=useLS("msna_projects",[]);
-  const [users]               =useLS("msna_users",SEED_USERS);
+  const [projects,setProjects]=useLS("projects",[]);
+  const [users]               =useLS("users",SEED_USERS);
+  const [tss]                 =useLS("timesheets",[]);
   const [showM,setSM]         =useState(false);
   const [assignM,setAM]       =useState(null);
   const [form,setF]           =useState({code:"",name:"",clientName:"",description:"",assignedPartnerId:"",budgetHours:"",engagementFee:"",feeType:"fixed",assignedStaff:[],assignedManagers:[]});
@@ -696,7 +747,6 @@ function Projects({ user }) {
           <div className="tw"><table>
             <thead><tr><th>Code</th><th>Engagement</th><th>Client</th><th>Partner</th><th>Budget</th><th>Status</th>{isP&&<th>Actions</th>}</tr></thead>
             <tbody>{visible.map(p=>{
-              const tss=getStore("msna_timesheets");
               const usedH=tss.filter(t=>t.projectId===p.id&&t.status==="approved").reduce((s,t)=>s+t.hours,0);
               const pct=p.budgetHours?Math.min(Math.round(usedH/p.budgetHours*100),100):null;
               const partner=users.find(u=>u.id===p.assignedPartnerId);
@@ -795,9 +845,9 @@ function Projects({ user }) {
 // APPROVALS
 // ══════════════════════════════════════════════════════════════
 function Approvals({ user }) {
-  const [tss,setTss]=useLS("msna_timesheets",[]);
-  const [users]    =useLS("msna_users",SEED_USERS);
-  const [projects] =useLS("msna_projects",[]);
+  const [tss,setTss]=useLS("timesheets",[]);
+  const [users]    =useLS("users",SEED_USERS);
+  const [projects] =useLS("projects",[]);
   const [rejectM,setRM]=useState(null);
   const [reason,setR]  =useState("");
   const [reasonErr,setRE]=useState("");
@@ -904,10 +954,10 @@ function Approvals({ user }) {
 // REPORTS
 // ══════════════════════════════════════════════════════════════
 function Reports({ user }) {
-  const [users]    =useLS("msna_users",SEED_USERS);
-  const [projects] =useLS("msna_projects",[]);
-  const [tss]      =useLS("msna_timesheets",[]);
-  const [lockedMonths,setLocked]=useLS("msna_locked_months",[]);
+  const [users]    =useLS("users",SEED_USERS);
+  const [projects] =useLS("projects",[]);
+  const [tss]      =useLS("timesheets",[]);
+  const [lockedMonths,setLocked]=useLS("locked_months",[]);
   const [tab,setTab]=useState("engagement");
   const isAdmin=user.email===ADMIN_EMAIL;
 
@@ -1030,7 +1080,8 @@ function Reports({ user }) {
 // AUDIT TRAIL
 // ══════════════════════════════════════════════════════════════
 function AuditTrail() {
-  const audit=getStore("msna_audit").slice(0,100);
+  const [auditRaw] = useLS("audit", []);
+  const audit = [...auditRaw].sort((a,b)=>b.ts>a.ts?1:-1).slice(0,100);
   const color=a=>a.includes("APPROVE")?"var(--green)":a.includes("REJECT")||a.includes("DELETE")?"var(--red)":a.includes("LOCK")?"var(--amber)":"var(--gold)";
   return (
     <div>
@@ -1056,7 +1107,7 @@ function AuditTrail() {
 // USER MANAGEMENT
 // ══════════════════════════════════════════════════════════════
 function UserManagement({ user }) {
-  const [users,setUsers]=useLS("msna_users",SEED_USERS);
+  const [users,setUsers]=useLS("users",SEED_USERS);
   const [showM,setSM]   =useState(false);
   const [editU,setEU]   =useState(null);
   const [form,setF]     =useState({name:"",email:"",role:"intern",billingRate:"",password:""});
@@ -1180,9 +1231,9 @@ const PROF_CSS = `
 `;
 
 function Profitability() {
-  const [users]    = useLS("msna_users", SEED_USERS);
-  const [projects] = useLS("msna_projects", []);
-  const [tss]      = useLS("msna_timesheets", []);
+  const [users]    = useLS("users", SEED_USERS);
+  const [projects] = useLS("projects", []);
+  const [tss]      = useLS("timesheets", []);
   const [selected, setSelected] = useState(null); // null = firm-wide view
 
   const approved = tss.filter(t => t.status === "approved");
@@ -1471,10 +1522,10 @@ function Profitability() {
 export default function App() {
   const [currentUser,setCU]=useState(null);
   const [tab,setTab]       =useState("dashboard");
-  useEffect(()=>{ initStorage(); },[]);
+  useEffect(()=>{ initStorage().catch(console.error); },[]);
 
-  const [tss]  =useLS("msna_timesheets",[]);
-  const [users]=useLS("msna_users",SEED_USERS);
+  const [tss]  =useLS("timesheets",[]);
+  const [users]=useLS("users",SEED_USERS);
 
   const pendingCount = currentUser?(
     currentUser.role==="partner"
