@@ -411,10 +411,7 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount }) {
 // ══════════════════════════════════════════════════════════════
 // DASHBOARD
 // ══════════════════════════════════════════════════════════════
-function Dashboard({ user }) {
-  const [users]    = useLS("users", SEED_USERS);
-  const [projects] = useLS("projects", []);
-  const [tss]      = useLS("timesheets", []);
+function Dashboard({ user, users=[], projects=[], tss=[] }) {
   const isP=user.role==="partner";
   const mySheets = isP?tss:tss.filter(t=>t.userId===user.id);
   const approved = mySheets.filter(t=>t.status==="approved");
@@ -478,10 +475,8 @@ function Dashboard({ user }) {
 // ══════════════════════════════════════════════════════════════
 // WEEK VIEW
 // ══════════════════════════════════════════════════════════════
-function WeekView({ user }) {
+function WeekView({ user, tss=[], projects=[] }) {
   const [offset,setOffset]=useState(0);
-  const [tss]      = useLS("timesheets", []);
-  const [projects] = useLS("projects", []);
   const week=getWeekDates(offset); const td=todayStr();
   const mine=tss.filter(t=>t.userId===user.id);
   const dayNames=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
@@ -551,11 +546,7 @@ function WeekView({ user }) {
 // ══════════════════════════════════════════════════════════════
 // TIMESHEETS
 // ══════════════════════════════════════════════════════════════
-function Timesheets({ user }) {
-  const [tss,setTss]         = useLS("timesheets",[]);
-  const [users]              = useLS("users",SEED_USERS);
-  const [projects]           = useLS("projects",[]);
-  const [lockedMonths]       = useLS("locked_months",[]);
+function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:lockedMonths=[] }) {
   const [showM,setSM]        = useState(false);
   const [editE,setEE]        = useState(null);
   const [fs,setFs]           = useState("all");
@@ -563,11 +554,13 @@ function Timesheets({ user }) {
   const [ferr,setFerr]       = useState("");
   const isP = user.role==="partner";
 
+  // Issue b fix: only show projects user is assigned to (or all if partner)
   const bookable = isP
     ? projects.filter(p=>p.status==="active")
     : projects.filter(p=>p.status==="active"&&([...(p.assignedStaff||[]),...(p.assignedManagers||[])]).includes(user.id));
 
-  const mine = isP?tss:tss.filter(t=>t.userId===user.id);
+  // Issue c fix: only partners see ALL entries; managers/interns see only their own
+  const mine = isP ? tss : tss.filter(t=>t.userId===user.id);
   const filtered = mine.filter(t=>fs==="all"||t.status===fs).slice().reverse();
 
   const openAdd = () => { setEE(null); setF({date:todayStr(),projectId:"",hours:"",category:"Research",description:"",billable:true}); setFerr(""); setSM(true); };
@@ -692,9 +685,7 @@ function Timesheets({ user }) {
 // ══════════════════════════════════════════════════════════════
 // PROJECTS
 // ══════════════════════════════════════════════════════════════
-function AssignModal({ project, users: propUsers, onSave, onClose }) {
-  const [fsUsers] = useLS("users", SEED_USERS);
-  const users = fsUsers.length > 0 ? fsUsers : propUsers;
+function AssignModal({ project, users=[], onSave, onClose }) {
   const [staff,   setStaff]   = useState(project.assignedStaff||[]);
   const [managers,setManagers]= useState(project.assignedManagers||[]);
   const toggle = (id,role) => {
@@ -729,10 +720,7 @@ function AssignModal({ project, users: propUsers, onSave, onClose }) {
   );
 }
 
-function Projects({ user }) {
-  const [projects,setProjects]=useLS("projects",[]);
-  const [users]               =useLS("users",SEED_USERS);
-  const [tss]                 =useLS("timesheets",[]);
+function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
   const [showM,setSM]         =useState(false);
   const [assignM,setAM]       =useState(null);
   const [form,setF]           =useState({code:"",name:"",clientName:"",description:"",assignedPartnerId:"",budgetHours:"",engagementFee:"",feeType:"fixed",assignedStaff:[],assignedManagers:[]});
@@ -872,10 +860,7 @@ function Projects({ user }) {
 // ══════════════════════════════════════════════════════════════
 // APPROVALS
 // ══════════════════════════════════════════════════════════════
-function Approvals({ user }) {
-  const [tss,setTss]=useLS("timesheets",[]);
-  const [users]    =useLS("users",SEED_USERS);
-  const [projects] =useLS("projects",[]);
+function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
   const [rejectM,setRM]=useState(null);
   const [reason,setR]  =useState("");
   const [reasonErr,setRE]=useState("");
@@ -981,11 +966,7 @@ function Approvals({ user }) {
 // ══════════════════════════════════════════════════════════════
 // REPORTS
 // ══════════════════════════════════════════════════════════════
-function Reports({ user }) {
-  const [users]    =useLS("users",SEED_USERS);
-  const [projects] =useLS("projects",[]);
-  const [tss]      =useLS("timesheets",[]);
-  const [lockedMonths,setLocked]=useLS("locked_months",[]);
+function Reports({ user, users=[], projects=[], tss=[], locked:lockedMonths=[], setLocked, audit=[] }) {
   const [tab,setTab]=useState("engagement");
   const isAdmin=user.email===ADMIN_EMAIL;
 
@@ -1010,7 +991,7 @@ function Reports({ user }) {
 
   const toggleLock=mk=>{
     const wasLocked=lockedMonths.includes(mk);
-    setLocked(p=>wasLocked?p.filter(m=>m!==mk):[...p,mk]);
+    if(setLocked) setLocked(p=>wasLocked?p.filter(m=>m!==mk):[...p,mk]);
     addAudit(user.id,user.name,wasLocked?"UNLOCK_MONTH":"LOCK_MONTH",`Month: ${monthLabel(mk)}`);
   };
 
@@ -1107,15 +1088,14 @@ function Reports({ user }) {
 // ══════════════════════════════════════════════════════════════
 // AUDIT TRAIL
 // ══════════════════════════════════════════════════════════════
-function AuditTrail() {
-  const [auditRaw] = useLS("audit", []);
-  const audit = [...auditRaw].sort((a,b)=>b.ts>a.ts?1:-1).slice(0,100);
+function AuditTrail({ audit=[] }) {
+  const auditSorted = [...audit].sort((a,b)=>b.ts>a.ts?1:-1).slice(0,100);
   const color=a=>a.includes("APPROVE")?"var(--green)":a.includes("REJECT")||a.includes("DELETE")?"var(--red)":a.includes("LOCK")?"var(--amber)":"var(--gold)";
   return (
     <div>
       <div className="sh"><div><div className="card-title">Audit Trail</div><div className="card-sub mt4 ts">Last 100 system actions, newest first</div></div></div>
       <div className="card">
-        {audit.length===0?<div className="es"><div className="es-icon"><I n="history" s={36}/></div>No audit records yet.</div>:
+        {auditSorted.length===0?<div className="es"><div className="es-icon"><I n="history" s={36}/></div>No audit records yet.</div>:
           audit.map(a=>(
             <div key={a.id} className="audit-row">
               <div style={{width:8,height:8,borderRadius:"50%",background:color(a.action),flexShrink:0,marginTop:5}}/>
@@ -1134,8 +1114,7 @@ function AuditTrail() {
 // ══════════════════════════════════════════════════════════════
 // USER MANAGEMENT
 // ══════════════════════════════════════════════════════════════
-function UserManagement({ user }) {
-  const [users,setUsers]=useLS("users",SEED_USERS);
+function UserManagement({ user, users=[], setUsers }) {
   const [showM,setSM]   =useState(false);
   const [editU,setEU]   =useState(null);
   const [form,setF]     =useState({name:"",email:"",role:"intern",billingRate:"",password:""});
@@ -1257,10 +1236,7 @@ const PROF_CSS = `
 .monthly-row:last-child{border-bottom:none;}
 `;
 
-function Profitability() {
-  const [users]    = useLS("users", SEED_USERS);
-  const [projects] = useLS("projects", []);
-  const [tss]      = useLS("timesheets", []);
+function Profitability({ users=[], projects=[], tss=[] }) {
   const [selected, setSelected] = useState(null); // null = firm-wide view
 
   const approved = tss.filter(t => t.status === "approved");
@@ -1551,8 +1527,14 @@ export default function App() {
   const [tab,setTab]       =useState("dashboard");
   useEffect(()=>{ initStorage().catch(console.error); },[]);
 
-  const [tss]  =useLS("timesheets",[]);
-  const [users]=useLS("users",SEED_USERS);
+  // ── Load ALL data at root level from Firestore and pass down as props ──
+  const [users,   setUsers]    = useLS("users",    SEED_USERS);
+  const [projects,setProjects] = useLS("projects", []);
+  const [tss,     setTss]      = useLS("timesheets",[]);
+  const [locked,  setLocked]   = useLS("locked_months",[]);
+  const [audit]                = useLS("audit",    []);
+
+  const db_props = { users, setUsers, projects, setProjects, tss, setTss, locked, setLocked, audit };
 
   const pendingCount = currentUser?(
     currentUser.role==="partner"
@@ -1580,15 +1562,15 @@ export default function App() {
             </div>
           </div>
           <div className="content">
-            {tab==="dashboard"  &&<Dashboard    user={currentUser}/>}
-            {tab==="week"       &&<WeekView     user={currentUser}/>}
-            {tab==="timesheets" &&<Timesheets   user={currentUser}/>}
-            {tab==="projects"   &&<Projects     user={currentUser}/>}
-            {tab==="approvals"  &&["partner","manager"].includes(currentUser.role)&&<Approvals user={currentUser}/>}
-            {tab==="reports"    &&currentUser.role==="partner"&&<Reports  user={currentUser}/>}
-            {tab==="profitability"&&currentUser.role==="partner"&&<Profitability/>}
-            {tab==="audit"      &&currentUser.role==="partner"&&<AuditTrail/>}
-            {tab==="users"      &&currentUser.email===ADMIN_EMAIL&&<UserManagement user={currentUser}/>}
+            {tab==="dashboard"  &&<Dashboard    user={currentUser} {...db_props}/>}
+            {tab==="week"       &&<WeekView     user={currentUser} {...db_props}/>}
+            {tab==="timesheets" &&<Timesheets   user={currentUser} {...db_props}/>}
+            {tab==="projects"   &&<Projects     user={currentUser} {...db_props}/>}
+            {tab==="approvals"  &&["partner","manager"].includes(currentUser.role)&&<Approvals user={currentUser} {...db_props}/>}
+            {tab==="reports"    &&currentUser.role==="partner"&&<Reports  user={currentUser} {...db_props} setLocked={setLocked}/>}
+            {tab==="profitability"&&currentUser.role==="partner"&&<Profitability {...db_props}/>}
+            {tab==="audit"      &&currentUser.role==="partner"&&<AuditTrail audit={audit}/>}
+            {tab==="users"      &&currentUser.email===ADMIN_EMAIL&&<UserManagement user={currentUser} {...db_props}/>}
           </div>
         </div>
       </div>
