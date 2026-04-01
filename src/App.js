@@ -87,7 +87,7 @@ function useLS(colName, fallback=[]) {
       setData(snap.docs.map(d => ({ ...d.data(), id: d.id })));
     }, err => console.error("onSnapshot error", colName, err));
     return unsub;
-  }, [colName]);
+  }, [colName, isArr]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   const set = useCallback(async (updater) => {
     setData(prev => {
