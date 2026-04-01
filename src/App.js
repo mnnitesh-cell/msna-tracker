@@ -69,8 +69,7 @@ const initStorage = async () => {
         await fsSet("passwords", btoa(email), { email, pw });
       }
     }
-    // Also ensure Ashwini's new password is in Firestore
-    await fsSet("passwords", btoa("ashwini@msna.co.in"), { email:"ashwini@msna.co.in", pw:"11Feb2020@" });
+    // Additional passwords can be set via User Management in the app
   } catch(e) {}
   if (!localStorage.getItem("msna_passwords")) localStorage.setItem("msna_passwords", JSON.stringify(SEED_PASSWORDS));
 };
