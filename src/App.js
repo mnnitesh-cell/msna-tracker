@@ -577,11 +577,18 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
     if(dayHrs+h>24){ setFerr(`Total hours on ${fmtDate(form.date)} would exceed 24 (${dayHrs}h already logged).`); return; }
 
     if(editE){
-      const newStatus = editE.status==="rejected"?"resubmitted":"pending";
-      setTss(prev=>prev.map(t=>t.id===editE.id?{...t,...form,hours:h,status:newStatus,updatedAt:new Date().toISOString(),updatedBy:user.id}:t));
+      const newStatus = user.role==="partner" ? "approved" : editE.status==="rejected"?"resubmitted":"pending";
+      const editedEntry = {...form,hours:h,status:newStatus,updatedAt:new Date().toISOString(),updatedBy:user.id,
+        ...(user.role==="partner"?{approvedBy:user.id,approvedAt:new Date().toISOString()}:{})};
+      setTss(prev=>prev.map(t=>t.id===editE.id?{...t,...editedEntry}:t));
       addAudit(user.id,user.name,"EDIT_TIMESHEET",`Edited entry on ${form.date} (${h}h)`);
     } else {
-      setTss(prev=>[...prev,{id:genId(),userId:user.id,...form,hours:h,status:"pending",createdAt:new Date().toISOString()}]);
+      const autoApprove = user.role==="partner";
+      const newEntry = {id:genId(),userId:user.id,...form,hours:h,
+        status:autoApprove?"approved":"pending",
+        ...(autoApprove?{approvedBy:user.id,approvedAt:new Date().toISOString()}:{}),
+        createdAt:new Date().toISOString()};
+      setTss(prev=>[...prev,newEntry]);
       addAudit(user.id,user.name,"ADD_TIMESHEET",`Logged ${h}h on ${form.date} — ${projects.find(p=>p.id===form.projectId)?.code}`);
     }
     setSM(false);
