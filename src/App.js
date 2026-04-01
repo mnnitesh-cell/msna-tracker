@@ -685,7 +685,15 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
 // ══════════════════════════════════════════════════════════════
 // PROJECTS
 // ══════════════════════════════════════════════════════════════
-function AssignModal({ project, users=[], onSave, onClose }) {
+function AssignModal({ project, users:propUsers=[], onSave, onClose }) {
+  // Load users directly from Firestore to guarantee data is available
+  const [liveUsers, setLiveUsers] = useState(propUsers);
+  useEffect(() => {
+    getDocs(collection(db, "users")).then(snap => {
+      if (!snap.empty) setLiveUsers(snap.docs.map(d=>({...d.data(),id:d.id})));
+    }).catch(()=>{});
+  }, []);
+  const users = liveUsers.length > 0 ? liveUsers : propUsers;
   const [staff,   setStaff]   = useState(project.assignedStaff||[]);
   const [managers,setManagers]= useState(project.assignedManagers||[]);
   const toggle = (id,role) => {
