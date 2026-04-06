@@ -354,13 +354,7 @@ function Login({ onLogin }) {
           <div className="fg"><label className="fl">Email</label><input className="fi" type="email" placeholder="you@msna.co.in" value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={e=>{if(e.key==="Enter") go();}}/></div>
           <div className="fg"><label className="fl">Password</label><input className="fi" type="password" placeholder="••••••••" value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={e=>{if(e.key==="Enter") go();}}/></div>
           <button className="btn bp bfl" style={{padding:"13px",marginTop:4}} onClick={go}><I n="lock" s={16}/>Sign In</button>
-          <div className="demo-box">
-            <strong>Demo accounts:</strong><br/>
-            Admin Partner: nitesh@msna.co.in / partner123<br/>
-            Partner: naveen@msna.co.in / partner123<br/>
-            Manager: ravi@msna.co.in / manager123<br/>
-            Intern: arjun@msna.co.in / intern123
-          </div>
+
         </div>
       </div>
     </div>
@@ -400,6 +394,9 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount }) {
         ))}
       </div>
       <div className="sb-ft">
+        <div className="ni" style={{marginBottom:4,color:"rgba(255,255,255,.4)"}} onClick={()=>setTab("changepassword")}>
+          <I n="lock" s={15}/>Change Password
+        </div>
         <button className="btn bgh bfl bsm" onClick={onLogout} style={{color:"rgba(255,255,255,.4)",borderColor:"rgba(255,255,255,.1)"}}>
           <I n="logout" s={15}/>Sign Out
         </button>
@@ -1547,6 +1544,55 @@ function Profitability({ users=[], projects=[], tss=[] }) {
   );
 }
 
+
+// ══════════════════════════════════════════════════════════════
+// CHANGE PASSWORD
+// ══════════════════════════════════════════════════════════════
+function ChangePassword({ user, setTab }) {
+  const [curPw,  setCurPw]  = useState("");
+  const [newPw,  setNewPw]  = useState("");
+  const [confPw, setConfPw] = useState("");
+  const [err,    setErr]    = useState("");
+  const [success,setSuccess]= useState(false);
+
+  const save = async () => {
+    setErr(""); setSuccess(false);
+    if(!curPw||!newPw||!confPw){ setErr("All fields are required."); return; }
+    if(newPw.length < 6){ setErr("New password must be at least 6 characters."); return; }
+    if(newPw !== confPw){ setErr("New passwords do not match."); return; }
+    // Verify current password from Firestore
+    const pwSnap = await getDoc(doc(db,"passwords",btoa(user.email))).catch(()=>null);
+    let stored = null;
+    if(pwSnap && pwSnap.exists()) stored = pwSnap.data().pw;
+    else stored = getStoreObj("msna_passwords")[user.email];
+    if(stored !== curPw){ setErr("Current password is incorrect."); return; }
+    // Save new password to Firestore
+    await fsSet("passwords", btoa(user.email), { email:user.email, pw:newPw });
+    addAudit(user.id, user.name, "CHANGE_PASSWORD", `Password changed by ${user.email}`);
+    setSuccess(true);
+    setCurPw(""); setNewPw(""); setConfPw("");
+  };
+
+  return (
+    <div style={{maxWidth:460}}>
+      <div className="sh"><div><div className="card-title">Change Password</div><div className="card-sub mt4 ts">Update your login password</div></div></div>
+      <div className="card">
+        <div style={{padding:4}}>
+          {err&&<div className="err">{err}</div>}
+          {success&&<div className="al al-s mb16"><I n="check" s={15}/><div>Password updated successfully!</div></div>}
+          <div className="fg"><label className="fl">Current Password</label><input className="fi" type="password" placeholder="Enter current password" value={curPw} onChange={e=>setCurPw(e.target.value)}/></div>
+          <div className="fg"><label className="fl">New Password</label><input className="fi" type="password" placeholder="Min 6 characters" value={newPw} onChange={e=>setNewPw(e.target.value)}/></div>
+          <div className="fg"><label className="fl">Confirm New Password</label><input className="fi" type="password" placeholder="Re-enter new password" value={confPw} onChange={e=>setConfPw(e.target.value)}/></div>
+          <div className="fx g8" style={{justifyContent:"flex-end",marginTop:8}}>
+            <button className="btn bgh" onClick={()=>setTab("dashboard")}>Cancel</button>
+            <button className="btn bp" onClick={save}><I n="lock" s={15}/>Update Password</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ══════════════════════════════════════════════════════════════
 // ROOT
 // ══════════════════════════════════════════════════════════════
@@ -1572,7 +1618,7 @@ export default function App() {
       : 0
   ):0;
 
-  const titles={dashboard:"Dashboard",week:"My Week",timesheets:"Timesheets",projects:"Projects",approvals:"Approvals",reports:"Reports",profitability:"Profitability",audit:"Audit Trail",users:"User Management"};
+  const titles={dashboard:"Dashboard",week:"My Week",timesheets:"Timesheets",projects:"Projects",approvals:"Approvals",reports:"Reports",profitability:"Profitability",audit:"Audit Trail",users:"User Management",changepassword:"Change Password"};
 
   if(!currentUser) return <><style>{CSS}</style><Login onLogin={u=>{setCU(u);setTab("dashboard");}}/></>;
 
@@ -1599,6 +1645,7 @@ export default function App() {
             {tab==="profitability"&&currentUser.role==="partner"&&<Profitability {...db_props}/>}
             {tab==="audit"      &&currentUser.role==="partner"&&<AuditTrail audit={audit}/>}
             {tab==="users"      &&currentUser.role==="partner"&&<UserManagement user={currentUser} {...db_props}/>}
+            {tab==="changepassword"&&<ChangePassword user={currentUser} setTab={setTab}/>}
           </div>
         </div>
       </div>
