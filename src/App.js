@@ -576,11 +576,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
     const additionalP = (p.assignedPartners||[]).map(id=>users.find(u=>u.id===id)).filter(Boolean);
     return assignedP ? [assignedP,...additionalP] : additionalP;
   };
-  // Keep singular version for backward compat
-  const getProjectPartner = (projId) => {
-    const partners = getProjectPartners(projId);
-    return partners[0]||null;
-  };
+
 
   // All entries visible to this user
   // Partners see all; managers/interns see own + entries filed on their behalf (rejected, needs refiling)
