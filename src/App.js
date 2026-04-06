@@ -547,46 +547,103 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
   const [showM,setSM]        = useState(false);
   const [editE,setEE]        = useState(null);
   const [fs,setFs]           = useState("all");
-  const [form,setF]          = useState({date:todayStr(),projectId:"",hours:"",category:"Research",description:"",billable:true});
+  const [onBehalf,setOB]     = useState(false); // Manager filing for Partner
+  const [form,setF]          = useState({date:todayStr(),projectId:"",hours:"",category:"Assurance",description:"",billable:true,onBehalfOfId:""});
   const [ferr,setFerr]       = useState("");
   const isP = user.role==="partner";
+  const isMgr = user.role==="manager";
 
-  // Issue b fix: only show projects user is assigned to (or all if partner)
+  // Projects this user is assigned to
   const bookable = isP
     ? projects.filter(p=>p.status==="active")
     : projects.filter(p=>p.status==="active"&&([...(p.assignedStaff||[]),...(p.assignedManagers||[])]).includes(user.id));
 
-  // Issue c fix: only partners see ALL entries; managers/interns see only their own
-  const mine = isP ? tss : tss.filter(t=>t.userId===user.id);
-  const filtered = mine.filter(t=>fs==="all"||t.status===fs).slice().reverse();
+  // For "on behalf" mode: projects where this manager is assigned, get the assigned partner
+  const onBehalfProjects = isMgr
+    ? projects.filter(p=>p.status==="active"&&(p.assignedManagers||[]).includes(user.id))
+    : [];
 
-  const openAdd = () => { setEE(null); setF({date:todayStr(),projectId:"",hours:"",category:"Research",description:"",billable:true}); setFerr(""); setSM(true); };
-  const openEdit= ts => { setEE(ts); setF({date:ts.date,projectId:ts.projectId,hours:ts.hours,category:ts.category,description:ts.description,billable:ts.billable}); setFerr(""); setSM(true); };
+  // Get partners for a given project
+  const getProjectPartner = (projId) => {
+    const p = projects.find(x=>x.id===projId);
+    if(!p) return null;
+    return users.find(u=>u.id===p.assignedPartnerId)||null;
+  };
+
+  // All entries visible to this user
+  // Partners see all; managers/interns see own + entries filed on their behalf (rejected, needs refiling)
+  const mine = isP ? tss : tss.filter(t=>
+    t.userId===user.id ||
+    (t.filedById===user.id && ["pending_partner","rejected_partner"].includes(t.status))
+  );
+  const filtered = mine.filter(t=>fs==="all"||t.status===fs||
+    (fs==="pending"&&t.status==="pending_partner")||
+    (fs==="rejected"&&t.status==="rejected_partner")
+  ).slice().reverse();
+
+  const openAdd = (behalf=false) => {
+    setOB(behalf);
+    setEE(null);
+    setF({date:todayStr(),projectId:"",hours:"",category:"Assurance",description:"",billable:true,onBehalfOfId:""});
+    setFerr("");
+    setSM(true);
+  };
+
+  const openEdit = ts => {
+    const isBehalf = !!ts.filedById;
+    setOB(isBehalf);
+    setEE(ts);
+    setF({date:ts.date,projectId:ts.projectId,hours:ts.hours,category:ts.category,description:ts.description,billable:ts.billable,onBehalfOfId:ts.onBehalfOfId||""});
+    setFerr("");
+    setSM(true);
+  };
 
   const save = () => {
     if(!form.date||!form.projectId||!form.hours||!form.description.trim()){ setFerr("All fields are required."); return; }
+    if(onBehalf&&!form.onBehalfOfId){ setFerr("Please select the Partner you are filing for."); return; }
     const h=Number(form.hours);
     if(isNaN(h)||h<0.5||h>24){ setFerr("Hours must be between 0.5 and 24."); return; }
     if(form.date<minDate()){ setFerr(`Cannot log time more than ${MAX_BACKDATE_DAYS} days in the past.`); return; }
     if(form.date>todayStr()){ setFerr("Cannot log time for a future date."); return; }
     if(lockedMonths.includes(monthKey(form.date))){ setFerr(`${monthLabel(monthKey(form.date))} is locked. Contact the Admin.`); return; }
-    const dayHrs=tss.filter(t=>t.userId===user.id&&t.date===form.date&&t.id!==(editE?.id)).reduce((s,t)=>s+t.hours,0);
-    if(dayHrs+h>24){ setFerr(`Total hours on ${fmtDate(form.date)} would exceed 24 (${dayHrs}h already logged).`); return; }
+
+    // Determine the actual owner of this entry
+    const ownerId = onBehalf ? form.onBehalfOfId : user.id;
+    const dayHrs=tss.filter(t=>t.userId===ownerId&&t.date===form.date&&t.id!==(editE?.id)).reduce((s,t)=>s+t.hours,0);
+    if(dayHrs+h>24){ setFerr(`Total hours for ${fmtDate(form.date)} would exceed 24 (${dayHrs}h already logged for this person).`); return; }
 
     if(editE){
-      const newStatus = user.role==="partner" ? "approved" : editE.status==="rejected"?"resubmitted":"pending";
-      const editedEntry = {...form,hours:h,status:newStatus,updatedAt:new Date().toISOString(),updatedBy:user.id,
-        ...(user.role==="partner"?{approvedBy:user.id,approvedAt:new Date().toISOString()}:{})};
+      let newStatus;
+      if(onBehalf) newStatus = "pending_partner"; // re-filed, back to partner review
+      else if(user.role==="partner") newStatus = "approved";
+      else newStatus = editE.status==="rejected"?"resubmitted":"pending";
+
+      const editedEntry = {
+        ...form, hours:h, status:newStatus,
+        userId: ownerId,
+        updatedAt:new Date().toISOString(), updatedBy:user.id,
+        ...(onBehalf?{filedById:user.id,filedByName:user.name}:{}),
+        ...(user.role==="partner"&&!onBehalf?{approvedBy:user.id,approvedAt:new Date().toISOString()}:{}),
+      };
       setTss(prev=>prev.map(t=>t.id===editE.id?{...t,...editedEntry}:t));
-      addAudit(user.id,user.name,"EDIT_TIMESHEET",`Edited entry on ${form.date} (${h}h)`);
+      addAudit(user.id,user.name,"EDIT_TIMESHEET",onBehalf?`Re-filed on behalf of ${users.find(u=>u.id===ownerId)?.name} on ${form.date}`:`Edited entry on ${form.date} (${h}h)`);
     } else {
-      const autoApprove = user.role==="partner";
-      const newEntry = {id:genId(),userId:user.id,...form,hours:h,
-        status:autoApprove?"approved":"pending",
+      const autoApprove = user.role==="partner" && !onBehalf;
+      const newEntry = {
+        id:genId(),
+        userId: ownerId,
+        ...form, hours:h,
+        status: onBehalf ? "pending_partner" : autoApprove ? "approved" : "pending",
+        ...(onBehalf?{filedById:user.id,filedByName:user.name}:{}),
         ...(autoApprove?{approvedBy:user.id,approvedAt:new Date().toISOString()}:{}),
-        createdAt:new Date().toISOString()};
+        createdAt:new Date().toISOString()
+      };
       setTss(prev=>[...prev,newEntry]);
-      addAudit(user.id,user.name,"ADD_TIMESHEET",`Logged ${h}h on ${form.date} — ${projects.find(p=>p.id===form.projectId)?.code}`);
+      addAudit(user.id,user.name,"ADD_TIMESHEET",
+        onBehalf
+          ? `Filed ${h}h on behalf of ${users.find(u=>u.id===ownerId)?.name} on ${form.date} — ${projects.find(p=>p.id===form.projectId)?.code}`
+          : `Logged ${h}h on ${form.date} — ${projects.find(p=>p.id===form.projectId)?.code}`
+      );
     }
     setSM(false);
   };
@@ -597,13 +654,28 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
     setTss(prev=>prev.filter(t=>t.id!==id));
   };
 
-  const statusClass = s => s==="approved"?"ba":s==="rejected"?"br":s==="resubmitted"?"brs":"bp2";
+  const statusLabel = s => {
+    if(s==="pending_partner") return "Pending Partner";
+    if(s==="rejected_partner") return "Rejected by Partner";
+    return s.charAt(0).toUpperCase()+s.slice(1);
+  };
+  const statusClass = s =>
+    s==="approved"?"ba":s==="rejected"||s==="rejected_partner"?"br":
+    s==="resubmitted"||s==="pending_partner"?"brs":"bp2";
+
+  // For on-behalf form: get partner for selected project
+  const selectedProjectPartner = onBehalf && form.projectId ? getProjectPartner(form.projectId) : null;
 
   return (
     <div>
       <div className="sh">
         <div><div className="card-title">Timesheets</div><div className="card-sub mt4 ts">{isP?"All staff entries":"Your daily time log"}</div></div>
-        <button className="btn bp" onClick={openAdd}><I n="plus" s={15}/>Log Time</button>
+        <div className="fxc g8">
+          {isMgr&&onBehalfProjects.length>0&&(
+            <button className="btn bgh bsm" onClick={()=>openAdd(true)}><I n="users" s={14}/>File for Partner</button>
+          )}
+          <button className="btn bp" onClick={()=>openAdd(false)}><I n="plus" s={15}/>Log Time</button>
+        </div>
       </div>
 
       <div className="tabs">
@@ -621,9 +693,14 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
             <tbody>{filtered.map(ts=>{
               const u2=users.find(u=>u.id===ts.userId); const p=projects.find(p=>p.id===ts.projectId);
               const locked=lockedMonths.includes(monthKey(ts.date));
-              const canEdit=isP||(ts.userId===user.id&&["pending","rejected","resubmitted"].includes(ts.status)&&!locked);
+              // Only the partner the entry is filed for can edit/delete their on-behalf entries
+              const isOnBehalf = !!ts.filedById;
+              const canEdit = isOnBehalf
+                ? (user.id===ts.userId&&["pending_partner","rejected_partner"].includes(ts.status)) // partner approves/edits own
+                  || (user.id===ts.filedById&&ts.status==="rejected_partner") // manager can re-file if rejected
+                : isP||(ts.userId===user.id&&["pending","rejected","resubmitted"].includes(ts.status)&&!locked);
               return <tr key={ts.id}>
-                {isP&&<td className="fw6">{u2?.name}<div className="tx tsl">{u2?.role}</div></td>}
+                {isP&&<td className="fw6">{u2?.name}<div className="tx tsl">{u2?.role}{isOnBehalf&&<span className="tx tsl"> · filed by {ts.filedByName}</span>}</div></td>}
                 <td>{fmtDate(ts.date)}{locked&&<div><span className="bdg blk tx" style={{marginTop:3}}><I n="lock" s={10}/>locked</span></div>}</td>
                 <td>{p?<><div className="fw6 mono">{p.code}</div><div className="tx tsl">{p.name}</div></>:"—"}</td>
                 <td className="ts">{ts.category}</td>
@@ -631,12 +708,14 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
                 <td>{ts.billable?<span className="tsc fw6">✓</span>:<span className="tsl">—</span>}</td>
                 <td className="ts tsl" style={{maxWidth:180}}>
                   {ts.description}
-                  {ts.status==="rejected"&&ts.rejectReason&&<div className="tx tdn mt4">↩ {ts.rejectReason}</div>}
+                  {isOnBehalf&&!isP&&<div className="tx tsl mt4">Filed by {ts.filedByName}</div>}
+                  {(ts.status==="rejected"||ts.status==="rejected_partner")&&ts.rejectReason&&<div className="tx tdn mt4">↩ {ts.rejectReason}</div>}
                 </td>
-                <td><span className={`bdg ${statusClass(ts.status)}`}>{ts.status}</span></td>
+                <td><span className={`bdg ${statusClass(ts.status)}`}>{statusLabel(ts.status)}</span></td>
                 <td><div className="fx g8">
                   {canEdit&&<button className="btn bgh bic bsm" onClick={()=>openEdit(ts)}><I n="edit" s={14}/></button>}
-                  {isP&&!locked&&(user.email===ADMIN_EMAIL||projects.find(p=>p.id===ts.projectId)?.assignedPartnerId===user.id)&&<button className="btn bd bic bsm" onClick={()=>del(ts.id)}><I n="trash" s={14}/></button>}
+                  {(isP&&!locked&&(user.email===ADMIN_EMAIL||projects.find(p=>p.id===ts.projectId)?.assignedPartnerId===user.id))&&
+                    <button className="btn bd bic bsm" onClick={()=>del(ts.id)}><I n="trash" s={14}/></button>}
                 </div></td>
               </tr>;
             })}</tbody>
@@ -647,7 +726,9 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
       {showM&&(
         <div className="mo" onClick={()=>setSM(false)}>
           <div className="md" onClick={e=>e.stopPropagation()}>
-            <div className="md-title">{editE?"Edit Time Entry":"Log Time"}</div>
+            <div className="md-title">{onBehalf?"File Time — On Behalf of Partner":editE?"Edit Time Entry":"Log Time"}</div>
+            {onBehalf&&<div className="al al-i mb16"><I n="info" s={15}/><div>You are filing this entry on behalf of a Partner. They will review and approve it before it counts.</div></div>}
+            {editE?.status==="rejected_partner"&&<div className="al al-d"><I n="alert" s={15}/><div>Rejected by Partner: <em>{editE.rejectReason}</em> — please correct and re-file.</div></div>}
             {editE?.status==="rejected"&&<div className="al al-d"><I n="alert" s={15}/><div>Rejected: <em>{editE.rejectReason}</em> — please correct and resubmit.</div></div>}
             {ferr&&<div className="err">{ferr}</div>}
             <div className="g2">
@@ -656,12 +737,22 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
             </div>
             <div className="fg">
               <label className="fl">Project / Engagement</label>
-              <select className="fs" value={form.projectId} onChange={e=>setF(f=>({...f,projectId:e.target.value}))}>
+              <select className="fs" value={form.projectId} onChange={e=>{
+                setF(f=>({...f,projectId:e.target.value,onBehalfOfId:""}));
+              }}>
                 <option value="">-- Select Project --</option>
-                {bookable.map(p=><option key={p.id} value={p.id}>{p.code} — {p.name}</option>)}
+                {(onBehalf?onBehalfProjects:bookable).map(p=><option key={p.id} value={p.id}>{p.code} — {p.name}</option>)}
               </select>
-              {bookable.length===0&&<div className="tx tdn mt4">You are not assigned to any active engagement. Contact your Partner.</div>}
             </div>
+            {onBehalf&&form.projectId&&(
+              <div className="fg">
+                <label className="fl">Filing On Behalf Of</label>
+                {selectedProjectPartner
+                  ? <div className="fi" style={{color:"var(--navy)",fontWeight:600}}>{selectedProjectPartner.name} <span className="tx tsl">(Assigned Partner)</span></div>
+                  : <div className="tx tdn">No partner assigned to this engagement.</div>}
+                {selectedProjectPartner&&<input type="hidden" value={form.onBehalfOfId} onChange={()=>{}} ref={el=>{if(el&&!form.onBehalfOfId)setF(f=>({...f,onBehalfOfId:selectedProjectPartner.id}));}}/>}
+              </div>
+            )}
             <div className="g2">
               <div className="fg"><label className="fl">Task Category</label>
                 <select className="fs" value={form.category} onChange={e=>setF(f=>({...f,category:e.target.value}))}>
@@ -677,7 +768,15 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
             <div className="fg"><label className="fl">Work Description</label><textarea className="fta" placeholder="Describe the work done..." value={form.description} onChange={e=>setF(f=>({...f,description:e.target.value}))}/></div>
             <div className="md-actions">
               <button className="btn bgh" onClick={()=>setSM(false)}>Cancel</button>
-              <button className="btn bp" onClick={save}><I n={editE?.status==="rejected"?"send":"check"} s={15}/>{editE?.status==="rejected"?"Resubmit":"Save Entry"}</button>
+              <button className="btn bp" onClick={()=>{
+                // Auto-set onBehalfOfId from selectedProjectPartner before saving
+                if(onBehalf&&selectedProjectPartner&&!form.onBehalfOfId){
+                  setF(f=>({...f,onBehalfOfId:selectedProjectPartner.id}));
+                  setTimeout(save,50);
+                } else { save(); }
+              }}><I n={editE?.status==="rejected_partner"||editE?.status==="rejected"?"send":"check"} s={15}/>
+                {onBehalf?"Submit for Partner Review":editE?.status==="rejected"?"Resubmit":"Save Entry"}
+              </button>
             </div>
           </div>
         </div>
@@ -882,6 +981,7 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
   const appRole=isP?"manager":"intern";
   const myProjIds=projects.filter(p=>p.assignedPartnerId===user.id).map(p=>p.id);
 
+  // Regular pending: managers approve interns, partners approve managers
   const pending=tss.filter(t=>{
     const u2=users.find(u=>u.id===t.userId);
     if(u2?.role!==appRole) return false;
@@ -889,6 +989,14 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
     if(isP&&!myProjIds.includes(t.projectId)) return false;
     return true;
   });
+
+  // On-behalf pending: entries filed by managers on behalf of this partner
+  const pendingOnBehalf = isP ? tss.filter(t=>
+    t.status==="pending_partner" &&
+    t.userId===user.id // this partner is the attributed person
+  ) : [];
+
+  const allPending = [...pending, ...pendingOnBehalf];
 
   const history=tss.filter(t=>{
     const u2=users.find(u=>u.id===t.userId);
@@ -902,9 +1010,14 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
     setTss(p=>p.map(t=>t.id===id?{...t,status:"approved",approvedBy:user.id,approvedAt:new Date().toISOString()}:t));
     addAudit(user.id,user.name,"APPROVE_TIMESHEET",`Approved entry ${id}`);
   };
+  const approveOnBehalf=id=>{
+    setTss(p=>p.map(t=>t.id===id?{...t,status:"approved",approvedBy:user.id,approvedAt:new Date().toISOString()}:t));
+    addAudit(user.id,user.name,"APPROVE_ON_BEHALF",`Partner approved on-behalf entry ${id}`);
+  };
   const confirmReject=()=>{
     if(!reason.trim()){setRE("Please provide a reason.");return;}
-    setTss(p=>p.map(t=>t.id===rejectM.id?{...t,status:"rejected",rejectedBy:user.id,rejectedAt:new Date().toISOString(),rejectReason:reason}:t));
+    const newRejStatus = rejectM.status==="pending_partner" ? "rejected_partner" : "rejected";
+    setTss(p=>p.map(t=>t.id===rejectM.id?{...t,status:newRejStatus,rejectedBy:user.id,rejectedAt:new Date().toISOString(),rejectReason:reason}:t));
     addAudit(user.id,user.name,"REJECT_TIMESHEET",`Rejected ${rejectM.id}: ${reason}`);
     setRM(null);
   };
@@ -916,14 +1029,17 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
       <div className="sh"><div><div className="card-title">Approvals</div><div className="card-sub mt4 ts">Review {appRole} timesheets</div></div></div>
 
       <div className="card mb22">
-        <div className="fxb mb16"><div className="card-title">Pending <span style={{color:"var(--amber)",fontSize:14}}>({pending.length})</span></div></div>
-        {pending.length===0?<div className="es"><div className="es-icon"><I n="check" s={36}/></div>All clear — no pending approvals.</div>:(
+        <div className="fxb mb16"><div className="card-title">Pending <span style={{color:"var(--amber)",fontSize:14}}>({allPending.length})</span></div></div>
+        {allPending.length===0?<div className="es"><div className="es-icon"><I n="check" s={36}/></div>All clear — no pending approvals.</div>:(
           <div className="tw"><table>
             <thead><tr><th>Staff</th><th>Date</th><th>Project</th><th>Category</th><th>Hrs</th><th>Billable</th><th>Description</th><th>Status</th><th>Actions</th></tr></thead>
-            <tbody>{pending.map(ts=>{
+            <tbody>{allPending.map(ts=>{
               const u2=users.find(u=>u.id===ts.userId); const p=projects.find(p=>p.id===ts.projectId); const rate=u2?.billingRate||0;
               return <tr key={ts.id}>
-                <td className="fw6">{u2?.name}<div className="tx tsl">{fmtCurrency(rate)}/hr</div></td>
+                <td className="fw6">{u2?.name}
+                  {ts.filedById&&<div className="tx" style={{color:"var(--gold)",fontSize:11}}>Filed by {ts.filedByName}</div>}
+                  <div className="tx tsl">{fmtCurrency(rate)}/hr</div>
+                </td>
                 <td>{fmtDate(ts.date)}</td>
                 <td><div className="fw6 mono">{p?.code}</div><div className="tx tsl">{p?.clientName} — {p?.name}</div></td>
                 <td className="ts">{ts.category}</td>
@@ -932,7 +1048,7 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
                 <td className="ts tsl" style={{maxWidth:170}}>{ts.description}</td>
                 <td><span className={`bdg ${sc(ts.status)}`}>{ts.status}</span></td>
                 <td><div className="fx g8">
-                  <button className="btn bsc bsm" onClick={()=>approve(ts.id)}><I n="check" s={13}/>Approve</button>
+                  <button className="btn bsc bsm" onClick={()=>ts.status==="pending_partner"?approveOnBehalf(ts.id):approve(ts.id)}><I n="check" s={13}/>Approve</button>
                   <button className="btn bd bsm" onClick={()=>{setRM(ts);setR("");setRE("");}}><I n="x" s={13}/>Reject</button>
                 </div></td>
               </tr>;
@@ -1612,7 +1728,8 @@ export default function App() {
 
   const pendingCount = currentUser?(
     currentUser.role==="partner"
-      ? tss.filter(t=>["pending","resubmitted"].includes(t.status)&&users.find(u=>u.id===t.userId)?.role==="manager").length
+      ? tss.filter(t=>(["pending","resubmitted"].includes(t.status)&&users.find(u=>u.id===t.userId)?.role==="manager")||
+          (t.status==="pending_partner"&&t.userId===currentUser.id)).length
       : currentUser.role==="manager"
       ? tss.filter(t=>["pending","resubmitted"].includes(t.status)&&users.find(u=>u.id===t.userId)?.role==="intern").length
       : 0
