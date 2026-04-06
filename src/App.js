@@ -555,19 +555,31 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
 
   // Projects this user is assigned to
   const bookable = isP
-    ? projects.filter(p=>p.status==="active")
-    : projects.filter(p=>p.status==="active"&&([...(p.assignedStaff||[]),...(p.assignedManagers||[])]).includes(user.id));
+    ? projects.filter(p=>p.status==="active"&&(
+        p.assignedPartnerId===user.id ||
+        (p.assignedPartners||[]).includes(user.id)
+      ))
+    : projects.filter(p=>p.status==="active"&&(
+        [...(p.assignedStaff||[]),...(p.assignedManagers||[])].includes(user.id)
+      ));
 
-  // For "on behalf" mode: projects where this manager is assigned, get the assigned partner
+  // For "on behalf" mode: projects where this manager is assigned
   const onBehalfProjects = isMgr
     ? projects.filter(p=>p.status==="active"&&(p.assignedManagers||[]).includes(user.id))
     : [];
 
-  // Get partners for a given project
-  const getProjectPartner = (projId) => {
+  // Get ALL partners for a given project (assigned + additional)
+  const getProjectPartners = (projId) => {
     const p = projects.find(x=>x.id===projId);
-    if(!p) return null;
-    return users.find(u=>u.id===p.assignedPartnerId)||null;
+    if(!p) return [];
+    const assignedP = users.find(u=>u.id===p.assignedPartnerId);
+    const additionalP = (p.assignedPartners||[]).map(id=>users.find(u=>u.id===id)).filter(Boolean);
+    return assignedP ? [assignedP,...additionalP] : additionalP;
+  };
+  // Keep singular version for backward compat
+  const getProjectPartner = (projId) => {
+    const partners = getProjectPartners(projId);
+    return partners[0]||null;
   };
 
   // All entries visible to this user
@@ -664,7 +676,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
     s==="resubmitted"||s==="pending_partner"?"brs":"bp2";
 
   // For on-behalf form: get partner for selected project
-  const selectedProjectPartner = onBehalf && form.projectId ? getProjectPartner(form.projectId) : null;
+  // selectedProjectPartner replaced by getProjectPartners() for multi-partner support
 
   return (
     <div>
@@ -747,10 +759,22 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
             {onBehalf&&form.projectId&&(
               <div className="fg">
                 <label className="fl">Filing On Behalf Of</label>
-                {selectedProjectPartner
-                  ? <div className="fi" style={{color:"var(--navy)",fontWeight:600}}>{selectedProjectPartner.name} <span className="tx tsl">(Assigned Partner)</span></div>
-                  : <div className="tx tdn">No partner assigned to this engagement.</div>}
-                {selectedProjectPartner&&<input type="hidden" value={form.onBehalfOfId} onChange={()=>{}} ref={el=>{if(el&&!form.onBehalfOfId)setF(f=>({...f,onBehalfOfId:selectedProjectPartner.id}));}}/>}
+                {(() => {
+                  const allPartners = getProjectPartners(form.projectId);
+                  if(allPartners.length===0) return <div className="tx tdn">No partners assigned to this engagement.</div>;
+                  if(allPartners.length===1) return (
+                    <div>
+                      <div className="fi" style={{color:"var(--navy)",fontWeight:600}}>{allPartners[0].name} <span className="tx tsl">(Assigned Partner)</span></div>
+                      {!form.onBehalfOfId&&setTimeout(()=>setF(f=>({...f,onBehalfOfId:allPartners[0].id})),0)}
+                    </div>
+                  );
+                  return (
+                    <select className="fs" value={form.onBehalfOfId} onChange={e=>setF(f=>({...f,onBehalfOfId:e.target.value}))}>
+                      <option value="">-- Select Partner --</option>
+                      {allPartners.map(p=><option key={p.id} value={p.id}>{p.name}{p.id===projects.find(x=>x.id===form.projectId)?.assignedPartnerId?" (Assigned Partner)":""}</option>)}
+                    </select>
+                  );
+                })()}
               </div>
             )}
             <div className="g2">
@@ -769,9 +793,9 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
             <div className="md-actions">
               <button className="btn bgh" onClick={()=>setSM(false)}>Cancel</button>
               <button className="btn bp" onClick={()=>{
-                // Auto-set onBehalfOfId from selectedProjectPartner before saving
-                if(onBehalf&&selectedProjectPartner&&!form.onBehalfOfId){
-                  setF(f=>({...f,onBehalfOfId:selectedProjectPartner.id}));
+                const allP = onBehalf ? getProjectPartners(form.projectId) : [];
+                if(onBehalf&&allP.length===1&&!form.onBehalfOfId){
+                  setF(f=>({...f,onBehalfOfId:allP[0].id}));
                   setTimeout(save,50);
                 } else { save(); }
               }}><I n={editE?.status==="rejected_partner"||editE?.status==="rejected"?"send":"check"} s={15}/>
@@ -797,18 +821,36 @@ function AssignModal({ project, users:propUsers=[], onSave, onClose }) {
     }).catch(()=>{});
   }, []);
   const users = liveUsers.length > 0 ? liveUsers : propUsers;
-  const [staff,   setStaff]   = useState(project.assignedStaff||[]);
-  const [managers,setManagers]= useState(project.assignedManagers||[]);
-  const toggle = (id,role) => {
+  const [staff,    setStaff]    = useState(project.assignedStaff||[]);
+  const [managers, setManagers] = useState(project.assignedManagers||[]);
+  const [partners, setPartners] = useState(project.assignedPartners||[]);
+  const assignedPartnerId = project.assignedPartnerId;
+
+  const toggle = (id, role) => {
     if(role==="manager") setManagers(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id]);
+    else if(role==="partner") setPartners(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id]);
     else setStaff(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id]);
   };
+
   return (
     <div className="mo" onClick={onClose}>
       <div className="md" onClick={e=>e.stopPropagation()}>
         <div className="md-title">Assign Staff — {project.code}</div>
         <div className="al al-i"><I n="info" s={15}/><div>Only assigned staff can log time to this engagement.</div></div>
-        <div style={{maxHeight:340,overflowY:"auto"}}>
+        <div style={{maxHeight:400,overflowY:"auto"}}>
+          {/* Partners section */}
+          <div className="mb16">
+            <div className="fl" style={{marginBottom:10}}>Additional Partners</div>
+            <div className="al al-i" style={{marginBottom:10,padding:"8px 12px"}}><I n="info" s={13}/><div className="tx">The Assigned Partner is already included. Add other partners who will also work on this engagement.</div></div>
+            {users.filter(u=>u.role==="partner"&&u.active&&u.id!==assignedPartnerId).map(u=>{
+              const checked=partners.includes(u.id);
+              return <label key={u.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",cursor:"pointer",borderBottom:"1px solid var(--border)"}}>
+                <input type="checkbox" checked={checked} onChange={()=>toggle(u.id,"partner")} style={{width:15,height:15}}/>
+                <span className="fw6 ts">{u.name}</span><span className="tx tsl">{u.email}</span>
+              </label>;
+            })}
+          </div>
+          {/* Managers and Interns */}
           {["manager","intern"].map(role=>(
             <div key={role} className="mb16">
               <div className="fl" style={{marginBottom:10}}>{role.charAt(0).toUpperCase()+role.slice(1)}s</div>
@@ -824,7 +866,7 @@ function AssignModal({ project, users:propUsers=[], onSave, onClose }) {
         </div>
         <div className="md-actions">
           <button className="btn bgh" onClick={onClose}>Cancel</button>
-          <button className="btn bp" onClick={()=>onSave(project.id,staff,managers)}><I n="check" s={15}/>Save Assignments</button>
+          <button className="btn bp" onClick={()=>onSave(project.id,staff,managers,partners)}><I n="check" s={15}/>Save Assignments</button>
         </div>
       </div>
     </div>
@@ -834,18 +876,18 @@ function AssignModal({ project, users:propUsers=[], onSave, onClose }) {
 function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
   const [showM,setSM]         =useState(false);
   const [assignM,setAM]       =useState(null);
-  const [form,setF]           =useState({code:"",name:"",clientName:"",description:"",assignedPartnerId:"",budgetHours:"",engagementFee:"",feeType:"fixed",assignedStaff:[],assignedManagers:[]});
+  const [form,setF]           =useState({code:"",name:"",clientName:"",description:"",assignedPartnerId:"",budgetHours:"",engagementFee:"",feeType:"fixed",assignedStaff:[],assignedManagers:[],assignedPartners:[]});
   const [ferr,setFerr]        =useState("");
   const isP=user.role==="partner";
   const partners=users.filter(u=>u.role==="partner"&&u.active);
 
-  const openAdd=()=>{setF({code:"",name:"",clientName:"",description:"",assignedPartnerId:isP?user.id:"",budgetHours:"",engagementFee:"",feeType:"fixed",assignedStaff:[],assignedManagers:[]});setFerr("");setSM(true);};
+  const openAdd=()=>{setF({code:"",name:"",clientName:"",description:"",assignedPartnerId:isP?user.id:"",budgetHours:"",engagementFee:"",feeType:"fixed",assignedStaff:[],assignedManagers:[],assignedPartners:[]});setFerr("");setSM(true);};
 
   const save=()=>{
     if(!form.code||!form.name||!form.clientName||!form.assignedPartnerId){setFerr("Code, name, client and partner are required.");return;}
     if(projects.find(p=>p.code.toUpperCase()===form.code.toUpperCase())){setFerr("Project code already exists.");return;}
     const np={id:genId(),...form,code:form.code.toUpperCase(),budgetHours:form.budgetHours?Number(form.budgetHours):null,engagementFee:form.engagementFee?Number(form.engagementFee):null,feeType:form.feeType,
-      status:isP?"active":"pending_approval",assignedStaff:form.assignedStaff,assignedManagers:form.assignedManagers,createdBy:user.id,createdAt:new Date().toISOString()};
+      status:isP?"active":"pending_approval",assignedStaff:form.assignedStaff,assignedManagers:form.assignedManagers,assignedPartners:form.assignedPartners||[],createdBy:user.id,createdAt:new Date().toISOString()};
     setProjects(p=>[...p,np]);
     addAudit(user.id,user.name,"CREATE_PROJECT",`Created ${form.code.toUpperCase()} — ${form.name}`);
     setSM(false);
@@ -855,9 +897,9 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
   const reject =id=>{setProjects(p=>p.map(x=>x.id===id?{...x,status:"rejected"}:x));addAudit(user.id,user.name,"REJECT_PROJECT",`Rejected ${id}`);};
   const close  =id=>{if(!window.confirm("Close this engagement?"))return;setProjects(p=>p.map(x=>x.id===id?{...x,status:"closed",closedAt:new Date().toISOString()}:x));addAudit(user.id,user.name,"CLOSE_PROJECT",`Closed ${id}`);};
   const deleteProject=id=>{if(!window.confirm("Permanently delete this project code? This cannot be undone."))return;setProjects(p=>p.filter(x=>x.id!==id));addAudit(user.id,user.name,"DELETE_PROJECT",`Deleted project ${id}`);};
-  const saveAssign=(pid,staff,managers)=>{setProjects(p=>p.map(x=>x.id===pid?{...x,assignedStaff:staff,assignedManagers:managers}:x));addAudit(user.id,user.name,"ASSIGN_STAFF",`Updated assignments for ${pid}`);setAM(null);};
+  const saveAssign=(pid,staff,managers,partners=[])=>{setProjects(p=>p.map(x=>x.id===pid?{...x,assignedStaff:staff,assignedManagers:managers,assignedPartners:partners}:x));addAudit(user.id,user.name,"ASSIGN_STAFF",`Updated assignments for ${pid}`);setAM(null);};
 
-  const visible=isP?projects:projects.filter(p=>p.status==="active"&&[...(p.assignedStaff||[]),...(p.assignedManagers||[])].includes(user.id));
+  const visible=isP?projects:projects.filter(p=>p.status==="active"&&[...(p.assignedStaff||[]),...(p.assignedManagers||[]),...(p.assignedPartners||[])].includes(user.id));
 
   const statusClass=s=>s==="active"?"bac":s==="closed"?"bcl":s==="pending_approval"?"bp2":"br";
 
@@ -931,21 +973,26 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
             {/* Inline staff assignment */}
             <div style={{borderTop:"1.5px solid var(--border)",marginTop:8,paddingTop:18}}>
               <div className="fl" style={{marginBottom:12}}>Assign Staff (optional — can also be done later)</div>
-              {["manager","intern"].map(role=>(
+              {["partner","manager","intern"].map(role=>(
                 <div key={role} className="mb16">
                   <div style={{fontSize:12,fontWeight:600,color:"var(--slate)",textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:8}}>
-                    {role.charAt(0).toUpperCase()+role.slice(1)}s
+                    {role==="partner"?"Additional Partners":role.charAt(0).toUpperCase()+role.slice(1)+"s"}
                   </div>
+                  {role==="partner"&&<div className="tx tsl" style={{marginBottom:8,fontSize:12}}>The Assigned Partner above is already included. Add other partners working on this engagement.</div>}
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
-                    {users.filter(u=>u.role===role&&u.active).map(u=>{
+                    {users.filter(u=>u.role===role&&u.active&&(role!=="partner"||u.id!==form.assignedPartnerId)).map(u=>{
                       const isAssigned = role==="manager"
                         ? (form.assignedManagers||[]).includes(u.id)
+                        : role==="partner"
+                        ? (form.assignedPartners||[]).includes(u.id)
                         : (form.assignedStaff||[]).includes(u.id);
                       return (
                         <label key={u.id} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",borderRadius:8,border:"1.5px solid",borderColor:isAssigned?"var(--navy)":"var(--border)",background:isAssigned?"var(--cream)":"#fff",cursor:"pointer",transition:"all .15s"}}>
                           <input type="checkbox" checked={isAssigned} onChange={()=>{
                             if(role==="manager"){
                               setF(f=>({...f,assignedManagers:isAssigned?f.assignedManagers.filter(x=>x!==u.id):[...(f.assignedManagers||[]),u.id]}));
+                            } else if(role==="partner"){
+                              setF(f=>({...f,assignedPartners:isAssigned?(f.assignedPartners||[]).filter(x=>x!==u.id):[...(f.assignedPartners||[]),u.id]}));
                             } else {
                               setF(f=>({...f,assignedStaff:isAssigned?f.assignedStaff.filter(x=>x!==u.id):[...(f.assignedStaff||[]),u.id]}));
                             }
