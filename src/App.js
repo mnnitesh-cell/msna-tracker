@@ -1818,6 +1818,7 @@ function Compliance({ users=[], tss=[], projects=[] }) {
     const okDays = workdayResults.filter(d=>d.status==="ok").length;
     const lowDays = workdayResults.filter(d=>d.status==="low").length;
     const zeroDays = workdayResults.filter(d=>d.status==="zero").length;
+    // eslint-disable-next-line no-unused-vars
     const totalOk = workdayResults.length>0;
     const overallStatus = workdayResults.length===0?"na": zeroDays===0&&lowDays===0?"ok": zeroDays===workdayResults.length?"zero":"partial";
     return { u, days, okDays, lowDays, zeroDays, workdayResults, overallStatus };
