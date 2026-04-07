@@ -750,8 +750,38 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
                 setF(f=>({...f,projectId:e.target.value,onBehalfOfId:""}));
               }}>
                 <option value="">-- Select Project --</option>
-                {(onBehalf?onBehalfProjects:bookable).map(p=><option key={p.id} value={p.id}>{p.code} — {p.name}</option>)}
+                {(onBehalf?onBehalfProjects:bookable).map(p=><option key={p.id} value={p.id}>{p.code} · {p.clientName} — {p.name}</option>)}
               </select>
+              {(onBehalf?onBehalfProjects:bookable).length===0&&<div className="tx tdn mt4">You are not assigned to any active engagement. Contact your Partner.</div>}
+              {form.projectId&&(()=>{
+                const sel=projects.find(p=>p.id===form.projectId);
+                if(!sel) return null;
+                const used=tss.filter(t=>t.projectId===sel.id&&t.status==="approved").reduce((s,t)=>s+t.hours,0);
+                const pct=sel.budgetHours?Math.min(Math.round(used/sel.budgetHours*100),100):null;
+                return (
+                  <div style={{marginTop:10,padding:"12px 14px",background:"var(--cream)",borderRadius:8,border:"1.5px solid var(--border)"}}>
+                    <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12}}>
+                      <div>
+                        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                          <span style={{fontFamily:"monospace",fontWeight:700,fontSize:14,color:"var(--navy)"}}>{sel.code}</span>
+                          {sel.feeType==="retainer"&&<span style={{fontSize:11,background:"var(--gold-pale)",color:"#92400e",padding:"2px 8px",borderRadius:20,fontWeight:500}}>Retainer</span>}
+                        </div>
+                        <div style={{fontSize:14,fontWeight:600,color:"var(--navy)",marginBottom:2}}>{sel.name}</div>
+                        <div style={{fontSize:13,color:"var(--slate)"}}>{sel.clientName}</div>
+                      </div>
+                      {pct!==null&&(
+                        <div style={{textAlign:"right",flexShrink:0}}>
+                          <div style={{fontSize:12,color:"var(--slate)",marginBottom:4}}>Budget</div>
+                          <div style={{fontSize:13,fontWeight:600,color:pct>=100?"var(--red)":pct>=80?"var(--amber)":"var(--green)"}}>{used}h / {sel.budgetHours}h ({pct}%)</div>
+                          <div style={{width:90,height:5,background:"var(--border)",borderRadius:4,marginTop:5,overflow:"hidden"}}>
+                            <div style={{width:pct+"%",height:"100%",borderRadius:4,background:pct>=100?"var(--red)":pct>=80?"var(--amber)":"var(--green)"}}/>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
             {onBehalf&&form.projectId&&(
               <div className="fg">
