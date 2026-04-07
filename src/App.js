@@ -20,7 +20,8 @@ const ADMIN_EMAIL = "nitesh@msna.co.in";
 const MAX_BACKDATE_DAYS = 30;
 const ENGAGEMENT_CATEGORIES = ["Assurance","Virtual CFO","Compliance","Consulting"];
 const INTERNAL_CATEGORIES = ["Leave","Holiday","Idle","Reading"];
-const TASK_CATEGORIES = [...ENGAGEMENT_CATEGORIES,...INTERNAL_CATEGORIES]; // kept for legacy
+// eslint-disable-next-line no-unused-vars
+const TASK_CATEGORIES = [...ENGAGEMENT_CATEGORIES,...INTERNAL_CATEGORIES];
 
 const SEED_USERS = [
   { id:"u1", name:"Naveen S N",     email:"naveen@msna.co.in",   role:"partner", billingRate:5000, active:true },
