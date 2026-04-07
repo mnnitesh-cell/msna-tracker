@@ -1575,7 +1575,7 @@ function Profitability({ users=[], projects=[], tss=[] }) {
 
       {/* ── SINGLE ENGAGEMENT DRILL-DOWN ── */}
       {selData && (() => {
-        const {p, totalHrs, staffCost, totalFee, margin, marginPct, signal, staffBreakdown, byMonth, months} = selData;
+        const {p, totalHrs, staffCost, totalFee, margin, marginPct, signal, staffBreakdown, byMonth} = selData; // eslint-disable-line no-unused-vars
         const budgetPct = p.budgetHours ? Math.min(Math.round(totalHrs/p.budgetHours*100),100) : null;
         const maxStaffCost = staffBreakdown[0]?.cost || 1;
         const partner = users.find(u=>u.id===p.assignedPartnerId);
