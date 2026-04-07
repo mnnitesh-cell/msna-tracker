@@ -374,6 +374,7 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount }) {
     { id:"approvals",  icon:"shield",   label:"Approvals",      roles:["partner","manager"], badge:true },
     { id:"reports",    icon:"chart",    label:"Reports",        roles:["partner"] },
     { id:"profitability", icon:"target", label:"Profitability",  roles:["partner"] },
+    { id:"compliance", icon:"shield",   label:"Timesheet Compliance", roles:["partner"] },
     { id:"audit",      icon:"history",  label:"Audit Trail",    roles:["partner"] },
     { id:"users",      icon:"users",    label:"User Management",roles:["partner"] },
   ].filter(n=>n.roles.includes(user.role)&&(!n.adminOnly||isAdmin));
@@ -1728,6 +1729,249 @@ function Profitability({ users=[], projects=[], tss=[] }) {
 }
 
 
+
+// ══════════════════════════════════════════════════════════════
+// TIMESHEET COMPLIANCE
+// ══════════════════════════════════════════════════════════════
+const COMPLIANCE_CSS = `
+.comp-wrap { display:flex; flex-direction:column; gap:20px; }
+.comp-controls { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+.comp-week-btn { display:flex; align-items:center; gap:6px; padding:8px 16px; border-radius:8px; border:1.5px solid var(--border); background:#fff; font-family:'DM Sans',sans-serif; font-size:13px; color:var(--slate); cursor:pointer; transition:all .15s; }
+.comp-week-btn:hover { border-color:var(--navy); color:var(--navy); }
+.comp-week-btn.active { background:var(--navy); color:#fff; border-color:var(--navy); }
+.comp-week-label { font-size:14px; font-weight:600; color:var(--navy); min-width:200px; }
+.comp-summary { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; }
+.comp-stat { background:#fff; border-radius:12px; padding:18px 20px; border:1px solid var(--border); }
+.comp-stat-val { font-family:'Playfair Display',serif; font-size:28px; font-weight:600; }
+.comp-stat-lbl { font-size:11px; color:var(--slate); text-transform:uppercase; letter-spacing:1px; margin-top:4px; }
+.comp-grid { display:flex; flex-direction:column; gap:12px; }
+.comp-card { background:#fff; border-radius:12px; border:1.5px solid var(--border); overflow:hidden; transition:border-color .15s; }
+.comp-card.all-ok { border-color:#10b981; }
+.comp-card.has-issues { border-color:#ef4444; }
+.comp-card.partial { border-color:#f59e0b; }
+.comp-card-header { display:flex; align-items:center; justify-content:space-between; padding:14px 18px; cursor:pointer; }
+.comp-card-header:hover { background:var(--cream); }
+.comp-user-info { display:flex; align-items:center; gap:12px; }
+.comp-avatar { width:36px; height:36px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:600; flex-shrink:0; }
+.comp-avatar.ok { background:#d1fae5; color:#065f46; }
+.comp-avatar.warn { background:#fee2e2; color:#991b1b; }
+.comp-avatar.partial { background:#fef3c7; color:#92400e; }
+.comp-name { font-size:14px; font-weight:600; color:var(--navy); }
+.comp-role { font-size:11px; color:var(--slate); text-transform:uppercase; letter-spacing:.5px; margin-top:2px; }
+.comp-pills { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+.comp-pill { width:32px; height:32px; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:600; flex-direction:column; gap:1px; }
+.comp-pill.ok { background:#d1fae5; color:#065f46; }
+.comp-pill.low { background:#fee2e2; color:#991b1b; }
+.comp-pill.zero { background:#f1f5f9; color:#94a3b8; }
+.comp-pill.weekend { background:#f8f6f1; color:#cbd5e1; }
+.comp-pill.future { background:transparent; color:#e2e8f0; border:1px dashed #e2e8f0; }
+.comp-pill-day { font-size:9px; font-weight:400; opacity:.8; }
+.comp-pill-hrs { font-size:12px; font-weight:700; }
+.comp-status-badge { display:flex; align-items:center; gap:6px; padding:5px 12px; border-radius:20px; font-size:12px; font-weight:500; }
+.comp-status-badge.ok { background:#d1fae5; color:#065f46; }
+.comp-status-badge.warn { background:#fee2e2; color:#991b1b; }
+.comp-status-badge.partial { background:#fef3c7; color:#92400e; }
+.comp-detail { padding:12px 18px 16px; border-top:1px solid var(--border); background:var(--cream); }
+.comp-detail-row { display:flex; align-items:center; gap:10px; padding:6px 0; border-bottom:1px solid var(--border); font-size:13px; }
+.comp-detail-row:last-child { border-bottom:none; }
+.comp-missing-tag { background:#fee2e2; color:#991b1b; font-size:11px; padding:2px 8px; border-radius:20px; font-weight:500; }
+.comp-ok-tag { background:#d1fae5; color:#065f46; font-size:11px; padding:2px 8px; border-radius:20px; font-weight:500; }
+.comp-toggle { font-size:11px; color:var(--slate); }
+`;
+
+function Compliance({ users=[], tss=[], projects=[] }) {
+  const [weekOffset, setWeekOffset] = useState(-1); // default = last week
+  const [expanded, setExpanded] = useState({});
+  const [filterRole, setFilterRole] = useState("all");
+  const [filterStatus, setFilterStatus] = useState("all");
+  const MIN_HOURS = 8;
+
+  // Get week dates for given offset
+  const getWeek = (offset) => {
+    const d = new Date(); d.setDate(d.getDate() + offset*7);
+    const day = d.getDay(); const mon = new Date(d);
+    mon.setDate(d.getDate()-(day===0?6:day-1));
+    return Array.from({length:7},(_,i)=>{ const x=new Date(mon); x.setDate(mon.getDate()+i); return x.toISOString().slice(0,10); });
+  };
+
+  const week = getWeek(weekOffset);
+  const today = todayStr();
+  const workdays = week.slice(0,5).filter(d=>d<=today);
+  const dayNames = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+
+  // Staff to check: interns and managers only
+  const staff = users.filter(u=>u.active&&["intern","manager"].includes(u.role))
+    .filter(u=>filterRole==="all"||u.role===filterRole);
+
+  // For each staff member compute compliance
+  const staffData = staff.map(u=>{
+    const days = week.map((d,i)=>{
+      const dayTss = tss.filter(t=>t.userId===u.id&&t.date===d&&["approved","pending","resubmitted"].includes(t.status));
+      const hrs = dayTss.reduce((s,t)=>s+t.hours,0);
+      const isPast = d<=today;
+      const isWeekend = i>=5;
+      const isFuture = d>today;
+      return { date:d, dayName:dayNames[i], hrs, isPast, isWeekend, isFuture,
+        status: isFuture||isWeekend?"na": hrs>=MIN_HOURS?"ok": hrs>0?"low":"zero" };
+    });
+    const workdayResults = days.filter(d=>!d.isWeekend&&d.isPast);
+    const okDays = workdayResults.filter(d=>d.status==="ok").length;
+    const lowDays = workdayResults.filter(d=>d.status==="low").length;
+    const zeroDays = workdayResults.filter(d=>d.status==="zero").length;
+    const totalOk = workdayResults.length>0;
+    const overallStatus = workdayResults.length===0?"na": zeroDays===0&&lowDays===0?"ok": zeroDays===workdayResults.length?"zero":"partial";
+    return { u, days, okDays, lowDays, zeroDays, workdayResults, overallStatus };
+  }).filter(d=>{
+    if(filterStatus==="ok") return d.overallStatus==="ok";
+    if(filterStatus==="issues") return d.overallStatus!=="ok"&&d.overallStatus!=="na";
+    return true;
+  }).sort((a,b)=>{
+    // Sort: most issues first
+    const score = x => x.zeroDays*2 + x.lowDays;
+    return score(b)-score(a);
+  });
+
+  const totalIssues = staffData.filter(d=>d.overallStatus!=="ok"&&d.overallStatus!=="na").length;
+  const totalOk = staffData.filter(d=>d.overallStatus==="ok").length;
+  const totalZero = staffData.filter(d=>d.zeroDays>0).length;
+  const totalLow = staffData.filter(d=>d.lowDays>0&&d.zeroDays===0).length;
+
+  const weekLabel = weekOffset===0?"This Week":weekOffset===-1?"Last Week":`${Math.abs(weekOffset)} Weeks Ago`;
+
+  const toggle = id => setExpanded(e=>({...e,[id]:!e[id]}));
+
+  return (
+    <div className="comp-wrap">
+      <style>{COMPLIANCE_CSS}</style>
+
+      {/* Controls */}
+      <div className="comp-controls">
+        <div className="fxc g8">
+          <button className="comp-week-btn" onClick={()=>setWeekOffset(o=>o-1)}>← Prev</button>
+          <div className="comp-week-label">{weekLabel}: {fmtDate(week[0])} — {fmtDate(week[4])}</div>
+          {weekOffset<0&&<button className="comp-week-btn" onClick={()=>setWeekOffset(o=>o+1)}>Next →</button>}
+        </div>
+        <div style={{flex:1}}/>
+        <select className="fs" style={{width:"auto",fontSize:13,padding:"7px 12px"}} value={filterRole} onChange={e=>setFilterRole(e.target.value)}>
+          <option value="all">All Staff</option>
+          <option value="manager">Managers Only</option>
+          <option value="intern">Interns Only</option>
+        </select>
+        <select className="fs" style={{width:"auto",fontSize:13,padding:"7px 12px"}} value={filterStatus} onChange={e=>setFilterStatus(e.target.value)}>
+          <option value="all">All Statuses</option>
+          <option value="issues">Issues Only</option>
+          <option value="ok">Fully Compliant</option>
+        </select>
+      </div>
+
+      {/* Summary stats */}
+      <div className="comp-summary">
+        <div className="comp-stat">
+          <div className="comp-stat-val" style={{color:"var(--navy)"}}>{staffData.length}</div>
+          <div className="comp-stat-lbl">Staff Checked</div>
+        </div>
+        <div className="comp-stat">
+          <div className="comp-stat-val" style={{color:"var(--green)"}}>{totalOk}</div>
+          <div className="comp-stat-lbl">Fully Compliant</div>
+        </div>
+        <div className="comp-stat">
+          <div className="comp-stat-val" style={{color:"var(--amber)"}}>{totalLow}</div>
+          <div className="comp-stat-lbl">Under 8h Days</div>
+        </div>
+        <div className="comp-stat">
+          <div className="comp-stat-val" style={{color:"var(--red)"}}>{totalZero}</div>
+          <div className="comp-stat-lbl">Missing Days</div>
+        </div>
+      </div>
+
+      {/* Staff cards */}
+      {staffData.length===0
+        ?<div className="es"><div className="es-icon"><I n="check" s={40}/></div>No staff to display for this period.</div>
+        :<div className="comp-grid">
+          {staffData.map(({u,days,okDays,lowDays,zeroDays,workdayResults,overallStatus})=>{
+            const isExp = expanded[u.id];
+            const cardClass = overallStatus==="ok"?"all-ok":overallStatus==="zero"?"has-issues":"partial";
+            const avatarClass = overallStatus==="ok"?"ok":overallStatus==="zero"?"warn":"partial";
+            const initials = u.name.split(" ").map(n=>n[0]).join("").slice(0,2).toUpperCase();
+            const missingDays = workdayResults.filter(d=>d.status!=="ok");
+
+            return (
+              <div key={u.id} className={`comp-card ${cardClass}`}>
+                <div className="comp-card-header" onClick={()=>toggle(u.id)}>
+                  <div className="comp-user-info">
+                    <div className={`comp-avatar ${avatarClass}`}>{initials}</div>
+                    <div>
+                      <div className="comp-name">{u.name}</div>
+                      <div className="comp-role">{u.role}</div>
+                    </div>
+                  </div>
+
+                  {/* Day pills */}
+                  <div className="comp-pills">
+                    {days.map((d,i)=>(
+                      <div key={d.date} className={`comp-pill ${d.isWeekend?"weekend":d.isFuture?"future":d.status}`}>
+                        <span className="comp-pill-day">{d.dayName}</span>
+                        <span className="comp-pill-hrs">{d.isWeekend||d.isFuture?"—":d.hrs>0?d.hrs+"h":"✕"}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="fxc g8">
+                    <div className={`comp-status-badge ${overallStatus==="ok"?"ok":overallStatus==="zero"?"warn":"partial"}`}>
+                      {overallStatus==="ok"
+                        ?<><I n="check" s={13}/>Compliant</>
+                        :overallStatus==="zero"
+                        ?<><I n="x" s={13}/>{zeroDays} day{zeroDays>1?"s":""} missing</>
+                        :<><I n="alert" s={13}/>{lowDays} under 8h</>}
+                    </div>
+                    <span className="comp-toggle">{isExp?"▲":"▼"}</span>
+                  </div>
+                </div>
+
+                {isExp&&(
+                  <div className="comp-detail">
+                    <div style={{fontSize:12,fontWeight:600,color:"var(--slate)",textTransform:"uppercase",letterSpacing:"1px",marginBottom:10}}>
+                      Day-by-day breakdown
+                    </div>
+                    {workdayResults.map(d=>(
+                      <div key={d.date} className="comp-detail-row">
+                        <div style={{width:100,fontWeight:500}}>{fmtDate(d.date)}</div>
+                        <div style={{width:60,color:"var(--slate)",fontSize:12}}>{d.dayName}</div>
+                        <div style={{flex:1}}>
+                          {d.status==="ok"
+                            ?<span style={{color:"var(--green)",fontWeight:600}}>{d.hrs}h logged</span>
+                            :d.status==="low"
+                            ?<span style={{color:"var(--amber)",fontWeight:600}}>{d.hrs}h logged</span>
+                            :<span style={{color:"var(--slate)"}}>No entries</span>}
+                        </div>
+                        <div>
+                          {d.status==="ok"
+                            ?<span className="comp-ok-tag">✓ Complete</span>
+                            :d.status==="low"
+                            ?<span className="comp-missing-tag">⚠ Under {MIN_HOURS}h</span>
+                            :<span className="comp-missing-tag">✕ Missing</span>}
+                        </div>
+                        <div style={{width:80,textAlign:"right",fontSize:12,color:"var(--slate)"}}>
+                          {d.status!=="ok"&&d.hrs<MIN_HOURS?`${MIN_HOURS-d.hrs}h short`:""}
+                        </div>
+                      </div>
+                    ))}
+                    <div style={{marginTop:12,paddingTop:10,borderTop:"1px solid var(--border)",display:"flex",gap:24,fontSize:12}}>
+                      <span><b style={{color:"var(--green)"}}>{okDays}</b> <span style={{color:"var(--slate)"}}>complete days</span></span>
+                      <span><b style={{color:"var(--amber)"}}>{lowDays}</b> <span style={{color:"var(--slate)"}}>under 8h</span></span>
+                      <span><b style={{color:"var(--red)"}}>{zeroDays}</b> <span style={{color:"var(--slate)"}}>missing</span></span>
+                      <span><b style={{color:"var(--navy)"}}>{workdayResults.reduce((s,d)=>s+d.hrs,0).toFixed(1)}h</b> <span style={{color:"var(--slate)"}}>total logged</span></span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>}
+    </div>
+  );
+}
+
 // ══════════════════════════════════════════════════════════════
 // CHANGE PASSWORD
 // ══════════════════════════════════════════════════════════════
@@ -1802,7 +2046,7 @@ export default function App() {
       : 0
   ):0;
 
-  const titles={dashboard:"Dashboard",week:"My Week",timesheets:"Timesheets",projects:"Projects",approvals:"Approvals",reports:"Reports",profitability:"Profitability",audit:"Audit Trail",users:"User Management",changepassword:"Change Password"};
+  const titles={dashboard:"Dashboard",week:"My Week",timesheets:"Timesheets",projects:"Projects",approvals:"Approvals",reports:"Reports",profitability:"Profitability",compliance:"Timesheet Compliance",audit:"Audit Trail",users:"User Management",changepassword:"Change Password"};
 
   if(!currentUser) return <><style>{CSS}</style><Login onLogin={u=>{setCU(u);setTab("dashboard");}}/></>;
 
@@ -1827,6 +2071,7 @@ export default function App() {
             {tab==="approvals"  &&["partner","manager"].includes(currentUser.role)&&<Approvals user={currentUser} {...db_props}/>}
             {tab==="reports"    &&currentUser.role==="partner"&&<Reports  user={currentUser} {...db_props} setLocked={setLocked}/>}
             {tab==="profitability"&&currentUser.role==="partner"&&<Profitability {...db_props}/>}
+            {tab==="compliance" &&currentUser.role==="partner"&&<Compliance {...db_props}/>}
             {tab==="audit"      &&currentUser.role==="partner"&&<AuditTrail audit={audit}/>}
             {tab==="users"      &&currentUser.role==="partner"&&<UserManagement user={currentUser} {...db_props}/>}
             {tab==="changepassword"&&<ChangePassword user={currentUser} setTab={setTab}/>}
