@@ -872,7 +872,7 @@ function AssignModal({ project, users:propUsers=[], onSave, onClose }) {
 function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
   const [showM,setSM]         =useState(false);
   const [assignM,setAM]       =useState(null);
-  const [form,setF]           =useState({code:"",name:"",clientName:"",description:"",assignedPartnerId:"",budgetHours:"",engagementFee:"",feeType:"fixed",assignedStaff:[],assignedManagers:[],assignedPartners:[]});
+  const [form,setF]           =useState({code:"",name:"",clientName:"",description:"",assignedPartnerId:"",budgetHours:"",engagementFee:"",feeType:"fixed",retainerMonths:"",assignedStaff:[],assignedManagers:[],assignedPartners:[]});
   const [ferr,setFerr]        =useState("");
   const isP=user.role==="partner";
   const partners=users.filter(u=>u.role==="partner"&&u.active);
@@ -882,7 +882,15 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
   const save=()=>{
     if(!form.code||!form.name||!form.clientName||!form.assignedPartnerId){setFerr("Code, name, client and partner are required.");return;}
     if(projects.find(p=>p.code.toUpperCase()===form.code.toUpperCase())){setFerr("Project code already exists.");return;}
-    const np={id:genId(),...form,code:form.code.toUpperCase(),budgetHours:form.budgetHours?Number(form.budgetHours):null,engagementFee:form.engagementFee?Number(form.engagementFee):null,feeType:form.feeType,
+    // Calculate total fee: for retainer = monthly fee × months; for fixed = as entered
+    const totalEngFee = form.engagementFee ? (
+      form.feeType==="retainer" && form.retainerMonths
+        ? Number(form.engagementFee) * Number(form.retainerMonths)
+        : Number(form.engagementFee)
+    ) : null;
+    const np={id:genId(),...form,code:form.code.toUpperCase(),budgetHours:form.budgetHours?Number(form.budgetHours):null,
+      engagementFee:totalEngFee,monthlyFee:form.feeType==="retainer"&&form.engagementFee?Number(form.engagementFee):null,
+      retainerMonths:form.retainerMonths?Number(form.retainerMonths):null,feeType:form.feeType,
       status:isP?"active":"pending_approval",assignedStaff:form.assignedStaff,assignedManagers:form.assignedManagers,assignedPartners:form.assignedPartners||[],createdBy:user.id,createdAt:new Date().toISOString()};
     setProjects(p=>[...p,np]);
     addAudit(user.id,user.name,"CREATE_PROJECT",`Created ${form.code.toUpperCase()} — ${form.name}`);
@@ -958,13 +966,30 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
               <div className="fg"><label className="fl">Budget Hours (optional)</label><input type="number" className="fi" placeholder="e.g. 200" value={form.budgetHours} onChange={e=>setF(f=>({...f,budgetHours:e.target.value}))}/></div>
             </div>
             <div className="g2">
-              <div className="fg"><label className="fl">Engagement Fee (₹)</label><input type="number" className="fi" placeholder="e.g. 500000" value={form.engagementFee} onChange={e=>setF(f=>({...f,engagementFee:e.target.value}))}/></div>
               <div className="fg"><label className="fl">Fee Type</label>
-                <select className="fs" value={form.feeType} onChange={e=>setF(f=>({...f,feeType:e.target.value}))}>
+                <select className="fs" value={form.feeType} onChange={e=>setF(f=>({...f,feeType:e.target.value,retainerMonths:""}))}>
                   <option value="fixed">Fixed Fee</option>
                   <option value="retainer">Monthly Retainer</option>
                 </select>
               </div>
+              {form.feeType==="fixed"&&(
+                <div className="fg"><label className="fl">Total Fee (₹)</label>
+                  <input type="number" className="fi" placeholder="e.g. 500000" value={form.engagementFee} onChange={e=>setF(f=>({...f,engagementFee:e.target.value}))}/>
+                </div>
+              )}
+              {form.feeType==="retainer"&&(<>
+                <div className="fg"><label className="fl">Monthly Fee (₹)</label>
+                  <input type="number" className="fi" placeholder="e.g. 50000" value={form.engagementFee} onChange={e=>setF(f=>({...f,engagementFee:e.target.value}))}/>
+                </div>
+                <div className="fg"><label className="fl">Number of Months</label>
+                  <input type="number" className="fi" placeholder="e.g. 12" min="1" value={form.retainerMonths} onChange={e=>setF(f=>({...f,retainerMonths:e.target.value}))}/>
+                </div>
+                {form.engagementFee&&form.retainerMonths&&(
+                  <div className="al al-s" style={{marginTop:-8}}>
+                    <I n="info" s={14}/><div>Total engagement fee: <strong>{fmtCurrency(Number(form.engagementFee)*Number(form.retainerMonths))}</strong> ({form.retainerMonths} months × {fmtCurrency(Number(form.engagementFee))}/month)</div>
+                  </div>
+                )}
+              </>)}
             </div>
             {/* Inline staff assignment */}
             <div style={{borderTop:"1.5px solid var(--border)",marginTop:8,paddingTop:18}}>
@@ -1430,11 +1455,10 @@ function Profitability({ users=[], projects=[], tss=[] }) {
     const sheets = approved.filter(t => t.projectId === p.id);
     const totalHrs = sheets.reduce((s,t) => s + t.hours, 0);
     const staffCost = sheets.reduce((s,t) => s + t.hours * (users.find(u=>u.id===t.userId)?.billingRate||0), 0);
-    const fee = p.engagementFee || 0;
+    const fee = p.engagementFee || 0; // already the total fee (monthly × months for retainer)
     const isRetainer = p.feeType === "retainer";
-    // For retainer: fee is monthly, count distinct months billed
-    const months = isRetainer ? [...new Set(sheets.map(t=>monthKey(t.date)))].length : 1;
-    const totalFee = isRetainer ? fee * Math.max(months,1) : fee;
+    const months = isRetainer ? (p.retainerMonths||1) : 1;
+    const totalFee = fee; // pre-calculated at creation time
     const margin = totalFee - staffCost;
     const marginPct = totalFee > 0 ? Math.round((margin/totalFee)*100) : null;
     const signal = !fee ? "nofee" : margin >= 0 && marginPct >= 20 ? "profit" : margin >= 0 ? "risk" : "loss";
@@ -1535,7 +1559,7 @@ function Profitability({ users=[], projects=[], tss=[] }) {
                     <td><span className="fw6 mono">{p.code}</span></td>
                     <td>{p.clientName}<div className="tx tsl">{p.name}</div></td>
                     <td className="fw6">{totalFee>0?fmtCurrency(totalFee):<span className="tsl tx">Not set</span>}
-                      {p.feeType==="retainer"&&<div className="tx tsl">Retainer ×{[...new Set(approved.filter(t=>t.projectId===p.id).map(t=>monthKey(t.date)))].length||0}m</div>}
+                      {p.feeType==="retainer"&&p.retainerMonths&&<div className="tx tsl">{fmtCurrency(p.monthlyFee||0)}/mo × {p.retainerMonths}m</div>}
                     </td>
                     <td>{fmtCurrency(staffCost)}</td>
                     <td className={margin>=0?"tsc fw6":"tdn fw6"}>{totalFee>0?fmtCurrency(margin):"—"}</td>
@@ -1567,7 +1591,7 @@ function Profitability({ users=[], projects=[], tss=[] }) {
               <div style={{textAlign:"right",color:"rgba(255,255,255,.7)",fontSize:13}}>
                 <div>Partner: {partner?.name||"—"}</div>
                 <div style={{marginTop:4}}>Fee type: {p.feeType==="retainer"?"Monthly Retainer":"Fixed Fee"}</div>
-                {p.feeType==="retainer"&&<div style={{marginTop:2}}>{months} month(s) billed so far</div>}
+                {p.feeType==="retainer"&&<div style={{marginTop:2}}>{p.retainerMonths} month(s) · {fmtCurrency(p.monthlyFee||0)}/month</div>}
               </div>
             </div>
 
@@ -1684,12 +1708,12 @@ function Profitability({ users=[], projects=[], tss=[] }) {
                 <div className="tw"><table>
                   <thead><tr><th>Month</th><th>Hours</th><th>Staff Cost</th>{p.feeType==="retainer"&&<th>Monthly Fee</th>}{p.feeType==="retainer"&&<th>Monthly Margin</th>}</tr></thead>
                   <tbody>{Object.entries(byMonth).sort(([a],[b])=>a>b?1:-1).map(([mk,d])=>{
-                    const mMargin = p.feeType==="retainer"?(p.engagementFee||0)-d.cost:null;
+                    const mMargin = p.feeType==="retainer"?(p.monthlyFee||0)-d.cost:null;
                     return <tr key={mk}>
                       <td className="fw6">{monthLabel(mk)}</td>
                       <td>{d.hrs}h</td>
                       <td>{fmtCurrency(d.cost)}</td>
-                      {p.feeType==="retainer"&&<td className="fw6 tgo">{fmtCurrency(p.engagementFee||0)}</td>}
+                      {p.feeType==="retainer"&&<td className="fw6 tgo">{fmtCurrency(p.monthlyFee||0)}</td>}
                       {p.feeType==="retainer"&&<td className={`fw6 ${mMargin>=0?"tsc":"tdn"}`}>{fmtCurrency(mMargin)}</td>}
                     </tr>;
                   })}</tbody>
