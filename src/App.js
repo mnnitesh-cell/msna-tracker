@@ -18,7 +18,9 @@ const db = getFirestore(firebaseApp);
 // ── CONSTANTS ──
 const ADMIN_EMAIL = "nitesh@msna.co.in";
 const MAX_BACKDATE_DAYS = 30;
-const TASK_CATEGORIES = ["Assurance","Virtual CFO","Compliance","Consulting","Idle","Reading","Holiday","Leave"];
+const ENGAGEMENT_CATEGORIES = ["Assurance","Virtual CFO","Compliance","Consulting"];
+const INTERNAL_CATEGORIES = ["Leave","Holiday","Idle","Reading"];
+const TASK_CATEGORIES = [...ENGAGEMENT_CATEGORIES,...INTERNAL_CATEGORIES]; // kept for legacy
 
 const SEED_USERS = [
   { id:"u1", name:"Naveen S N",     email:"naveen@msna.co.in",   role:"partner", billingRate:5000, active:true },
@@ -549,7 +551,8 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
   const [editE,setEE]        = useState(null);
   const [fs,setFs]           = useState("all");
   const [onBehalf,setOB]     = useState(false); // Manager filing for Partner
-  const [form,setF]          = useState({date:todayStr(),projectId:"",hours:"",category:"Assurance",description:"",billable:true,onBehalfOfId:""});
+  const [form,setF]          = useState({date:todayStr(),projectId:"",hours:"",category:"Assurance",description:"",billable:true,onBehalfOfId:"",isInternal:false,internalType:"Leave"});
+  const [isInternal,setIsInt]= useState(false); // track which modal mode
   const [ferr,setFerr]       = useState("");
   const isP = user.role==="partner";
   const isMgr = user.role==="manager";
@@ -590,26 +593,35 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
     (fs==="rejected"&&t.status==="rejected_partner")
   ).slice().reverse();
 
-  const openAdd = (behalf=false) => {
+  const openAdd = (behalf=false, internal=false) => {
     setOB(behalf);
+    setIsInt(internal);
     setEE(null);
-    setF({date:todayStr(),projectId:"",hours:"",category:"Assurance",description:"",billable:true,onBehalfOfId:""});
+    setF({date:todayStr(),projectId:"",hours:"",category:"Assurance",description:"",billable:true,onBehalfOfId:"",isInternal:internal,internalType:"Leave"});
     setFerr("");
     setSM(true);
   };
 
   const openEdit = ts => {
     const isBehalf = !!ts.filedById;
+    const internal = !!ts.isInternal;
     setOB(isBehalf);
+    setIsInt(internal);
     setEE(ts);
-    setF({date:ts.date,projectId:ts.projectId,hours:ts.hours,category:ts.category,description:ts.description,billable:ts.billable,onBehalfOfId:ts.onBehalfOfId||""});
+    setF({date:ts.date,projectId:ts.projectId||"",hours:ts.hours,category:ts.category,description:ts.description||"",billable:ts.billable,onBehalfOfId:ts.onBehalfOfId||"",isInternal:internal,internalType:ts.internalType||"Leave"});
     setFerr("");
     setSM(true);
   };
 
   const save = () => {
-    if(!form.date||!form.projectId||!form.hours||!form.description.trim()){ setFerr("All fields are required."); return; }
-    if(onBehalf&&!form.onBehalfOfId){ setFerr("Please select the Partner you are filing for."); return; }
+    // Internal entries don't need project or description
+    if(isInternal){
+      if(!form.date||!form.hours){ setFerr("Date and hours are required."); return; }
+    } else {
+      if(!form.date||!form.projectId||!form.hours||!form.description.trim()){ setFerr("All fields are required."); return; }
+      // onBehalf check now handled above
+    }
+    // onBehalf check now handled above
     const h=Number(form.hours);
     if(isNaN(h)||h<0.5||h>24){ setFerr("Hours must be between 0.5 and 24."); return; }
     if(form.date<minDate()){ setFerr(`Cannot log time more than ${MAX_BACKDATE_DAYS} days in the past.`); return; }
@@ -617,7 +629,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
     if(lockedMonths.includes(monthKey(form.date))){ setFerr(`${monthLabel(monthKey(form.date))} is locked. Contact the Admin.`); return; }
 
     // Determine the actual owner of this entry
-    const ownerId = onBehalf ? form.onBehalfOfId : user.id;
+    const ownerId = (!isInternal && onBehalf) ? form.onBehalfOfId : user.id;
     const dayHrs=tss.filter(t=>t.userId===ownerId&&t.date===form.date&&t.id!==(editE?.id)).reduce((s,t)=>s+t.hours,0);
     if(dayHrs+h>24){ setFerr(`Total hours for ${fmtDate(form.date)} would exceed 24 (${dayHrs}h already logged for this person).`); return; }
 
@@ -637,12 +649,15 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
       setTss(prev=>prev.map(t=>t.id===editE.id?{...t,...editedEntry}:t));
       addAudit(user.id,user.name,"EDIT_TIMESHEET",onBehalf?`Re-filed on behalf of ${users.find(u=>u.id===ownerId)?.name} on ${form.date}`:`Edited entry on ${form.date} (${h}h)`);
     } else {
-      const autoApprove = user.role==="partner" && !onBehalf;
+      const autoApprove = user.role==="partner" && !onBehalf && !isInternal;
       const newEntry = {
         id:genId(),
         userId: ownerId,
         ...form, hours:h,
-        status: onBehalf ? "pending_partner" : autoApprove ? "approved" : "pending",
+        // Internal entries: auto-approve if partner, otherwise pending (goes to manager)
+        status: isInternal
+          ? (user.role==="partner" ? "approved" : "pending")
+          : onBehalf ? "pending_partner" : autoApprove ? "approved" : "pending",
         ...(onBehalf?{filedById:user.id,filedByName:user.name}:{}),
         ...(autoApprove?{approvedBy:user.id,approvedAt:new Date().toISOString()}:{}),
         createdAt:new Date().toISOString()
@@ -681,9 +696,10 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
         <div><div className="card-title">Timesheets</div><div className="card-sub mt4 ts">{isP?"All staff entries":"Your daily time log"}</div></div>
         <div className="fxc g8">
           {isMgr&&onBehalfProjects.length>0&&(
-            <button className="btn bgh bsm" onClick={()=>openAdd(true)}><I n="users" s={14}/>File for Partner</button>
+            <button className="btn bgh bsm" onClick={()=>openAdd(true,false)}><I n="users" s={14}/>File for Partner</button>
           )}
-          <button className="btn bp" onClick={()=>openAdd(false)}><I n="plus" s={15}/>Log Time</button>
+          <button className="btn bgh bsm" onClick={()=>openAdd(false,true)} style={{borderColor:"var(--amber)",color:"var(--amber)"}}><I n="calendar" s={14}/>Internal Time</button>
+          <button className="btn bp" onClick={()=>openAdd(false,false)}><I n="plus" s={15}/>Log Engagement Time</button>
         </div>
       </div>
 
@@ -735,98 +751,129 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
       {showM&&(
         <div className="mo" onClick={()=>setSM(false)}>
           <div className="md" onClick={e=>e.stopPropagation()}>
-            <div className="md-title">{onBehalf?"File Time — On Behalf of Partner":editE?"Edit Time Entry":"Log Time"}</div>
-            {onBehalf&&<div className="al al-i mb16"><I n="info" s={15}/><div>You are filing this entry on behalf of a Partner. They will review and approve it before it counts.</div></div>}
-            {editE?.status==="rejected_partner"&&<div className="al al-d"><I n="alert" s={15}/><div>Rejected by Partner: <em>{editE.rejectReason}</em> — please correct and re-file.</div></div>}
+            <div className="md-title">
+              {isInternal?"Log Internal Time":onBehalf?"File for Partner":editE?"Edit Entry":"Log Engagement Time"}
+            </div>
+            {onBehalf&&<div className="al al-i mb16"><I n="info" s={15}/><div>Filing on behalf of a Partner. They will review and approve before it counts.</div></div>}
+            {isInternal&&<div className="al al-w mb16"><I n="info" s={15}/><div>Internal time is not linked to any client engagement. Goes to your manager for approval.</div></div>}
+            {editE?.status==="rejected_partner"&&<div className="al al-d"><I n="alert" s={15}/><div>Rejected by Partner: <em>{editE.rejectReason}</em></div></div>}
             {editE?.status==="rejected"&&<div className="al al-d"><I n="alert" s={15}/><div>Rejected: <em>{editE.rejectReason}</em> — please correct and resubmit.</div></div>}
             {ferr&&<div className="err">{ferr}</div>}
             <div className="g2">
               <div className="fg"><label className="fl">Date</label><input type="date" className="fi" value={form.date} min={minDate()} max={todayStr()} onChange={e=>setF(f=>({...f,date:e.target.value}))}/></div>
-              <div className="fg"><label className="fl">Hours</label><input type="number" className="fi" placeholder="e.g. 3.5" min="0.5" max="24" step="0.5" value={form.hours} onChange={e=>setF(f=>({...f,hours:e.target.value}))}/></div>
+              <div className="fg"><label className="fl">Hours</label><input type="number" className="fi" placeholder="e.g. 8" min="0.5" max="24" step="0.5" value={form.hours} onChange={e=>setF(f=>({...f,hours:e.target.value}))}/></div>
             </div>
-            <div className="fg">
-              <label className="fl">Project / Engagement</label>
-              <select className="fs" value={form.projectId} onChange={e=>{
-                setF(f=>({...f,projectId:e.target.value,onBehalfOfId:""}));
-              }}>
-                <option value="">-- Select Project --</option>
-                {(onBehalf?onBehalfProjects:bookable).map(p=><option key={p.id} value={p.id}>{p.code} · {p.clientName} — {p.name}</option>)}
-              </select>
-              {(onBehalf?onBehalfProjects:bookable).length===0&&<div className="tx tdn mt4">You are not assigned to any active engagement. Contact your Partner.</div>}
-              {form.projectId&&(()=>{
-                const sel=projects.find(p=>p.id===form.projectId);
-                if(!sel) return null;
-                const used=tss.filter(t=>t.projectId===sel.id&&t.status==="approved").reduce((s,t)=>s+t.hours,0);
-                const pct=sel.budgetHours?Math.min(Math.round(used/sel.budgetHours*100),100):null;
-                return (
-                  <div style={{marginTop:10,padding:"12px 14px",background:"var(--cream)",borderRadius:8,border:"1.5px solid var(--border)"}}>
-                    <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12}}>
-                      <div>
-                        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
-                          <span style={{fontFamily:"monospace",fontWeight:700,fontSize:14,color:"var(--navy)"}}>{sel.code}</span>
-                          {sel.feeType==="retainer"&&<span style={{fontSize:11,background:"var(--gold-pale)",color:"#92400e",padding:"2px 8px",borderRadius:20,fontWeight:500}}>Retainer</span>}
-                        </div>
-                        <div style={{fontSize:14,fontWeight:600,color:"var(--navy)",marginBottom:2}}>{sel.name}</div>
-                        <div style={{fontSize:13,color:"var(--slate)"}}>{sel.clientName}</div>
-                      </div>
-                      {pct!==null&&(
-                        <div style={{textAlign:"right",flexShrink:0}}>
-                          <div style={{fontSize:12,color:"var(--slate)",marginBottom:4}}>Budget</div>
-                          <div style={{fontSize:13,fontWeight:600,color:pct>=100?"var(--red)":pct>=80?"var(--amber)":"var(--green)"}}>{used}h / {sel.budgetHours}h ({pct}%)</div>
-                          <div style={{width:90,height:5,background:"var(--border)",borderRadius:4,marginTop:5,overflow:"hidden"}}>
-                            <div style={{width:pct+"%",height:"100%",borderRadius:4,background:pct>=100?"var(--red)":pct>=80?"var(--amber)":"var(--green)"}}/>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })()}
-            </div>
-            {onBehalf&&form.projectId&&(
+            {isInternal?(
               <div className="fg">
-                <label className="fl">Filing On Behalf Of</label>
-                {(() => {
-                  const allPartners = getProjectPartners(form.projectId);
-                  if(allPartners.length===0) return <div className="tx tdn">No partners assigned to this engagement.</div>;
-                  if(allPartners.length===1) return (
-                    <div>
-                      <div className="fi" style={{color:"var(--navy)",fontWeight:600}}>{allPartners[0].name} <span className="tx tsl">(Assigned Partner)</span></div>
-                      {!form.onBehalfOfId&&setTimeout(()=>setF(f=>({...f,onBehalfOfId:allPartners[0].id})),0)}
-                    </div>
-                  );
-                  return (
-                    <select className="fs" value={form.onBehalfOfId} onChange={e=>setF(f=>({...f,onBehalfOfId:e.target.value}))}>
-                      <option value="">-- Select Partner --</option>
-                      {allPartners.map(p=><option key={p.id} value={p.id}>{p.name}{p.id===projects.find(x=>x.id===form.projectId)?.assignedPartnerId?" (Assigned Partner)":""}</option>)}
+                <label className="fl">Type</label>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                  {INTERNAL_CATEGORIES.map(cat=>(
+                    <label key={cat} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",borderRadius:8,border:"1.5px solid",borderColor:form.internalType===cat?"var(--navy)":"var(--border)",background:form.internalType===cat?"var(--cream)":"#fff",cursor:"pointer"}}>
+                      <input type="radio" name="internalType" checked={form.internalType===cat} onChange={()=>setF(f=>({...f,internalType:cat,category:cat}))} style={{accentColor:"var(--navy)"}}/>
+                      <div>
+                        <div style={{fontSize:13,fontWeight:form.internalType===cat?600:400,color:"var(--navy)"}}>{cat}</div>
+                        <div style={{fontSize:11,color:"var(--slate)"}}>{cat==="Leave"?"Personal/sick leave":cat==="Holiday"?"Public/firm holiday":cat==="Idle"?"No billable work":"Training & development"}</div>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ):(
+              <>
+                <div className="fg">
+                  <label className="fl">Project / Engagement</label>
+                  <select className="fs" value={form.projectId} onChange={e=>{
+                    const selProj=projects.find(p=>p.id===e.target.value);
+                    setF(f=>({...f,projectId:e.target.value,onBehalfOfId:"",
+                      category:selProj?.category||f.category,
+                      billable:selProj?.billable!==undefined?selProj.billable:f.billable}));
+                  }}>
+                    <option value="">-- Select Project --</option>
+                    {(onBehalf?onBehalfProjects:bookable).map(p=><option key={p.id} value={p.id}>{p.code} · {p.clientName} — {p.name}</option>)}
+                  </select>
+                  {(onBehalf?onBehalfProjects:bookable).length===0&&<div className="tx tdn mt4">Not assigned to any active engagement. Contact your Partner.</div>}
+                  {form.projectId&&(()=>{
+                    const sel=projects.find(p=>p.id===form.projectId);
+                    if(!sel) return null;
+                    const used=tss.filter(t=>t.projectId===sel.id&&t.status==="approved").reduce((s,t)=>s+t.hours,0);
+                    const pct=sel.budgetHours?Math.min(Math.round(used/sel.budgetHours*100),100):null;
+                    return (
+                      <div style={{marginTop:10,padding:"12px 14px",background:"var(--cream)",borderRadius:8,border:"1.5px solid var(--border)"}}>
+                        <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12}}>
+                          <div>
+                            <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,flexWrap:"wrap"}}>
+                              <span style={{fontFamily:"monospace",fontWeight:700,fontSize:14,color:"var(--navy)"}}>{sel.code}</span>
+                              {sel.feeType==="retainer"&&<span style={{fontSize:11,background:"var(--gold-pale)",color:"#92400e",padding:"2px 8px",borderRadius:20,fontWeight:500}}>Retainer</span>}
+                              <span style={{fontSize:11,background:"#dbeafe",color:"#1e40af",padding:"2px 8px",borderRadius:20,fontWeight:500}}>{sel.category}</span>
+                              <span style={{fontSize:11,background:sel.billable?"#d1fae5":"#f1f5f9",color:sel.billable?"#065f46":"#64748b",padding:"2px 8px",borderRadius:20,fontWeight:500}}>{sel.billable?"Billable":"Non-billable"}</span>
+                            </div>
+                            <div style={{fontSize:14,fontWeight:600,color:"var(--navy)",marginBottom:2}}>{sel.name}</div>
+                            <div style={{fontSize:13,color:"var(--slate)"}}>{sel.clientName}</div>
+                          </div>
+                          {pct!==null&&(
+                            <div style={{textAlign:"right",flexShrink:0}}>
+                              <div style={{fontSize:12,color:"var(--slate)",marginBottom:4}}>Budget</div>
+                              <div style={{fontSize:13,fontWeight:600,color:pct>=100?"var(--red)":pct>=80?"var(--amber)":"var(--green)"}}>{used}h / {sel.budgetHours}h ({pct}%)</div>
+                              <div style={{width:90,height:5,background:"var(--border)",borderRadius:4,marginTop:5,overflow:"hidden"}}>
+                                <div style={{width:pct+"%",height:"100%",borderRadius:4,background:pct>=100?"var(--red)":pct>=80?"var(--amber)":"var(--green)"}}/>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+                {onBehalf&&form.projectId&&(
+                  <div className="fg">
+                    <label className="fl">Filing On Behalf Of</label>
+                    {(()=>{
+                      const allPartners=getProjectPartners(form.projectId);
+                      if(allPartners.length===0) return <div className="tx tdn">No partners assigned.</div>;
+                      if(allPartners.length===1) return (
+                        <div>
+                          <div className="fi" style={{color:"var(--navy)",fontWeight:600}}>{allPartners[0].name} <span className="tx tsl">(Assigned Partner)</span></div>
+                          {!form.onBehalfOfId&&setTimeout(()=>setF(f=>({...f,onBehalfOfId:allPartners[0].id})),0)}
+                        </div>
+                      );
+                      return (
+                        <select className="fs" value={form.onBehalfOfId} onChange={e=>setF(f=>({...f,onBehalfOfId:e.target.value}))}>
+                          <option value="">-- Select Partner --</option>
+                          {allPartners.map(p=><option key={p.id} value={p.id}>{p.name}{p.id===projects.find(x=>x.id===form.projectId)?.assignedPartnerId?" (Assigned Partner)":""}</option>)}
+                        </select>
+                      );
+                    })()}
+                  </div>
+                )}
+                <div className="g2">
+                  <div className="fg">
+                    <label className="fl">Category <span className="tx tsl">(pre-filled)</span></label>
+                    <select className="fs" value={form.category} onChange={e=>setF(f=>({...f,category:e.target.value}))}>
+                      {ENGAGEMENT_CATEGORIES.map(c=><option key={c}>{c}</option>)}
                     </select>
-                  );
-                })()}
-              </div>
+                  </div>
+                  <div className="fg">
+                    <label className="fl">Billable? <span className="tx tsl">(pre-filled)</span></label>
+                    <select className="fs" value={form.billable?"yes":"no"} onChange={e=>setF(f=>({...f,billable:e.target.value==="yes"}))}>
+                      <option value="yes">Yes — Billable</option>
+                      <option value="no">No — Non-billable</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="fg"><label className="fl">Work Description</label>
+                  <textarea className="fta" placeholder="Describe the work done..." value={form.description} onChange={e=>setF(f=>({...f,description:e.target.value}))}/>
+                </div>
+              </>
             )}
-            <div className="g2">
-              <div className="fg"><label className="fl">Task Category</label>
-                <select className="fs" value={form.category} onChange={e=>setF(f=>({...f,category:e.target.value}))}>
-                  {TASK_CATEGORIES.map(c=><option key={c}>{c}</option>)}
-                </select>
-              </div>
-              <div className="fg"><label className="fl">Billable?</label>
-                <select className="fs" value={form.billable?"yes":"no"} onChange={e=>setF(f=>({...f,billable:e.target.value==="yes"}))}>
-                  <option value="yes">Yes — Billable</option><option value="no">No — Non-billable</option>
-                </select>
-              </div>
-            </div>
-            <div className="fg"><label className="fl">Work Description</label><textarea className="fta" placeholder="Describe the work done..." value={form.description} onChange={e=>setF(f=>({...f,description:e.target.value}))}/></div>
             <div className="md-actions">
               <button className="btn bgh" onClick={()=>setSM(false)}>Cancel</button>
               <button className="btn bp" onClick={()=>{
-                const allP = onBehalf ? getProjectPartners(form.projectId) : [];
-                if(onBehalf&&allP.length===1&&!form.onBehalfOfId){
-                  setF(f=>({...f,onBehalfOfId:allP[0].id}));
-                  setTimeout(save,50);
-                } else { save(); }
-              }}><I n={editE?.status==="rejected_partner"||editE?.status==="rejected"?"send":"check"} s={15}/>
-                {onBehalf?"Submit for Partner Review":editE?.status==="rejected"?"Resubmit":"Save Entry"}
+                const allP=onBehalf?getProjectPartners(form.projectId):[];
+                if(onBehalf&&allP.length===1&&!form.onBehalfOfId){setF(f=>({...f,onBehalfOfId:allP[0].id}));setTimeout(save,50);}
+                else{save();}
+              }}>
+                <I n={editE?.status==="rejected_partner"||editE?.status==="rejected"?"send":"check"} s={15}/>
+                {isInternal?"Save Internal Time":onBehalf?"Submit for Partner Review":editE?.status==="rejected"?"Resubmit":"Save Entry"}
               </button>
             </div>
           </div>
@@ -903,7 +950,7 @@ function AssignModal({ project, users:propUsers=[], onSave, onClose }) {
 function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
   const [showM,setSM]         =useState(false);
   const [assignM,setAM]       =useState(null);
-  const [form,setF]           =useState({code:"",name:"",clientName:"",description:"",assignedPartnerId:"",budgetHours:"",monthlyBudgetHours:"",engagementFee:"",feeType:"fixed",retainerMonths:"",assignedStaff:[],assignedManagers:[],assignedPartners:[]});
+  const [form,setF]           =useState({code:"",name:"",clientName:"",description:"",assignedPartnerId:"",budgetHours:"",monthlyBudgetHours:"",engagementFee:"",feeType:"fixed",retainerMonths:"",category:"Assurance",billable:true,assignedStaff:[],assignedManagers:[],assignedPartners:[]});
   const [ferr,setFerr]        =useState("");
   const isP=user.role==="partner";
   const partners=users.filter(u=>u.role==="partner"&&u.active);
@@ -928,7 +975,7 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
       monthlyBudgetHours:form.feeType==="retainer"&&form.monthlyBudgetHours?Number(form.monthlyBudgetHours):null,
       engagementFee:totalEngFee,monthlyFee:form.feeType==="retainer"&&form.engagementFee?Number(form.engagementFee):null,
       retainerMonths:form.retainerMonths?Number(form.retainerMonths):null,feeType:form.feeType,
-      status:isP?"active":"pending_approval",assignedStaff:form.assignedStaff,assignedManagers:form.assignedManagers,assignedPartners:form.assignedPartners||[],createdBy:user.id,createdAt:new Date().toISOString()};
+      status:isP?"active":"pending_approval",category:form.category||"Assurance",billable:form.billable!==false,assignedStaff:form.assignedStaff,assignedManagers:form.assignedManagers,assignedPartners:form.assignedPartners||[],createdBy:user.id,createdAt:new Date().toISOString()};
     setProjects(p=>[...p,np]);
     addAudit(user.id,user.name,"CREATE_PROJECT",`Created ${form.code.toUpperCase()} — ${form.name}`);
     setSM(false);
@@ -1015,6 +1062,19 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
                   )}
                 </div>
               )}
+            </div>
+            <div className="g2">
+              <div className="fg"><label className="fl">Engagement Category</label>
+                <select className="fs" value={form.category||"Assurance"} onChange={e=>setF(f=>({...f,category:e.target.value}))}>
+                  {ENGAGEMENT_CATEGORIES.map(c=><option key={c}>{c}</option>)}
+                </select>
+              </div>
+              <div className="fg"><label className="fl">Billable to Client?</label>
+                <select className="fs" value={form.billable!==false?"yes":"no"} onChange={e=>setF(f=>({...f,billable:e.target.value==="yes"}))}>
+                  <option value="yes">Yes — Billable</option>
+                  <option value="no">No — Non-billable</option>
+                </select>
+              </div>
             </div>
             <div className="g2">
               <div className="fg"><label className="fl">Fee Type</label>
@@ -1861,7 +1921,7 @@ function Compliance({ users=[], tss=[], projects=[] }) {
   // For each staff member compute compliance
   const staffData = staff.map(u=>{
     const days = week.map((d,i)=>{
-      const dayTss = tss.filter(t=>t.userId===u.id&&t.date===d&&["approved","pending","resubmitted"].includes(t.status));
+      const dayTss = tss.filter(t=>t.userId===u.id&&t.date===d&&["approved","pending","resubmitted"].includes(t.status)); // includes internal entries
       const hrs = dayTss.reduce((s,t)=>s+t.hours,0);
       const isPast = d<=today;
       const isWeekend = i>=5;
