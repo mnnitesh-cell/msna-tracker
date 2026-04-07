@@ -903,7 +903,7 @@ function AssignModal({ project, users:propUsers=[], onSave, onClose }) {
 function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
   const [showM,setSM]         =useState(false);
   const [assignM,setAM]       =useState(null);
-  const [form,setF]           =useState({code:"",name:"",clientName:"",description:"",assignedPartnerId:"",budgetHours:"",engagementFee:"",feeType:"fixed",retainerMonths:"",assignedStaff:[],assignedManagers:[],assignedPartners:[]});
+  const [form,setF]           =useState({code:"",name:"",clientName:"",description:"",assignedPartnerId:"",budgetHours:"",monthlyBudgetHours:"",engagementFee:"",feeType:"fixed",retainerMonths:"",assignedStaff:[],assignedManagers:[],assignedPartners:[]});
   const [ferr,setFerr]        =useState("");
   const isP=user.role==="partner";
   const partners=users.filter(u=>u.role==="partner"&&u.active);
@@ -919,7 +919,13 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
         ? Number(form.engagementFee) * Number(form.retainerMonths)
         : Number(form.engagementFee)
     ) : null;
-    const np={id:genId(),...form,code:form.code.toUpperCase(),budgetHours:form.budgetHours?Number(form.budgetHours):null,
+    // Calculate total budget hours: for retainer = monthly hrs × months; for fixed = as entered
+    const totalBudgetHours = form.feeType==="retainer" && form.monthlyBudgetHours && form.retainerMonths
+      ? Number(form.monthlyBudgetHours) * Number(form.retainerMonths)
+      : form.budgetHours ? Number(form.budgetHours) : null;
+    const np={id:genId(),...form,code:form.code.toUpperCase(),
+      budgetHours:totalBudgetHours,
+      monthlyBudgetHours:form.feeType==="retainer"&&form.monthlyBudgetHours?Number(form.monthlyBudgetHours):null,
       engagementFee:totalEngFee,monthlyFee:form.feeType==="retainer"&&form.engagementFee?Number(form.engagementFee):null,
       retainerMonths:form.retainerMonths?Number(form.retainerMonths):null,feeType:form.feeType,
       status:isP?"active":"pending_approval",assignedStaff:form.assignedStaff,assignedManagers:form.assignedManagers,assignedPartners:form.assignedPartners||[],createdBy:user.id,createdAt:new Date().toISOString()};
@@ -994,7 +1000,21 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
                   <option value="">-- Select --</option>{partners.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
               </div>
-              <div className="fg"><label className="fl">Budget Hours (optional)</label><input type="number" className="fi" placeholder="e.g. 200" value={form.budgetHours} onChange={e=>setF(f=>({...f,budgetHours:e.target.value}))}/></div>
+              {form.feeType==="fixed"&&(
+                <div className="fg">
+                  <label className="fl">Total Budget Hours (optional)</label>
+                  <input type="number" className="fi" placeholder="e.g. 200" value={form.budgetHours} onChange={e=>setF(f=>({...f,budgetHours:e.target.value}))}/>
+                </div>
+              )}
+              {form.feeType==="retainer"&&(
+                <div className="fg">
+                  <label className="fl">Budget Hours / Month (optional)</label>
+                  <input type="number" className="fi" placeholder="e.g. 20" value={form.monthlyBudgetHours} onChange={e=>setF(f=>({...f,monthlyBudgetHours:e.target.value}))}/>
+                  {form.monthlyBudgetHours&&form.retainerMonths&&(
+                    <div className="tx tsl mt4">Total budget: {Number(form.monthlyBudgetHours)*Number(form.retainerMonths)}h ({form.monthlyBudgetHours}h/month × {form.retainerMonths} months)</div>
+                  )}
+                </div>
+              )}
             </div>
             <div className="g2">
               <div className="fg"><label className="fl">Fee Type</label>
@@ -1670,7 +1690,12 @@ function Profitability({ users=[], projects=[], tss=[] }) {
 
                 {p.budgetHours&&(
                   <div style={{marginTop:20,paddingTop:16,borderTop:"1px solid var(--border)"}}>
-                    <div className="fxb mb8"><span className="ts fw6">Hours Budget</span><span className="ts tsl">{totalHrs}h / {p.budgetHours}h</span></div>
+                    <div className="fxb mb8">
+                      <span className="ts fw6">Hours Budget</span>
+                      <span className="ts tsl">{totalHrs}h / {p.budgetHours}h
+                        {p.feeType==="retainer"&&p.monthlyBudgetHours&&<span className="tx tsl"> ({p.monthlyBudgetHours}h/month × {p.retainerMonths}m)</span>}
+                      </span>
+                    </div>
                     <div className="pbw" style={{height:10}}><div className={`pbf ${budgetPct>=100?"pbov":budgetPct>=80?"pbwn":"pbok"}`} style={{width:budgetPct+"%"}}/></div>
                     <div className="tx tsl mt4">{budgetPct}% of budget consumed</div>
                   </div>
