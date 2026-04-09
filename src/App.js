@@ -2349,6 +2349,7 @@ function Leave({ user, users=[], leaves=[], setLeaves }) {
 
     // Build header rows
     const monthLabel = new Date(yr,mo-1,1).toLocaleString("default",{month:"long",year:"numeric"});
+    // eslint-disable-next-line no-unused-vars
     const dayHeaders = Array.from({length:daysInMo},(_,i)=>`${i+1}`);
     const ordinals = Array.from({length:daysInMo},(_,i)=>{
       const n=i+1; const s=["th","st","nd","rd"]; const v=n%100;
