@@ -377,6 +377,7 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount }) {
     { id:"approvals",  icon:"shield",   label:"Approvals",      roles:["partner","manager"], badge:true },
     { id:"reports",    icon:"chart",    label:"Reports",        roles:["partner"] },
     { id:"profitability", icon:"target", label:"Profitability",  roles:["partner"] },
+    { id:"leave",      icon:"calendar", label:"Leave",                roles:["intern","manager","partner"] },
     { id:"compliance", icon:"shield",   label:"Timesheet Compliance", roles:["partner"] },
     { id:"audit",      icon:"history",  label:"Audit Trail",    roles:["partner"] },
     { id:"users",      icon:"users",    label:"User Management",roles:["partner"] },
@@ -2089,6 +2090,538 @@ function Compliance({ users=[], tss=[], projects=[] }) {
   );
 }
 
+
+// ══════════════════════════════════════════════════════════════
+// LEAVE MANAGEMENT
+// ══════════════════════════════════════════════════════════════
+const LEAVE_CSS = `
+.lv-wrap{display:flex;flex-direction:column;gap:20px;}
+.lv-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;}
+.lv-stat{background:#fff;border-radius:12px;padding:16px 18px;border:1px solid var(--border);}
+.lv-stat-val{font-size:26px;font-weight:700;color:var(--navy);}
+.lv-stat-lbl{font-size:11px;color:var(--slate);text-transform:uppercase;letter-spacing:1px;margin-top:3px;}
+.lv-cal-wrap{background:#fff;border-radius:12px;border:1px solid var(--border);padding:20px;}
+.lv-cal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px;}
+.lv-cal-nav{display:flex;align-items:center;gap:10px;}
+.lv-cal-nav button{background:var(--cream);border:1px solid var(--border);border-radius:6px;padding:5px 12px;cursor:pointer;font-size:13px;color:var(--navy);}
+.lv-cal-title{font-size:15px;font-weight:600;color:var(--navy);}
+.lv-cal-legend{display:flex;gap:14px;flex-wrap:wrap;}
+.lv-leg{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--slate);}
+.lv-leg-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;}
+.lv-cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;}
+.lv-day-hdr{text-align:center;font-size:11px;color:var(--slate);padding:6px 0;font-weight:600;text-transform:uppercase;letter-spacing:.5px;}
+.lv-day{min-height:56px;border-radius:8px;padding:5px 6px;border:1px solid var(--border);background:#fff;}
+.lv-day.today{border-color:var(--navy);background:#f0f4ff;}
+.lv-day.has-one{background:#FEF9EC;border-color:#FDE68A;}
+.lv-day.has-multi{background:#FFF0F0;border-color:#FECACA;}
+.lv-day.other-month{opacity:.3;}
+.lv-day.weekend{background:var(--cream);}
+.lv-day-num{font-size:12px;font-weight:600;color:var(--navy);}
+.lv-day.today .lv-day-num{color:#1d4ed8;}
+.lv-day-names{display:flex;flex-wrap:wrap;gap:2px;margin-top:3px;}
+.lv-tag{font-size:9px;font-weight:600;padding:1px 5px;border-radius:10px;white-space:nowrap;}
+.lv-tag.intern{background:#e0e7ff;color:#3730a3;}
+.lv-tag.manager{background:#fef3c7;color:#92400e;}
+.lv-tag.partner{background:#d1fae5;color:#065f46;}
+.lv-today-card{background:#fff;border-radius:12px;border:1px solid var(--border);padding:16px 20px;}
+.lv-req-card{background:#fff;border-radius:12px;border:1.5px solid var(--border);padding:14px 18px;display:flex;align-items:flex-start;gap:14px;}
+.lv-req-card.pending-m{border-left:3px solid var(--amber);}
+.lv-req-card.pending-p{border-left:3px solid var(--navy);}
+.lv-req-card.approved{border-left:3px solid var(--green);}
+.lv-req-card.rejected{border-left:3px solid var(--red);}
+.lv-av{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex-shrink:0;}
+.lv-av.intern{background:#e0e7ff;color:#3730a3;}
+.lv-av.manager{background:#fef3c7;color:#92400e;}
+.lv-av.partner{background:#d1fae5;color:#065f46;}
+.lv-info{flex:1;min-width:0;}
+.lv-name{font-size:13px;font-weight:600;color:var(--navy);}
+.lv-dates{font-size:12px;color:var(--slate);margin-top:2px;}
+.lv-flow{display:flex;align-items:center;gap:5px;margin-top:5px;flex-wrap:wrap;}
+.lv-fstep{padding:2px 8px;border-radius:20px;font-size:10px;font-weight:500;}
+.lv-fstep.done{background:#d1fae5;color:#065f46;}
+.lv-fstep.active{background:#dbeafe;color:#1e40af;}
+.lv-fstep.waiting{background:var(--cream);color:var(--slate);}
+.lv-badge{padding:3px 10px;border-radius:20px;font-size:11px;font-weight:500;white-space:nowrap;}
+.lv-badge.pending-m{background:#fef3c7;color:#92400e;}
+.lv-badge.pending-p{background:#e0e7ff;color:#3730a3;}
+.lv-badge.approved{background:#d1fae5;color:#065f46;}
+.lv-badge.rejected{background:#fee2e2;color:#991b1b;}
+.lv-form{display:flex;flex-direction:column;gap:14px;}
+.lv-notice{border-radius:8px;padding:10px 14px;font-size:12px;}
+.lv-notice.el{background:#fef3c7;border:1px solid #fde68a;color:#92400e;}
+.lv-notice.sl{background:#fee2e2;border:1px solid #fecaca;color:#991b1b;}
+.lv-approver-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
+.lv-approver-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;border:1.5px solid var(--border);cursor:pointer;transition:all .15s;}
+.lv-approver-item.selected{border-color:var(--navy);background:var(--cream);}
+.lv-empty{text-align:center;padding:40px 20px;color:var(--slate);font-size:14px;}
+.lv-type-sel{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:4px;}
+.lv-type-btn{padding:12px 16px;border-radius:10px;border:2px solid var(--border);cursor:pointer;transition:all .15s;text-align:left;}
+.lv-type-btn.active-el{border-color:#d97706;background:#fffbeb;}
+.lv-type-btn.active-sl{border-color:#dc2626;background:#fff5f5;}
+`;
+
+function Leave({ user, users=[], leaves=[], setLeaves }) {
+  const [activeTab, setActiveTab] = useState("calendar");
+  const [calOffset, setCalOffset] = useState(0);
+  const [rejectM, setRejectM] = useState(null);
+  const [rejectReason, setRejectReason] = useState("");
+  const [reportMonth, setReportMonth] = useState(new Date().toISOString().slice(0,7));
+  const [form, setForm] = useState({
+    leaveType:"earned", startDate:"", endDate:"", reason:"",
+    approverManagers:[], approverPartners:[]
+  });
+  const [ferr, setFerr] = useState("");
+
+  const isPartner = user.role==="partner";
+  const isManager = user.role==="manager";
+  const isIntern  = user.role==="intern";
+  const canSeeCalendar = isPartner || isManager;
+
+  // All managers and partners for approver selection
+  const allManagers = users.filter(u=>u.role==="manager"&&u.active);
+  const allPartners = users.filter(u=>u.role==="partner"&&u.active);
+
+  const getDatesInRange = (start, end) => {
+    const dates=[]; const cur=new Date(start); const last=new Date(end);
+    while(cur<=last){dates.push(cur.toISOString().slice(0,10));cur.setDate(cur.getDate()+1);}
+    return dates;
+  };
+  const countWorkdays = (start, end) => {
+    if(!start||!end||end<start) return 0;
+    return getDatesInRange(start,end).filter(d=>{const wd=new Date(d).getDay();return wd!==0&&wd!==6;}).length;
+  };
+  const workdays = countWorkdays(form.startDate, form.endDate);
+
+  const toggleApprover = (id, type) => {
+    const key = type==="manager"?"approverManagers":"approverPartners";
+    setForm(f=>({...f,[key]:f[key].includes(id)?f[key].filter(x=>x!==id):[...f[key],id]}));
+  };
+
+  // Compute status label and class
+  const statusLabel = s => {
+    if(s==="pending_manager") return "Pending Manager";
+    if(s==="pending_partner") return "Pending Partner";
+    if(s==="approved") return "Approved";
+    return "Rejected";
+  };
+  const statusClass = s => s==="pending_manager"?"pending-m":s==="pending_partner"?"pending-p":s==="approved"?"approved":"rejected";
+
+  // Submit
+  const submitRequest = () => {
+    setFerr("");
+    if(!form.startDate||!form.endDate){setFerr("Please select start and end dates.");return;}
+    if(form.endDate<form.startDate){setFerr("End date cannot be before start date.");return;}
+    if(workdays===0){setFerr("No working days in selected range.");return;}
+    if(form.approverManagers.length===0&&!isPartner){setFerr("Please select at least one manager approver.");return;}
+    if(form.approverPartners.length===0&&!isPartner){setFerr("Please select at least one partner approver.");return;}
+
+    // Determine initial status
+    // For manager: skip manager step → pending_partner
+    // For intern/partner: pending_manager first
+    const initStatus = (isManager||isPartner) ? "pending_partner" : "pending_manager";
+
+    const newLeave = {
+      id:genId(), userId:user.id, userName:user.name, userRole:user.role,
+      leaveType:form.leaveType,
+      startDate:form.startDate, endDate:form.endDate, days:workdays,
+      reason:form.reason,
+      status:isPartner?"approved":initStatus,
+      approverManagers:form.approverManagers,
+      approverPartners:form.approverPartners,
+      managerApprovals:[], // list of manager ids who approved
+      partnerApprovals:[], // list of partner ids who approved
+      createdAt:new Date().toISOString(),
+    };
+    setLeaves(prev=>[...prev,newLeave]);
+    addAudit(user.id,user.name,"LEAVE_REQUEST",`Requested ${workdays}d ${form.leaveType} leave: ${form.startDate} to ${form.endDate}`);
+    setForm({leaveType:"earned",startDate:"",endDate:"",reason:"",approverManagers:[],approverPartners:[]});
+    setFerr("");
+    setActiveTab("history");
+  };
+
+  // Approve — handles sequential multi-approver flow
+  const approve = (leave) => {
+    let managerApprovals = [...(leave.managerApprovals||[])];
+    let partnerApprovals = [...(leave.partnerApprovals||[])];
+    let newStatus = leave.status;
+
+    if(leave.status==="pending_manager"&&isManager){
+      managerApprovals = [...new Set([...managerApprovals, user.id])];
+      // Check if ALL required managers have approved
+      const allMgrsDone = (leave.approverManagers||[]).every(id=>managerApprovals.includes(id));
+      if(allMgrsDone) newStatus = "pending_partner";
+    } else if(leave.status==="pending_partner"&&isPartner){
+      partnerApprovals = [...new Set([...partnerApprovals, user.id])];
+      // Check if ALL required partners have approved
+      const allPtnrsDone = (leave.approverPartners||[]).every(id=>partnerApprovals.includes(id));
+      if(allPtnrsDone) newStatus = "approved";
+    }
+
+    setLeaves(prev=>prev.map(l=>l.id===leave.id?{...l,status:newStatus,managerApprovals,partnerApprovals}:l));
+    addAudit(user.id,user.name,"LEAVE_APPROVE",`Approved leave for ${leave.userName} (${newStatus})`);
+  };
+
+  const confirmReject = () => {
+    if(!rejectReason.trim()) return;
+    setLeaves(prev=>prev.map(l=>l.id===rejectM.id?{...l,status:"rejected",rejectedBy:user.id,rejectReason}:l));
+    addAudit(user.id,user.name,"LEAVE_REJECT",`Rejected leave for ${rejectM.userName}: ${rejectReason}`);
+    setRejectM(null); setRejectReason("");
+  };
+
+  // Pending leaves for current user to action
+  const pendingForMe = leaves.filter(l=>{
+    if(l.status==="pending_manager"&&isManager) return (l.approverManagers||[]).includes(user.id)&&!(l.managerApprovals||[]).includes(user.id);
+    if(l.status==="pending_partner"&&isPartner) return (l.approverPartners||[]).includes(user.id)&&!(l.partnerApprovals||[]).includes(user.id);
+    return false;
+  });
+
+  const myRequests = leaves.filter(l=>l.userId===user.id).slice().reverse();
+  const allRequests = (isPartner||isManager)?leaves.slice().reverse():myRequests;
+
+  // ── Calendar ──
+  const getCalMonth = (offset) => {
+    const d=new Date(); d.setDate(1); d.setMonth(d.getMonth()+offset); return d;
+  };
+  const calDate=getCalMonth(calOffset);
+  const calYear=calDate.getFullYear(), calMonth=calDate.getMonth();
+  const calMonthLabel=calDate.toLocaleString("default",{month:"long",year:"numeric"});
+  const firstDay=new Date(calYear,calMonth,1).getDay();
+  const daysInMonth=new Date(calYear,calMonth+1,0).getDate();
+  const startPad=firstDay===0?6:firstDay-1;
+  const cells=[];
+  const prevDays=new Date(calYear,calMonth,0).getDate();
+  for(let i=startPad-1;i>=0;i--) cells.push({day:prevDays-i,thisMonth:false,date:null});
+  for(let d=1;d<=daysInMonth;d++){
+    const date=`${calYear}-${String(calMonth+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+    cells.push({day:d,thisMonth:true,date});
+  }
+  while(cells.length%7!==0) cells.push({day:cells.length-startPad-daysInMonth+1,thisMonth:false,date:null});
+
+  const approvedLeaves=leaves.filter(l=>l.status==="approved");
+  const getLeavesOnDate=(date)=>{
+    if(!date) return [];
+    return approvedLeaves.filter(l=>date>=l.startDate&&date<=l.endDate)
+      .map(l=>({...l,role:users.find(u=>u.id===l.userId)?.role||"intern"}));
+  };
+  const today2=todayStr();
+  const onLeaveToday=approvedLeaves.filter(l=>today2>=l.startDate&&today2<=l.endDate);
+  const initials=(name)=>name?.split(" ").map(n=>n[0]).join("").slice(0,2).toUpperCase()||"??";
+
+  // ── Excel Download ──
+  const downloadReport = () => {
+    const [yr,mo] = reportMonth.split("-").map(Number);
+    const moStart = `${reportMonth}-01`;
+    const moEnd = new Date(yr,mo,0).toISOString().slice(0,10);
+    const rows = leaves.filter(l=>l.startDate<=moEnd&&l.endDate>=moStart);
+    const headers = ["Staff Name","Role","Leave Type","Start Date","End Date","Working Days","Status","Reason","Approver Managers","Approver Partners"];
+    const data = rows.map(l=>[
+      l.userName,
+      l.userRole,
+      l.leaveType==="earned"?"Earned Leave":"Sick Leave",
+      l.startDate, l.endDate, l.days,
+      statusLabel(l.status),
+      l.reason||"",
+      (l.approverManagers||[]).map(id=>users.find(u=>u.id===id)?.name||id).join(", "),
+      (l.approverPartners||[]).map(id=>users.find(u=>u.id===id)?.name||id).join(", "),
+    ]);
+    // Build CSV and download as xlsx-compatible
+    const csv=[headers,...data].map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(",")).join("\n");
+    const blob=new Blob([csv],{type:"text/csv"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url; a.download=`MSNA_Leave_Report_${reportMonth}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="lv-wrap">
+      <style>{LEAVE_CSS}</style>
+
+      {/* Stats */}
+      <div className="lv-stats">
+        <div className="lv-stat"><div className="lv-stat-val" style={{color:"var(--amber)"}}>{pendingForMe.length}</div><div className="lv-stat-lbl">Pending My Action</div></div>
+        <div className="lv-stat"><div className="lv-stat-val" style={{color:"var(--green)"}}>{leaves.filter(l=>l.status==="approved").length}</div><div className="lv-stat-lbl">Approved</div></div>
+        <div className="lv-stat"><div className="lv-stat-val" style={{color:"var(--navy)"}}>{onLeaveToday.length}</div><div className="lv-stat-lbl">On Leave Today</div></div>
+        <div className="lv-stat"><div className="lv-stat-val" style={{color:"var(--red)"}}>{myRequests.filter(l=>l.status==="rejected").length}</div><div className="lv-stat-lbl">My Rejected</div></div>
+      </div>
+
+      {/* Tabs */}
+      <div className="tabs">
+        {canSeeCalendar&&<div className={`tab ${activeTab==="calendar"?"active":""}`} onClick={()=>setActiveTab("calendar")}>Leave Calendar</div>}
+        {(isManager||isPartner)&&<div className={`tab ${activeTab==="approvals"?"active":""}`} onClick={()=>setActiveTab("approvals")}>
+          Pending Approvals{pendingForMe.length>0&&<span style={{background:"var(--amber)",color:"#fff",borderRadius:20,padding:"1px 7px",fontSize:10,marginLeft:5}}>{pendingForMe.length}</span>}
+        </div>}
+        <div className={`tab ${activeTab==="request"?"active":""}`} onClick={()=>setActiveTab("request")}>Request Leave</div>
+        <div className={`tab ${activeTab==="history"?"active":""}`} onClick={()=>setActiveTab("history")}>{isPartner||isManager?"All Requests":"My Requests"}</div>
+        {isPartner&&<div className={`tab ${activeTab==="report"?"active":""}`} onClick={()=>setActiveTab("report")}>Download Report</div>}
+      </div>
+
+      {/* ── CALENDAR ── */}
+      {activeTab==="calendar"&&canSeeCalendar&&(<>
+        <div className="lv-cal-wrap">
+          <div className="lv-cal-head">
+            <div className="lv-cal-nav">
+              <button onClick={()=>setCalOffset(o=>o-1)}>← Prev</button>
+              <span className="lv-cal-title">{calMonthLabel}</span>
+              <button onClick={()=>setCalOffset(o=>o+1)}>Next →</button>
+            </div>
+            <div className="lv-cal-legend">
+              <div className="lv-leg"><div className="lv-leg-dot" style={{background:"#6366f1"}}></div>Intern</div>
+              <div className="lv-leg"><div className="lv-leg-dot" style={{background:"#f59e0b"}}></div>Manager</div>
+              <div className="lv-leg"><div className="lv-leg-dot" style={{background:"#10b981"}}></div>Partner</div>
+              <div className="lv-leg"><div style={{width:12,height:12,background:"#FFF0F0",border:"1px solid #FECACA",borderRadius:3}}></div>Multiple on leave</div>
+            </div>
+          </div>
+          <div className="lv-cal-grid">
+            {["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(d=><div key={d} className="lv-day-hdr">{d}</div>)}
+            {cells.map((cell,i)=>{
+              const isWeekend=(i%7)>=5;
+              const onLeave=cell.date?getLeavesOnDate(cell.date):[];
+              const isToday=cell.date===today2;
+              let cls="lv-day";
+              if(!cell.thisMonth) cls+=" other-month";
+              else if(isToday) cls+=" today";
+              else if(onLeave.length>1) cls+=" has-multi";
+              else if(onLeave.length===1) cls+=" has-one";
+              else if(isWeekend) cls+=" weekend";
+              return (
+                <div key={i} className={cls}>
+                  <div className="lv-day-num">{cell.day}</div>
+                  <div className="lv-day-names">
+                    {onLeave.map(l=><div key={l.id} className={`lv-tag ${l.role}`} title={`${l.userName} — ${l.leaveType==="earned"?"Earned":"Sick"} Leave`}>{initials(l.userName)}</div>)}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <div className="lv-today-card">
+          <div style={{fontWeight:600,fontSize:13,marginBottom:10}}>On leave today — {fmtDate(today2)}</div>
+          {onLeaveToday.length===0
+            ?<div style={{color:"var(--slate)",fontSize:13}}>No staff on leave today.</div>
+            :<div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+              {onLeaveToday.map(l=>{
+                const u2=users.find(u=>u.id===l.userId);
+                return <div key={l.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 14px",background:"var(--cream)",borderRadius:8,border:"1px solid var(--border)"}}>
+                  <div className={`lv-av ${u2?.role||"intern"}`}>{initials(l.userName)}</div>
+                  <div><div style={{fontSize:13,fontWeight:500}}>{l.userName}</div><div style={{fontSize:11,color:"var(--slate)"}}>{u2?.role} · {l.leaveType==="earned"?"Earned":"Sick"} Leave</div></div>
+                </div>;
+              })}
+            </div>}
+        </div>
+      </>)}
+
+      {/* ── APPROVALS ── */}
+      {activeTab==="approvals"&&(isManager||isPartner)&&(
+        <div className="card">
+          <div style={{fontWeight:600,fontSize:13,marginBottom:14}}>Awaiting your approval</div>
+          {pendingForMe.length===0
+            ?<div className="lv-empty">All clear — no pending leave requests.</div>
+            :<div style={{display:"flex",flexDirection:"column",gap:10}}>
+              {pendingForMe.map(l=>{
+                const req=users.find(u=>u.id===l.userId);
+                const mgrsDone=(l.managerApprovals||[]).length;
+                const mgrsNeeded=(l.approverManagers||[]).length;
+                const ptnrsDone=(l.partnerApprovals||[]).length;
+                const ptnrsNeeded=(l.approverPartners||[]).length;
+                return (
+                  <div key={l.id} className={`lv-req-card ${statusClass(l.status)}`}>
+                    <div className={`lv-av ${req?.role||"intern"}`}>{initials(l.userName)}</div>
+                    <div className="lv-info">
+                      <div className="lv-name">{l.userName} <span style={{fontSize:11,color:"var(--slate)",fontWeight:400}}>{req?.role}</span>
+                        <span style={{marginLeft:6,fontSize:11,padding:"2px 7px",borderRadius:20,background:l.leaveType==="sick"?"#fee2e2":"#fef3c7",color:l.leaveType==="sick"?"#991b1b":"#92400e",fontWeight:500}}>{l.leaveType==="earned"?"Earned Leave":"Sick Leave"}</span>
+                      </div>
+                      <div className="lv-dates">{fmtDate(l.startDate)} — {fmtDate(l.endDate)} · {l.days} working day{l.days!==1?"s":""}</div>
+                      {l.reason&&<div style={{fontSize:12,color:"var(--slate)",marginTop:2}}>"{l.reason}"</div>}
+                      <div className="lv-flow" style={{marginTop:6}}>
+                        <span className={`lv-fstep ${l.status==="pending_manager"?"active":l.status==="pending_partner"||l.status==="approved"?"done":"waiting"}`}>
+                          Managers {mgrsDone}/{mgrsNeeded} ✓
+                        </span>
+                        <span style={{color:"var(--slate)",fontSize:11}}>→</span>
+                        <span className={`lv-fstep ${l.status==="pending_partner"?"active":l.status==="approved"?"done":"waiting"}`}>
+                          Partners {ptnrsDone}/{ptnrsNeeded} ✓
+                        </span>
+                      </div>
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:6,alignItems:"flex-end",flexShrink:0}}>
+                      <span className={`lv-badge ${statusClass(l.status)}`}>{statusLabel(l.status)}</span>
+                      <div style={{display:"flex",gap:6}}>
+                        <button className="btn bsc bsm" onClick={()=>approve(l)}><I n="check" s={13}/>Approve</button>
+                        <button className="btn bd bsm" onClick={()=>{setRejectM(l);setRejectReason("");}}><I n="x" s={13}/>Reject</button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>}
+        </div>
+      )}
+
+      {/* ── REQUEST FORM ── */}
+      {activeTab==="request"&&(
+        <div className="card" style={{maxWidth:580}}>
+          <div style={{fontWeight:600,fontSize:15,marginBottom:16}}>Request Leave</div>
+          <div className="lv-form">
+            {ferr&&<div className="err">{ferr}</div>}
+
+            {/* Leave type selection */}
+            <div>
+              <label className="fl">Leave Type</label>
+              <div className="lv-type-sel">
+                <div className={`lv-type-btn ${form.leaveType==="earned"?"active-el":""}`} onClick={()=>setForm(f=>({...f,leaveType:"earned"}))}>
+                  <div style={{fontWeight:600,fontSize:13,color:"#d97706"}}>Earned Leave</div>
+                  <div style={{fontSize:11,color:"var(--slate)",marginTop:2}}>Planned leave · future dates</div>
+                </div>
+                <div className={`lv-type-btn ${form.leaveType==="sick"?"active-sl":""}`} onClick={()=>setForm(f=>({...f,leaveType:"sick"}))}>
+                  <div style={{fontWeight:600,fontSize:13,color:"#dc2626"}}>Sick Leave</div>
+                  <div style={{fontSize:11,color:"var(--slate)",marginTop:2}}>Unplanned · backdating allowed</div>
+                </div>
+              </div>
+            </div>
+
+            {/* Date range */}
+            <div className="g2">
+              <div className="fg"><label className="fl">Start Date</label>
+                <input type="date" className="fi" value={form.startDate}
+                  max={form.leaveType==="earned"?undefined:todayStr()}
+                  onChange={e=>setForm(f=>({...f,startDate:e.target.value}))}/>
+              </div>
+              <div className="fg"><label className="fl">End Date</label>
+                <input type="date" className="fi" value={form.endDate}
+                  min={form.startDate||undefined} max={form.leaveType==="earned"?undefined:todayStr()}
+                  onChange={e=>setForm(f=>({...f,endDate:e.target.value}))}/>
+              </div>
+            </div>
+
+            {/* Working days notice */}
+            {form.startDate&&form.endDate&&workdays>0&&(
+              <div className={`lv-notice ${form.leaveType==="sick"?"sl":"el"}`}>
+                <strong>{workdays} working day{workdays!==1?"s":""}</strong> selected.
+                {form.leaveType==="sick"&&" Sick leave — backdating permitted. Requires all selected approvers."}
+                {form.leaveType==="earned"&&isIntern&&workdays===1&&" 1 day — manager approval only."}
+                {form.leaveType==="earned"&&isIntern&&workdays>1&&" 2+ days — manager then partner approval required."}
+                {isManager&&" Requires all selected partner approvers."}
+              </div>
+            )}
+
+            {/* Approver selection — managers */}
+            {!isPartner&&(
+              <div className="fg">
+                <label className="fl">Select Manager Approver(s)</label>
+                <div className="lv-approver-grid">
+                  {allManagers.map(m=>(
+                    <div key={m.id} className={`lv-approver-item ${form.approverManagers.includes(m.id)?"selected":""}`}
+                      onClick={()=>toggleApprover(m.id,"manager")}>
+                      <input type="checkbox" checked={form.approverManagers.includes(m.id)} readOnly style={{accentColor:"var(--navy)"}}/>
+                      <div><div style={{fontSize:13,fontWeight:500}}>{m.name}</div><div style={{fontSize:11,color:"var(--slate)"}}>Manager</div></div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Approver selection — partners */}
+            {!isPartner&&(
+              <div className="fg">
+                <label className="fl">Select Partner Approver(s)</label>
+                <div className="lv-approver-grid">
+                  {allPartners.map(p=>(
+                    <div key={p.id} className={`lv-approver-item ${form.approverPartners.includes(p.id)?"selected":""}`}
+                      onClick={()=>toggleApprover(p.id,"partner")}>
+                      <input type="checkbox" checked={form.approverPartners.includes(p.id)} readOnly style={{accentColor:"var(--navy)"}}/>
+                      <div><div style={{fontSize:13,fontWeight:500}}>{p.name}</div><div style={{fontSize:11,color:"var(--slate)"}}>Partner</div></div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="fg"><label className="fl">Reason</label>
+              <textarea className="fta" placeholder={form.leaveType==="sick"?"Brief description of illness...":"Reason for leave..."} value={form.reason} onChange={e=>setForm(f=>({...f,reason:e.target.value}))}/>
+            </div>
+            <div className="md-actions">
+              <button className="btn bgh" onClick={()=>setForm({leaveType:"earned",startDate:"",endDate:"",reason:"",approverManagers:[],approverPartners:[]})}>Clear</button>
+              <button className="btn bp" onClick={submitRequest}><I n="send" s={14}/>Submit Request</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── HISTORY ── */}
+      {activeTab==="history"&&(
+        <div className="card">
+          <div style={{fontWeight:600,fontSize:13,marginBottom:14}}>{isPartner||isManager?"All Leave Requests":"My Leave Requests"}</div>
+          {allRequests.length===0
+            ?<div className="lv-empty">No leave requests yet.</div>
+            :<div style={{display:"flex",flexDirection:"column",gap:10}}>
+              {allRequests.map(l=>{
+                const req=users.find(u=>u.id===l.userId);
+                const mgrsDone=(l.managerApprovals||[]).length;
+                const mgrsNeeded=(l.approverManagers||[]).length;
+                const ptnrsDone=(l.partnerApprovals||[]).length;
+                const ptnrsNeeded=(l.approverPartners||[]).length;
+                return (
+                  <div key={l.id} className={`lv-req-card ${statusClass(l.status)}`}>
+                    <div className={`lv-av ${req?.role||"intern"}`}>{initials(l.userName)}</div>
+                    <div className="lv-info">
+                      <div className="lv-name">{l.userName}
+                        <span style={{fontSize:11,color:"var(--slate)",fontWeight:400,marginLeft:5}}>{req?.role}</span>
+                        <span style={{marginLeft:6,fontSize:11,padding:"2px 7px",borderRadius:20,background:l.leaveType==="sick"?"#fee2e2":"#fef3c7",color:l.leaveType==="sick"?"#991b1b":"#92400e",fontWeight:500}}>{l.leaveType==="earned"?"Earned":"Sick"} Leave</span>
+                      </div>
+                      <div className="lv-dates">{fmtDate(l.startDate)} — {fmtDate(l.endDate)} · {l.days} day{l.days!==1?"s":""}</div>
+                      {(mgrsNeeded>0||ptnrsNeeded>0)&&<div style={{fontSize:11,color:"var(--slate)",marginTop:3}}>
+                        Mgrs: {mgrsDone}/{mgrsNeeded} · Partners: {ptnrsDone}/{ptnrsNeeded}
+                      </div>}
+                      {l.status==="rejected"&&l.rejectReason&&<div style={{fontSize:11,color:"var(--red)",marginTop:3}}>Rejected: {l.rejectReason}</div>}
+                    </div>
+                    <span className={`lv-badge ${statusClass(l.status)}`}>{statusLabel(l.status)}</span>
+                  </div>
+                );
+              })}
+            </div>}
+        </div>
+      )}
+
+      {/* ── REPORT (Partners only) ── */}
+      {activeTab==="report"&&isPartner&&(
+        <div className="card" style={{maxWidth:440}}>
+          <div style={{fontWeight:600,fontSize:15,marginBottom:4}}>Monthly Leave Report</div>
+          <div style={{fontSize:13,color:"var(--slate)",marginBottom:20}}>Download all leave requests for a selected month as a spreadsheet.</div>
+          <div className="fg" style={{marginBottom:16}}>
+            <label className="fl">Select Month</label>
+            <input type="month" className="fi" value={reportMonth} onChange={e=>setReportMonth(e.target.value)}/>
+          </div>
+          <div style={{background:"var(--cream)",borderRadius:8,padding:"12px 14px",fontSize:12,color:"var(--slate)",marginBottom:16}}>
+            {leaves.filter(l=>{
+              const [yr,mo]=reportMonth.split("-").map(Number);
+              const moEnd=new Date(yr,mo,0).toISOString().slice(0,10);
+              return l.startDate<=moEnd&&l.endDate>=`${reportMonth}-01`;
+            }).length} leave request(s) found for {new Date(reportMonth+"-01").toLocaleString("default",{month:"long",year:"numeric"})}
+          </div>
+          <button className="btn bp" onClick={downloadReport}><I n="chart" s={15}/>Download Report (.csv / Excel)</button>
+        </div>
+      )}
+
+      {/* ── REJECT MODAL ── */}
+      {rejectM&&(
+        <div className="mo" onClick={()=>setRejectM(null)}>
+          <div className="md" onClick={e=>e.stopPropagation()} style={{maxWidth:440}}>
+            <div className="md-title">Reject Leave Request</div>
+            <div className="al al-w mb16"><I n="alert" s={14}/><div>Rejecting leave for <strong>{rejectM.userName}</strong> — {fmtDate(rejectM.startDate)} to {fmtDate(rejectM.endDate)}</div></div>
+            <div className="fg"><label className="fl">Reason for Rejection</label>
+              <textarea className="fta" placeholder="Please give a reason..." value={rejectReason} onChange={e=>setRejectReason(e.target.value)}/>
+            </div>
+            <div className="md-actions">
+              <button className="btn bgh" onClick={()=>setRejectM(null)}>Cancel</button>
+              <button className="btn bd" onClick={confirmReject}><I n="x" s={14}/>Confirm Reject</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ══════════════════════════════════════════════════════════════
 // CHANGE PASSWORD
 // ══════════════════════════════════════════════════════════════
@@ -2151,8 +2684,9 @@ export default function App() {
   const [tss,     setTss]      = useLS("timesheets",[]);
   const [locked,  setLocked]   = useLS("locked_months",[]);
   const [audit]                = useLS("audit",    []);
+  const [leaves,  setLeaves]   = useLS("leaves",   []);
 
-  const db_props = { users, setUsers, projects, setProjects, tss, setTss, locked, setLocked, audit };
+  const db_props = { users, setUsers, projects, setProjects, tss, setTss, locked, setLocked, audit, leaves, setLeaves };
 
   const pendingCount = currentUser?(
     currentUser.role==="partner"
@@ -2163,7 +2697,7 @@ export default function App() {
       : 0
   ):0;
 
-  const titles={dashboard:"Dashboard",week:"My Week",timesheets:"Timesheets",projects:"Projects",approvals:"Approvals",reports:"Reports",profitability:"Profitability",compliance:"Timesheet Compliance",audit:"Audit Trail",users:"User Management",changepassword:"Change Password"};
+  const titles={dashboard:"Dashboard",week:"My Week",timesheets:"Timesheets",projects:"Projects",approvals:"Approvals",reports:"Reports",profitability:"Profitability",compliance:"Timesheet Compliance",leave:"Leave",audit:"Audit Trail",users:"User Management",changepassword:"Change Password"};
 
   if(!currentUser) return <><style>{CSS}</style><Login onLogin={u=>{setCU(u);setTab("dashboard");}}/></>;
 
@@ -2189,6 +2723,7 @@ export default function App() {
             {tab==="reports"    &&currentUser.role==="partner"&&<Reports  user={currentUser} {...db_props} setLocked={setLocked}/>}
             {tab==="profitability"&&currentUser.role==="partner"&&<Profitability {...db_props}/>}
             {tab==="compliance" &&currentUser.role==="partner"&&<Compliance {...db_props}/>}
+            {tab==="leave"       &&<Leave user={currentUser} {...db_props}/>}
             {tab==="audit"      &&currentUser.role==="partner"&&<AuditTrail audit={audit}/>}
             {tab==="users"      &&currentUser.role==="partner"&&<UserManagement user={currentUser} {...db_props}/>}
             {tab==="changepassword"&&<ChangePassword user={currentUser} setTab={setTab}/>}
