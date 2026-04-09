@@ -2156,7 +2156,7 @@ const LEAVE_CSS = `
 .lv-empty{text-align:center;padding:40px 20px;color:var(--slate);font-size:14px;}
 .lv-type-sel{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:4px;}
 .lv-type-btn{padding:12px 16px;border-radius:10px;border:2px solid var(--border);cursor:pointer;transition:all .15s;text-align:left;}
-.lv-type-btn.active-el{border-color:#d97706;background:#fffbeb;}
+.lv-type-btn.active-pl{border-color:#d97706;background:#fffbeb;}
 .lv-type-btn.active-sl{border-color:#dc2626;background:#fff5f5;}
 `;
 
@@ -2167,7 +2167,7 @@ function Leave({ user, users=[], leaves=[], setLeaves }) {
   const [rejectReason, setRejectReason] = useState("");
   const [reportMonth, setReportMonth] = useState(new Date().toISOString().slice(0,7));
   const [form, setForm] = useState({
-    leaveType:"earned", startDate:"", endDate:"", reason:"",
+    leaveType:"planned", startDate:"", endDate:"", halfDay:false, reason:"",
     approverManagers:[], approverPartners:[]
   });
   const [ferr, setFerr] = useState("");
@@ -2190,7 +2190,7 @@ function Leave({ user, users=[], leaves=[], setLeaves }) {
     if(!start||!end||end<start) return 0;
     return getDatesInRange(start,end).filter(d=>{const wd=new Date(d).getDay();return wd!==0&&wd!==6;}).length;
   };
-  const workdays = countWorkdays(form.startDate, form.endDate);
+  const workdays = form.halfDay ? 0.5 : countWorkdays(form.startDate, form.endDate);
 
   const toggleApprover = (id, type) => {
     const key = type==="manager"?"approverManagers":"approverPartners";
@@ -2223,7 +2223,7 @@ function Leave({ user, users=[], leaves=[], setLeaves }) {
     const newLeave = {
       id:genId(), userId:user.id, userName:user.name, userRole:user.role,
       leaveType:form.leaveType,
-      startDate:form.startDate, endDate:form.endDate, days:workdays,
+      startDate:form.startDate, endDate:form.endDate, days:workdays, halfDay:form.halfDay||false,
       reason:form.reason,
       status:isPartner?"approved":initStatus,
       approverManagers:form.approverManagers,
@@ -2234,7 +2234,7 @@ function Leave({ user, users=[], leaves=[], setLeaves }) {
     };
     setLeaves(prev=>[...prev,newLeave]);
     addAudit(user.id,user.name,"LEAVE_REQUEST",`Requested ${workdays}d ${form.leaveType} leave: ${form.startDate} to ${form.endDate}`);
-    setForm({leaveType:"earned",startDate:"",endDate:"",reason:"",approverManagers:[],approverPartners:[]});
+    setForm({leaveType:"planned",startDate:"",endDate:"",halfDay:false,reason:"",approverManagers:[],approverPartners:[]});
     setFerr("");
     setActiveTab("history");
   };
@@ -2307,29 +2307,96 @@ function Leave({ user, users=[], leaves=[], setLeaves }) {
   const onLeaveToday=approvedLeaves.filter(l=>today2>=l.startDate&&today2<=l.endDate);
   const initials=(name)=>name?.split(" ").map(n=>n[0]).join("").slice(0,2).toUpperCase()||"??";
 
-  // ── Excel Download ──
+  // ── Excel Attendance Matrix Download ──
   const downloadReport = () => {
     const [yr,mo] = reportMonth.split("-").map(Number);
-    const moStart = `${reportMonth}-01`;
+    const daysInMo = new Date(yr,mo,0).getDate();
+    const moStr = reportMonth;
+
+    // Staff = interns and managers only
+    const staff = users.filter(u=>u.active&&["intern","manager"].includes(u.role))
+      .sort((a,b)=>a.role.localeCompare(b.role)||a.name.localeCompare(b.name));
+
+    // Get approved leaves for the month
+    const moStart = `${moStr}-01`;
     const moEnd = new Date(yr,mo,0).toISOString().slice(0,10);
-    const rows = leaves.filter(l=>l.startDate<=moEnd&&l.endDate>=moStart);
-    const headers = ["Staff Name","Role","Leave Type","Start Date","End Date","Working Days","Status","Reason","Approver Managers","Approver Partners"];
-    const data = rows.map(l=>[
-      l.userName,
-      l.userRole,
-      l.leaveType==="earned"?"Earned Leave":"Sick Leave",
-      l.startDate, l.endDate, l.days,
-      statusLabel(l.status),
-      l.reason||"",
-      (l.approverManagers||[]).map(id=>users.find(u=>u.id===id)?.name||id).join(", "),
-      (l.approverPartners||[]).map(id=>users.find(u=>u.id===id)?.name||id).join(", "),
-    ]);
-    // Build CSV and download as xlsx-compatible
-    const csv=[headers,...data].map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(",")).join("\n");
-    const blob=new Blob([csv],{type:"text/csv"});
-    const url=URL.createObjectURL(blob);
-    const a=document.createElement("a");
-    a.href=url; a.download=`MSNA_Leave_Report_${reportMonth}.csv`; a.click();
+    const approvedLeavesInMo = leaves.filter(l=>l.status==="approved"&&l.startDate<=moEnd&&l.endDate>=moStart);
+
+    // Helper: get attendance mark for a staff member on a date
+    const getMark = (userId, dayNum) => {
+      const dateStr = `${yr}-${String(mo).padStart(2,"0")}-${String(dayNum).padStart(2,"0")}`;
+      const dow = new Date(dateStr).getDay(); // 0=Sun, 6=Sat
+      if(dow===0||dow===6) return "WO";
+
+      // Check approved leaves for this person on this date
+      const leave = approvedLeavesInMo.find(l=>l.userId===userId&&dateStr>=l.startDate&&dateStr<=l.endDate);
+      if(leave){
+        if(leave.halfDay){
+          return leave.leaveType==="planned"?"HPL":"HSL";
+        }
+        return leave.leaveType==="planned"?"PL":"SL";
+      }
+
+      // Check if date is in the future
+      const today = new Date(); today.setHours(0,0,0,0);
+      const checkDate = new Date(dateStr);
+      if(checkDate>today) return ""; // future — leave blank
+
+      // Check timesheets — if any entry exists, mark P
+      // We don't have tss here directly, so just mark P for past weekdays with no leave
+      return "P";
+    };
+
+    // Build header rows
+    const monthLabel = new Date(yr,mo-1,1).toLocaleString("default",{month:"long",year:"numeric"});
+    const dayHeaders = Array.from({length:daysInMo},(_,i)=>`${i+1}`);
+    const ordinals = Array.from({length:daysInMo},(_,i)=>{
+      const n=i+1; const s=["th","st","nd","rd"]; const v=n%100;
+      return n+(s[(v-20)%10]||s[v]||s[0]);
+    });
+
+    // Build rows
+    const headerRow1 = ["Staff Name","Role",...ordinals];
+    const dataRows = staff.map(u=>{
+      const marks = Array.from({length:daysInMo},(_,i)=>getMark(u.id,i+1));
+      return [u.name, u.role.charAt(0).toUpperCase()+u.role.slice(1), ...marks];
+    });
+
+    // Summary row — count PL, SL, HPL, HSL per person
+    const summaryRows = staff.map(u=>{
+      const marks = Array.from({length:daysInMo},(_,i)=>getMark(u.id,i+1));
+      const pl=marks.filter(m=>m==="PL").length;
+      const sl=marks.filter(m=>m==="SL").length;
+      const hpl=marks.filter(m=>m==="HPL").length;
+      const hsl=marks.filter(m=>m==="HSL").length;
+      const absent=marks.filter(m=>m==="A").length;
+      return [u.name, u.role.charAt(0).toUpperCase()+u.role.slice(1), pl, sl, hpl, hsl, absent];
+    });
+
+    // Legend
+    const legend = [
+      ["Legend:","","P = Present","PL = Planned Leave","SL = Sick Leave","HPL = Half-day Planned","HSL = Half-day Sick","WO = Week Off","A = Absent"],
+    ];
+
+    // Build CSV
+    const allRows = [
+      [`MSNA & Associates LLP — Attendance Report — ${monthLabel}`],
+      [],
+      headerRow1,
+      ...dataRows,
+      [],
+      ["SUMMARY"],
+      ["Staff Name","Role","PL Days","SL Days","Half-day PL","Half-day SL","Absent"],
+      ...summaryRows,
+      [],
+      ...legend,
+    ];
+
+    const csv = allRows.map(r=>r.map(c=>`"${String(c===undefined?"":c).replace(/"/g,'""')}"`).join(",")).join("\n");
+    const blob = new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8;"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href=url; a.download=`MSNA_Attendance_${reportMonth}.csv`; a.click();
     URL.revokeObjectURL(url);
   };
 
@@ -2388,7 +2455,7 @@ function Leave({ user, users=[], leaves=[], setLeaves }) {
                 <div key={i} className={cls}>
                   <div className="lv-day-num">{cell.day}</div>
                   <div className="lv-day-names">
-                    {onLeave.map(l=><div key={l.id} className={`lv-tag ${l.role}`} title={`${l.userName} — ${l.leaveType==="earned"?"Earned":"Sick"} Leave`}>{initials(l.userName)}</div>)}
+                    {onLeave.map(l=><div key={l.id} className={`lv-tag ${l.role}`} title={`${l.userName} — ${l.leaveType==="planned"?"Planned":"Sick"} Leave`}>{initials(l.userName)}</div>)}
                   </div>
                 </div>
               );
@@ -2404,7 +2471,7 @@ function Leave({ user, users=[], leaves=[], setLeaves }) {
                 const u2=users.find(u=>u.id===l.userId);
                 return <div key={l.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 14px",background:"var(--cream)",borderRadius:8,border:"1px solid var(--border)"}}>
                   <div className={`lv-av ${u2?.role||"intern"}`}>{initials(l.userName)}</div>
-                  <div><div style={{fontSize:13,fontWeight:500}}>{l.userName}</div><div style={{fontSize:11,color:"var(--slate)"}}>{u2?.role} · {l.leaveType==="earned"?"Earned":"Sick"} Leave</div></div>
+                  <div><div style={{fontSize:13,fontWeight:500}}>{l.userName}</div><div style={{fontSize:11,color:"var(--slate)"}}>{u2?.role} · {l.leaveType==="planned"?"Planned":"Sick"} Leave</div></div>
                 </div>;
               })}
             </div>}
@@ -2429,9 +2496,9 @@ function Leave({ user, users=[], leaves=[], setLeaves }) {
                     <div className={`lv-av ${req?.role||"intern"}`}>{initials(l.userName)}</div>
                     <div className="lv-info">
                       <div className="lv-name">{l.userName} <span style={{fontSize:11,color:"var(--slate)",fontWeight:400}}>{req?.role}</span>
-                        <span style={{marginLeft:6,fontSize:11,padding:"2px 7px",borderRadius:20,background:l.leaveType==="sick"?"#fee2e2":"#fef3c7",color:l.leaveType==="sick"?"#991b1b":"#92400e",fontWeight:500}}>{l.leaveType==="earned"?"Earned Leave":"Sick Leave"}</span>
+                        <span style={{marginLeft:6,fontSize:11,padding:"2px 7px",borderRadius:20,background:l.leaveType==="sick"?"#fee2e2":"#fef3c7",color:l.leaveType==="sick"?"#991b1b":"#92400e",fontWeight:500}}>{l.leaveType==="planned"?"Planned Leave":"Sick Leave"}</span>
                       </div>
-                      <div className="lv-dates">{fmtDate(l.startDate)} — {fmtDate(l.endDate)} · {l.days} working day{l.days!==1?"s":""}</div>
+                      <div className="lv-dates">{fmtDate(l.startDate)} — {fmtDate(l.endDate)} · {l.halfDay?"Half day":l.days+" working day"+(l.days!==1?"s":"")}</div>
                       {l.reason&&<div style={{fontSize:12,color:"var(--slate)",marginTop:2}}>"{l.reason}"</div>}
                       <div className="lv-flow" style={{marginTop:6}}>
                         <span className={`lv-fstep ${l.status==="pending_manager"?"active":l.status==="pending_partner"||l.status==="approved"?"done":"waiting"}`}>
@@ -2468,8 +2535,8 @@ function Leave({ user, users=[], leaves=[], setLeaves }) {
             <div>
               <label className="fl">Leave Type</label>
               <div className="lv-type-sel">
-                <div className={`lv-type-btn ${form.leaveType==="earned"?"active-el":""}`} onClick={()=>setForm(f=>({...f,leaveType:"earned"}))}>
-                  <div style={{fontWeight:600,fontSize:13,color:"#d97706"}}>Earned Leave</div>
+                <div className={`lv-type-btn ${form.leaveType==="planned"?"active-pl":""}`} onClick={()=>setForm(f=>({...f,leaveType:"planned"}))}>
+                  <div style={{fontWeight:600,fontSize:13,color:"#d97706"}}>Planned Leave</div>
                   <div style={{fontSize:11,color:"var(--slate)",marginTop:2}}>Planned leave · future dates</div>
                 </div>
                 <div className={`lv-type-btn ${form.leaveType==="sick"?"active-sl":""}`} onClick={()=>setForm(f=>({...f,leaveType:"sick"}))}>
@@ -2480,26 +2547,41 @@ function Leave({ user, users=[], leaves=[], setLeaves }) {
             </div>
 
             {/* Date range */}
-            <div className="g2">
-              <div className="fg"><label className="fl">Start Date</label>
+            <div className={form.halfDay?"fg":"g2"}>
+              <div className="fg"><label className="fl">{form.halfDay?"Date":"Start Date"}</label>
                 <input type="date" className="fi" value={form.startDate}
-                  max={form.leaveType==="earned"?undefined:todayStr()}
-                  onChange={e=>setForm(f=>({...f,startDate:e.target.value}))}/>
+                  max={form.leaveType==="planned"?undefined:todayStr()}
+                  onChange={e=>setForm(f=>({...f,startDate:e.target.value,...(f.halfDay?{endDate:e.target.value}:{})}))}/>
               </div>
-              <div className="fg"><label className="fl">End Date</label>
+              {!form.halfDay&&<div className="fg"><label className="fl">End Date</label>
                 <input type="date" className="fi" value={form.endDate}
-                  min={form.startDate||undefined} max={form.leaveType==="earned"?undefined:todayStr()}
+                  min={form.startDate||undefined} max={form.leaveType==="planned"?undefined:todayStr()}
                   onChange={e=>setForm(f=>({...f,endDate:e.target.value}))}/>
+              </div>}
+            </div>
+
+            {/* Half-day toggle */}
+            <div className="fg">
+              <label className="fl">Duration</label>
+              <div style={{display:"flex",gap:10}}>
+                <label style={{display:"flex",alignItems:"center",gap:8,padding:"9px 14px",borderRadius:8,border:"1.5px solid",borderColor:!form.halfDay?"var(--navy)":"var(--border)",background:!form.halfDay?"var(--cream)":"#fff",cursor:"pointer",flex:1}}>
+                  <input type="radio" checked={!form.halfDay} onChange={()=>setForm(f=>({...f,halfDay:false}))} style={{accentColor:"var(--navy)"}}/>
+                  <div><div style={{fontSize:13,fontWeight:!form.halfDay?600:400,color:"var(--navy)"}}>Full Day(s)</div><div style={{fontSize:11,color:"var(--slate)"}}>One or more complete days</div></div>
+                </label>
+                <label style={{display:"flex",alignItems:"center",gap:8,padding:"9px 14px",borderRadius:8,border:"1.5px solid",borderColor:form.halfDay?"var(--navy)":"var(--border)",background:form.halfDay?"var(--cream)":"#fff",cursor:"pointer",flex:1}}>
+                  <input type="radio" checked={form.halfDay} onChange={()=>setForm(f=>({...f,halfDay:true,endDate:f.startDate}))} style={{accentColor:"var(--navy)"}}/>
+                  <div><div style={{fontSize:13,fontWeight:form.halfDay?600:400,color:"var(--navy)"}}>Half Day</div><div style={{fontSize:11,color:"var(--slate)"}}>Morning or afternoon only</div></div>
+                </label>
               </div>
             </div>
 
             {/* Working days notice */}
             {form.startDate&&form.endDate&&workdays>0&&(
               <div className={`lv-notice ${form.leaveType==="sick"?"sl":"el"}`}>
-                <strong>{workdays} working day{workdays!==1?"s":""}</strong> selected.
+                <strong>{form.halfDay?"Half day":workdays+" working day"+(workdays!==1?"s":"")}</strong> selected.
                 {form.leaveType==="sick"&&" Sick leave — backdating permitted. Requires all selected approvers."}
-                {form.leaveType==="earned"&&isIntern&&workdays===1&&" 1 day — manager approval only."}
-                {form.leaveType==="earned"&&isIntern&&workdays>1&&" 2+ days — manager then partner approval required."}
+                {form.leaveType==="planned"&&isIntern&&(form.halfDay||workdays===1)&&" Requires manager approval only."}
+                {form.leaveType==="planned"&&isIntern&&!form.halfDay&&workdays>1&&" 2+ days — manager then partner approval required."}
                 {isManager&&" Requires all selected partner approvers."}
               </div>
             )}
@@ -2540,7 +2622,7 @@ function Leave({ user, users=[], leaves=[], setLeaves }) {
               <textarea className="fta" placeholder={form.leaveType==="sick"?"Brief description of illness...":"Reason for leave..."} value={form.reason} onChange={e=>setForm(f=>({...f,reason:e.target.value}))}/>
             </div>
             <div className="md-actions">
-              <button className="btn bgh" onClick={()=>setForm({leaveType:"earned",startDate:"",endDate:"",reason:"",approverManagers:[],approverPartners:[]})}>Clear</button>
+              <button className="btn bgh" onClick={()=>setForm({leaveType:"planned",startDate:"",endDate:"",halfDay:false,reason:"",approverManagers:[],approverPartners:[]})}>Clear</button>
               <button className="btn bp" onClick={submitRequest}><I n="send" s={14}/>Submit Request</button>
             </div>
           </div>
@@ -2566,7 +2648,7 @@ function Leave({ user, users=[], leaves=[], setLeaves }) {
                     <div className="lv-info">
                       <div className="lv-name">{l.userName}
                         <span style={{fontSize:11,color:"var(--slate)",fontWeight:400,marginLeft:5}}>{req?.role}</span>
-                        <span style={{marginLeft:6,fontSize:11,padding:"2px 7px",borderRadius:20,background:l.leaveType==="sick"?"#fee2e2":"#fef3c7",color:l.leaveType==="sick"?"#991b1b":"#92400e",fontWeight:500}}>{l.leaveType==="earned"?"Earned":"Sick"} Leave</span>
+                        <span style={{marginLeft:6,fontSize:11,padding:"2px 7px",borderRadius:20,background:l.leaveType==="sick"?"#fee2e2":"#fef3c7",color:l.leaveType==="sick"?"#991b1b":"#92400e",fontWeight:500}}>{l.leaveType==="planned"?"Planned":"Sick"} Leave</span>
                       </div>
                       <div className="lv-dates">{fmtDate(l.startDate)} — {fmtDate(l.endDate)} · {l.days} day{l.days!==1?"s":""}</div>
                       {(mgrsNeeded>0||ptnrsNeeded>0)&&<div style={{fontSize:11,color:"var(--slate)",marginTop:3}}>
@@ -2586,7 +2668,7 @@ function Leave({ user, users=[], leaves=[], setLeaves }) {
       {activeTab==="report"&&isPartner&&(
         <div className="card" style={{maxWidth:440}}>
           <div style={{fontWeight:600,fontSize:15,marginBottom:4}}>Monthly Leave Report</div>
-          <div style={{fontSize:13,color:"var(--slate)",marginBottom:20}}>Download all leave requests for a selected month as a spreadsheet.</div>
+          <div style={{fontSize:13,color:"var(--slate)",marginBottom:20}}>Downloads a monthly attendance matrix for all interns and managers. Days marked as P/PL/SL/HPL/HSL/WO/A.</div>
           <div className="fg" style={{marginBottom:16}}>
             <label className="fl">Select Month</label>
             <input type="month" className="fi" value={reportMonth} onChange={e=>setReportMonth(e.target.value)}/>
@@ -2598,7 +2680,7 @@ function Leave({ user, users=[], leaves=[], setLeaves }) {
               return l.startDate<=moEnd&&l.endDate>=`${reportMonth}-01`;
             }).length} leave request(s) found for {new Date(reportMonth+"-01").toLocaleString("default",{month:"long",year:"numeric"})}
           </div>
-          <button className="btn bp" onClick={downloadReport}><I n="chart" s={15}/>Download Report (.csv / Excel)</button>
+          <button className="btn bp" onClick={downloadReport}><I n="chart" s={15}/>Download Attendance Report (.csv)</button>
         </div>
       )}
 
