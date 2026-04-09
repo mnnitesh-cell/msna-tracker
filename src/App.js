@@ -2160,7 +2160,7 @@ const LEAVE_CSS = `
 .lv-type-btn.active-sl{border-color:#dc2626;background:#fff5f5;}
 `;
 
-function Leave({ user, users=[], leaves=[], setLeaves }) {
+function Leave({ user, users=[], leaves=[], setLeaves, tss=[] }) {
   const [activeTab, setActiveTab] = useState("calendar");
   const [calOffset, setCalOffset] = useState(0);
   const [rejectM, setRejectM] = useState(null);
@@ -2331,20 +2331,18 @@ function Leave({ user, users=[], leaves=[], setLeaves }) {
       // Check approved leaves for this person on this date
       const leave = approvedLeavesInMo.find(l=>l.userId===userId&&dateStr>=l.startDate&&dateStr<=l.endDate);
       if(leave){
-        if(leave.halfDay){
-          return leave.leaveType==="planned"?"HPL":"HSL";
-        }
+        if(leave.halfDay) return leave.leaveType==="planned"?"HPL":"HSL";
         return leave.leaveType==="planned"?"PL":"SL";
       }
 
-      // Check if date is in the future
-      const today = new Date(); today.setHours(0,0,0,0);
+      // Check if date is in the future — leave blank
+      const todayDate = new Date(); todayDate.setHours(0,0,0,0);
       const checkDate = new Date(dateStr);
-      if(checkDate>today) return ""; // future — leave blank
+      if(checkDate>todayDate) return "";
 
-      // Check timesheets — if any entry exists, mark P
-      // We don't have tss here directly, so just mark P for past weekdays with no leave
-      return "P";
+      // Check timesheets — any approved/pending/resubmitted entry = Present
+      const hasEntry = tss.some(t=>t.userId===userId&&t.date===dateStr&&["approved","pending","resubmitted"].includes(t.status));
+      return hasEntry ? "P" : "A";
     };
 
     // Build header rows
@@ -2806,7 +2804,7 @@ export default function App() {
             {tab==="reports"    &&currentUser.role==="partner"&&<Reports  user={currentUser} {...db_props} setLocked={setLocked}/>}
             {tab==="profitability"&&currentUser.role==="partner"&&<Profitability {...db_props}/>}
             {tab==="compliance" &&currentUser.role==="partner"&&<Compliance {...db_props}/>}
-            {tab==="leave"       &&<Leave user={currentUser} {...db_props}/>}
+            {tab==="leave"       &&<Leave user={currentUser} {...db_props} tss={tss}/>}
             {tab==="audit"      &&currentUser.role==="partner"&&<AuditTrail audit={audit}/>}
             {tab==="users"      &&currentUser.role==="partner"&&<UserManagement user={currentUser} {...db_props}/>}
             {tab==="changepassword"&&<ChangePassword user={currentUser} setTab={setTab}/>}
