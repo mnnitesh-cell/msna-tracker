@@ -1354,9 +1354,18 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
 // ══════════════════════════════════════════════════════════════
 function Reports({ user, users=[], projects=[], tss=[], locked:lockedMonths=[], setLocked, audit=[] }) {
   const [tab,setTab]=useState("engagement");
+  const [dlgOpen,setDlgOpen]=useState(false);
+  // Date range filters
+  const firstDay = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0,10);
+  const [fromDate,setFrom]=useState(firstDay);
+  const [toDate,setTo]=useState(todayStr());
+  // Drill-down selection
+  const [selEngId,setSelEngId]=useState("");
+  const [selUserId,setSelUserId]=useState("");
   const isAdmin=user.email===ADMIN_EMAIL;
 
-  const approved=tss.filter(t=>t.status==="approved");
+  const approved=tss.filter(t=>t.status==="approved"&&t.date>=fromDate&&t.date<=toDate);
+
   const engData=projects.map(p=>{
     const s=approved.filter(t=>t.projectId===p.id);
     const totalH=s.reduce((a,t)=>a+t.hours,0);
@@ -1381,35 +1390,90 @@ function Reports({ user, users=[], projects=[], tss=[], locked:lockedMonths=[], 
     addAudit(user.id,user.name,wasLocked?"UNLOCK_MONTH":"LOCK_MONTH",`Month: ${monthLabel(mk)}`);
   };
 
-  const exportCSV=()=>{
-    let rows=[];
-    if(tab==="engagement"){rows=[["Code","Engagement","Client","Total Hrs","Billable Hrs","Billing Value INR"]];engData.forEach(d=>rows.push([d.p.code,`"${d.p.name}"`,`"${d.p.clientName}"`,d.totalH,d.billH,d.val]));}
-    else if(tab==="staff"){rows=[["Name","Role","Total Hrs","Billable Hrs","Rate INR","Value INR"]];staffData.forEach(d=>rows.push([`"${d.u.name}"`,d.u.role,d.totalH,d.billH,d.u.billingRate,d.val]));}
-    else{rows=[["Staff","Role","Pending","Resubmitted","Approved","Rejected","Total"]];users.filter(u=>u.active).forEach(u=>{const a=tss.filter(t=>t.userId===u.id);rows.push([`"${u.name}"`,u.role,a.filter(t=>t.status==="pending").length,a.filter(t=>t.status==="resubmitted").length,a.filter(t=>t.status==="approved").length,a.filter(t=>t.status==="rejected").length,a.length]);});}
-    const csv=rows.map(r=>r.join(",")).join("\n");
-    const a=document.createElement("a");a.href="data:text/csv,"+encodeURIComponent(csv);a.download=`msna_${tab}_${todayStr()}.csv`;a.click();
+  // ── Download detailed log ──
+  const downloadLog = (mode) => {
+    // mode = "engagement" or "staff"
+    let rows = [];
+    const header = ["Date","Staff","Role","Project Code","Client","Engagement","Category","Hours","Billable","Description","Status"];
+    rows.push(header);
+
+    let entries = approved;
+    if(mode==="engagement"&&selEngId) entries=entries.filter(t=>t.projectId===selEngId);
+    if(mode==="staff"&&selUserId) entries=entries.filter(t=>t.userId===selUserId);
+
+    // Sort by date
+    entries = [...entries].sort((a,b)=>a.date>b.date?1:-1);
+
+    entries.forEach(t=>{
+      const u2=users.find(u=>u.id===t.userId);
+      const p=projects.find(p=>p.id===t.projectId);
+      rows.push([
+        t.date,
+        `"${u2?.name||""}"`,
+        u2?.role||"",
+        p?.code||"Internal",
+        `"${p?.clientName||""}"`,
+        `"${p?.name||t.internalType||""}"`,
+        t.category||"",
+        t.hours,
+        t.billable?"Yes":"No",
+        `"${(t.description||"").replace(/"/g,'""')}"`,
+        t.status,
+      ]);
+    });
+
+    const csv = rows.map(r=>r.join(",")).join("\n");
+    const blob = new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8;"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href=url;
+    a.download=`MSNA_Timelog_${mode}_${fromDate}_to_${toDate}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setDlgOpen(false);
   };
 
   const totalH=approved.reduce((s,t)=>s+t.hours,0);
   const totalV=approved.filter(t=>t.billable).reduce((s,t)=>s+t.hours*(users.find(u=>u.id===t.userId)?.billingRate||0),0);
+
   return (
     <div>
-      <div className="sh"><div><div className="card-title">Reports & Analytics</div><div className="card-sub mt4 ts">Approved entries only</div></div>
-        <button className="btn bgh" onClick={exportCSV}><I n="download" s={15}/>Export CSV</button>
+      <div className="sh">
+        <div><div className="card-title">Reports & Analytics</div><div className="card-sub mt4 ts">Approved entries only</div></div>
+        <button className="btn bp" onClick={()=>setDlgOpen(true)}><I n="download" s={15}/>Download Timesheet Log</button>
       </div>
+
+      {/* Date range filter */}
+      <div className="card" style={{padding:"14px 18px"}}>
+        <div style={{display:"flex",alignItems:"center",gap:16,flexWrap:"wrap"}}>
+          <div style={{fontSize:13,fontWeight:600,color:"var(--navy)"}}>Date Range</div>
+          <div className="fxc g8">
+            <label className="fl" style={{marginBottom:0,fontSize:11}}>From</label>
+            <input type="date" className="fi" style={{padding:"6px 10px",fontSize:13}} value={fromDate} onChange={e=>setFrom(e.target.value)}/>
+          </div>
+          <div className="fxc g8">
+            <label className="fl" style={{marginBottom:0,fontSize:11}}>To</label>
+            <input type="date" className="fi" style={{padding:"6px 10px",fontSize:13}} value={toDate} onChange={e=>setTo(e.target.value)}/>
+          </div>
+          <div style={{fontSize:12,color:"var(--slate)"}}>Showing <strong>{approved.length}</strong> approved entries · <strong>{totalH.toFixed(1)}h</strong> · <strong>{fmtCurrency(totalV)}</strong></div>
+        </div>
+      </div>
+
       <div className="sg3">
         <div className="sc"><div className="sv">{totalH.toFixed(1)}</div><div className="sl">Total Approved Hours</div></div>
         <div className="sc"><div className="sv" style={{color:"var(--gold)"}}>{fmtCurrency(totalV)}</div><div className="sl">Total Billing Value</div></div>
         <div className="sc"><div className="sv">{projects.filter(p=>p.status==="active").length}</div><div className="sl">Active Engagements</div></div>
       </div>
+
       <div className="tabs">
         <div className={`tab ${tab==="engagement"?"active":""}`} onClick={()=>setTab("engagement")}>By Engagement</div>
         <div className={`tab ${tab==="staff"?"active":""}`} onClick={()=>setTab("staff")}>By Staff</div>
         <div className={`tab ${tab==="approvals"?"active":""}`} onClick={()=>setTab("approvals")}>Approval Status</div>
         {isAdmin&&<div className={`tab ${tab==="months"?"active":""}`} onClick={()=>setTab("months")}>Month Lock</div>}
       </div>
+
       <div className="card">
-        {tab==="engagement"&&(engData.length===0?<div className="es">No approved data yet.</div>:(
+        {tab==="engagement"&&(engData.length===0?<div className="es">No approved data in this date range.</div>:(
           <div className="tw"><table>
             <thead><tr><th>Code</th><th>Engagement</th><th>Client</th><th>Status</th><th>Total Hrs</th><th>Billable Hrs</th><th>Budget</th><th>Billing Value</th></tr></thead>
             <tbody>{engData.map(d=>{
@@ -1424,7 +1488,7 @@ function Reports({ user, users=[], projects=[], tss=[], locked:lockedMonths=[], 
             })}</tbody>
           </table></div>
         ))}
-        {tab==="staff"&&(staffData.length===0?<div className="es">No approved data yet.</div>:(
+        {tab==="staff"&&(staffData.length===0?<div className="es">No approved data in this date range.</div>:(
           <div className="tw"><table>
             <thead><tr><th>Staff</th><th>Role</th><th>Rate/hr</th><th>Total Hrs</th><th>Billable Hrs</th><th>Billing Value</th></tr></thead>
             <tbody>{staffData.map(d=><tr key={d.u.id}>
@@ -1453,7 +1517,7 @@ function Reports({ user, users=[], projects=[], tss=[], locked:lockedMonths=[], 
         )}
         {tab==="months"&&isAdmin&&(
           <div>
-            <div className="al al-i mb16"><I n="info" s={15}/><div>Locking a month prevents anyone from adding or editing entries in that period. Only the Admin ({ADMIN_EMAIL}) can lock/unlock.</div></div>
+            <div className="al al-i mb16"><I n="info" s={15}/><div>Locking a month prevents adding or editing entries in that period. Only Admin can lock/unlock.</div></div>
             {[lastMonth,thisMonth].map(mk=>(
               <div key={mk} className="fxb" style={{padding:"15px 0",borderBottom:"1px solid var(--border)"}}>
                 <div><div className="fw6">{monthLabel(mk)}</div><div className="tx tsl">{mk}</div></div>
@@ -1467,6 +1531,51 @@ function Reports({ user, users=[], projects=[], tss=[], locked:lockedMonths=[], 
           </div>
         )}
       </div>
+
+      {/* ── Download Dialog ── */}
+      {dlgOpen&&(
+        <div className="mo" onClick={()=>setDlgOpen(false)}>
+          <div className="md" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
+            <div className="md-title">Download Timesheet Log</div>
+            <div className="al al-i mb16"><I n="info" s={14}/><div>Downloads a date-wise log with staff name, project, hours, description and more. Date range: <strong>{fmtDate(fromDate)}</strong> to <strong>{fmtDate(toDate)}</strong>.</div></div>
+
+            <div className="fg">
+              <label className="fl">Report Type</label>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
+                <div style={{padding:"14px 16px",borderRadius:10,border:"1.5px solid var(--border)",cursor:"pointer",background:"var(--cream)"}} onClick={()=>downloadLog("engagement")}>
+                  <div style={{fontWeight:600,fontSize:13,color:"var(--navy)",marginBottom:4}}>By Engagement</div>
+                  <div style={{fontSize:12,color:"var(--slate)"}}>Filter by one engagement or download all. Date-wise entries with description.</div>
+                  <div style={{marginTop:10}}>
+                    <select className="fs" style={{fontSize:12}} value={selEngId} onChange={e=>{e.stopPropagation();setSelEngId(e.target.value);}}>
+                      <option value="">All Engagements</option>
+                      {projects.filter(p=>approved.some(t=>t.projectId===p.id)).map(p=><option key={p.id} value={p.id}>{p.code} — {p.clientName}</option>)}
+                    </select>
+                  </div>
+                  <button className="btn bp" style={{width:"100%",marginTop:10,justifyContent:"center"}} onClick={()=>downloadLog("engagement")}><I n="download" s={14}/>Download</button>
+                </div>
+                <div style={{padding:"14px 16px",borderRadius:10,border:"1.5px solid var(--border)",cursor:"pointer",background:"var(--cream)"}} onClick={()=>downloadLog("staff")}>
+                  <div style={{fontWeight:600,fontSize:13,color:"var(--navy)",marginBottom:4}}>By Staff</div>
+                  <div style={{fontSize:12,color:"var(--slate)"}}>Filter by one person or download all. Date-wise entries with description.</div>
+                  <div style={{marginTop:10}}>
+                    <select className="fs" style={{fontSize:12}} value={selUserId} onChange={e=>{e.stopPropagation();setSelUserId(e.target.value);}}>
+                      <option value="">All Staff</option>
+                      {users.filter(u=>approved.some(t=>t.userId===u.id)).map(u=><option key={u.id} value={u.id}>{u.name} ({u.role})</option>)}
+                    </select>
+                  </div>
+                  <button className="btn bp" style={{width:"100%",marginTop:10,justifyContent:"center"}} onClick={()=>downloadLog("staff")}><I n="download" s={14}/>Download</button>
+                </div>
+              </div>
+            </div>
+
+            <div style={{fontSize:12,color:"var(--slate)",marginTop:4}}>
+              CSV file — opens directly in Excel. Columns: Date, Staff, Role, Project Code, Client, Engagement, Category, Hours, Billable, Description, Status.
+            </div>
+            <div className="md-actions" style={{marginTop:16}}>
+              <button className="btn bgh" onClick={()=>setDlgOpen(false)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
