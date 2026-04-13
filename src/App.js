@@ -951,17 +951,24 @@ function AssignModal({ project, users:propUsers=[], onSave, onClose }) {
 
 function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
   const [showM,setSM]         =useState(false);
+  const [editP,setEditP]      =useState(null); // project being edited
   const [assignM,setAM]       =useState(null);
+  const [projTab,setProjTab]  =useState("active"); // active, pending, approved, rejected
+  const [rejectM,setRejectM]  =useState(null);
+  const [rejectReason,setRR]  =useState("");
+  const [page,setPage]        =useState(1);
+  const PAGE_SIZE             =10;
   const [form,setF]           =useState({code:"",name:"",clientName:"",description:"",assignedPartnerId:"",budgetHours:"",monthlyBudgetHours:"",engagementFee:"",feeType:"fixed",retainerMonths:"",category:"Assurance",billable:true,assignedStaff:[],assignedManagers:[],assignedPartners:[]});
   const [ferr,setFerr]        =useState("");
   const isP=user.role==="partner";
   const partners=users.filter(u=>u.role==="partner"&&u.active);
 
-  const openAdd=()=>{setF({code:"",name:"",clientName:"",description:"",assignedPartnerId:isP?user.id:"",budgetHours:"",engagementFee:"",feeType:"fixed",assignedStaff:[],assignedManagers:[],assignedPartners:[]});setFerr("");setSM(true);};
+  const openAdd=()=>{setEditP(null);setF({code:"",name:"",clientName:"",description:"",assignedPartnerId:isP?user.id:"",budgetHours:"",monthlyBudgetHours:"",engagementFee:"",feeType:"fixed",retainerMonths:"",category:"Assurance",billable:true,assignedStaff:[],assignedManagers:[],assignedPartners:[]});setFerr("");setSM(true);};
+  const openEdit=(p)=>{setEditP(p);setF({code:p.code,name:p.name,clientName:p.clientName,description:p.description||"",assignedPartnerId:p.assignedPartnerId,budgetHours:p.budgetHours||"",monthlyBudgetHours:p.monthlyBudgetHours||"",engagementFee:p.monthlyFee||p.engagementFee||"",feeType:p.feeType||"fixed",retainerMonths:p.retainerMonths||"",category:p.category||"Assurance",billable:p.billable!==false,assignedStaff:p.assignedStaff||[],assignedManagers:p.assignedManagers||[],assignedPartners:p.assignedPartners||[]});setFerr("");setSM(true);};
 
   const save=()=>{
     if(!form.code||!form.name||!form.clientName||!form.assignedPartnerId){setFerr("Code, name, client and partner are required.");return;}
-    if(projects.find(p=>p.code.toUpperCase()===form.code.toUpperCase())){setFerr("Project code already exists.");return;}
+    if(!editP&&projects.find(p=>p.code.toUpperCase()===form.code.toUpperCase())){setFerr("Project code already exists.");return;}
     // Calculate total fee: for retainer = monthly fee × months; for fixed = as entered
     const totalEngFee = form.engagementFee ? (
       form.feeType==="retainer" && form.retainerMonths
@@ -972,26 +979,48 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
     const totalBudgetHours = form.feeType==="retainer" && form.monthlyBudgetHours && form.retainerMonths
       ? Number(form.monthlyBudgetHours) * Number(form.retainerMonths)
       : form.budgetHours ? Number(form.budgetHours) : null;
-    const np={id:genId(),...form,code:form.code.toUpperCase(),
+    const baseObj = {
       budgetHours:totalBudgetHours,
       monthlyBudgetHours:form.feeType==="retainer"&&form.monthlyBudgetHours?Number(form.monthlyBudgetHours):null,
       engagementFee:totalEngFee,monthlyFee:form.feeType==="retainer"&&form.engagementFee?Number(form.engagementFee):null,
       retainerMonths:form.retainerMonths?Number(form.retainerMonths):null,feeType:form.feeType,
-      status:isP?"active":"pending_approval",category:form.category||"Assurance",billable:form.billable!==false,assignedStaff:form.assignedStaff,assignedManagers:form.assignedManagers,assignedPartners:form.assignedPartners||[],createdBy:user.id,createdAt:new Date().toISOString()};
-    setProjects(p=>[...p,np]);
-    addAudit(user.id,user.name,"CREATE_PROJECT",`Created ${form.code.toUpperCase()} — ${form.name}`);
+      category:form.category||"Assurance",billable:form.billable!==false,
+      assignedStaff:form.assignedStaff,assignedManagers:form.assignedManagers,assignedPartners:form.assignedPartners||[],
+      name:form.name,clientName:form.clientName,description:form.description,
+      assignedPartnerId:form.assignedPartnerId,
+    };
+    if(editP){
+      setProjects(p=>p.map(x=>x.id===editP.id?{...x,...baseObj,updatedBy:user.id,updatedAt:new Date().toISOString()}:x));
+      addAudit(user.id,user.name,"EDIT_PROJECT",`Edited ${editP.code} — ${form.name}`);
+    } else {
+      const np={id:genId(),...form,code:form.code.toUpperCase(),...baseObj,
+        status:isP?"active":"pending_approval",createdBy:user.id,createdAt:new Date().toISOString()};
+      setProjects(p=>[...p,np]);
+      addAudit(user.id,user.name,"CREATE_PROJECT",`Created ${form.code.toUpperCase()} — ${form.name}`);
+    }
     setSM(false);
   };
 
-  const approve=id=>{setProjects(p=>p.map(x=>x.id===id?{...x,status:"active",approvedBy:user.id,approvedAt:new Date().toISOString()}:x));addAudit(user.id,user.name,"APPROVE_PROJECT",`Approved ${id}`);};
-  const reject =id=>{setProjects(p=>p.map(x=>x.id===id?{...x,status:"rejected"}:x));addAudit(user.id,user.name,"REJECT_PROJECT",`Rejected ${id}`);};
+  const approve=id=>{setProjects(p=>p.map(x=>x.id===id?{...x,status:"active",approvedBy:user.id,approvedAt:new Date().toISOString()}:x));addAudit(user.id,user.name,"APPROVE_PROJECT",`Approved ${id}`);setProjTab("active");};
+  const reject=(id,reason)=>{setProjects(p=>p.map(x=>x.id===id?{...x,status:"rejected",rejectReason:reason,rejectedBy:user.id}:x));addAudit(user.id,user.name,"REJECT_PROJECT",`Rejected ${id}: ${reason}`);setRejectM(null);setRR("");setProjTab("rejected");};
   const close  =id=>{if(!window.confirm("Close this engagement?"))return;setProjects(p=>p.map(x=>x.id===id?{...x,status:"closed",closedAt:new Date().toISOString()}:x));addAudit(user.id,user.name,"CLOSE_PROJECT",`Closed ${id}`);};
   const deleteProject=id=>{if(!window.confirm("Permanently delete this project code? This cannot be undone."))return;setProjects(p=>p.filter(x=>x.id!==id));addAudit(user.id,user.name,"DELETE_PROJECT",`Deleted project ${id}`);};
   const saveAssign=(pid,staff,managers,partners=[])=>{setProjects(p=>p.map(x=>x.id===pid?{...x,assignedStaff:staff,assignedManagers:managers,assignedPartners:partners}:x));addAudit(user.id,user.name,"ASSIGN_STAFF",`Updated assignments for ${pid}`);setAM(null);};
 
-  const visible=isP?projects:projects.filter(p=>p.status==="active"&&[...(p.assignedStaff||[]),...(p.assignedManagers||[]),...(p.assignedPartners||[])].includes(user.id));
-
   const statusClass=s=>s==="active"?"bac":s==="closed"?"bcl":s==="pending_approval"?"bp2":"br";
+
+  // Filter by tab
+  const allVisible = isP?projects:projects.filter(p=>p.status==="active"&&[...(p.assignedStaff||[]),...(p.assignedManagers||[]),...(p.assignedPartners||[])].includes(user.id));
+  const tabFiltered = isP ? (
+    projTab==="active"    ? allVisible.filter(p=>["active","closed"].includes(p.status)) :
+    projTab==="pending"   ? allVisible.filter(p=>p.status==="pending_approval") :
+    projTab==="rejected"  ? allVisible.filter(p=>p.status==="rejected") :
+    allVisible
+  ) : allVisible;
+
+  const totalPages = Math.max(1,Math.ceil(tabFiltered.length/PAGE_SIZE));
+  const paginated = tabFiltered.slice((page-1)*PAGE_SIZE, page*PAGE_SIZE);
+  const pendingCount = projects.filter(p=>p.status==="pending_approval").length;
 
   return (
     <div>
@@ -999,20 +1028,32 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
         <div><div className="card-title">Engagements</div><div className="card-sub mt4 ts">Project codes for time booking</div></div>
         <button className="btn bp" onClick={openAdd}><I n="plus" s={15}/>New Project Code</button>
       </div>
-      {isP&&projects.filter(p=>p.status==="pending_approval").length>0&&(
-        <div className="al al-w"><I n="alert" s={15}/><div><strong>{projects.filter(p=>p.status==="pending_approval").length}</strong> project code(s) awaiting your approval.</div></div>
+
+      {/* Tabs — partners only */}
+      {isP&&(
+        <div className="tabs">
+          <div className={`tab ${projTab==="active"?"active":""}`} onClick={()=>{setProjTab("active");setPage(1);}}>Active & Closed</div>
+          <div className={`tab ${projTab==="pending"?"active":""}`} onClick={()=>{setProjTab("pending");setPage(1);}}>
+            Pending Approval{pendingCount>0&&<span style={{background:"var(--amber)",color:"#fff",borderRadius:20,padding:"1px 7px",fontSize:10,marginLeft:5}}>{pendingCount}</span>}
+          </div>
+          <div className={`tab ${projTab==="rejected"?"active":""}`} onClick={()=>{setProjTab("rejected");setPage(1);}}>Rejected</div>
+          <div className={`tab ${projTab==="all"?"active":""}`} onClick={()=>{setProjTab("all");setPage(1);}}>All</div>
+        </div>
       )}
+
       <div className="card">
-        {visible.length===0?<div className="es"><div className="es-icon"><I n="folder" s={36}/></div>No engagements yet.</div>:(
+        {paginated.length===0?<div className="es"><div className="es-icon"><I n="folder" s={36}/></div>No engagements in this category.</div>:(
           <div className="tw"><table>
             <thead><tr><th>Code</th><th>Engagement</th><th>Client</th><th>Partner</th><th>Budget</th><th>Status</th>{isP&&<th>Actions</th>}</tr></thead>
-            <tbody>{visible.map(p=>{
+            <tbody>{paginated.map(p=>{
               const usedH=tss.filter(t=>t.projectId===p.id&&t.status==="approved").reduce((s,t)=>s+t.hours,0);
               const pct=p.budgetHours?Math.min(Math.round(usedH/p.budgetHours*100),100):null;
               const partner=users.find(u=>u.id===p.assignedPartnerId);
               return <tr key={p.id}>
                 <td><span className="fw6 mono" style={{fontSize:14}}>{p.code}</span></td>
-                <td><div className="fw6">{p.name}</div><div className="tx tsl">{p.description}</div></td>
+                <td><div className="fw6">{p.name}</div><div className="tx tsl">{p.description}</div>
+                  {p.status==="rejected"&&p.rejectReason&&<div className="tx tdn mt4">↩ {p.rejectReason}</div>}
+                </td>
                 <td>{p.clientName}</td>
                 <td className="ts">{partner?.name||"—"}</td>
                 <td style={{minWidth:130}}>{p.budgetHours
@@ -1021,8 +1062,16 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
                   :<span className="tx tsl">No budget set</span>}</td>
                 <td><span className={`bdg ${statusClass(p.status)}`}>{p.status==="pending_approval"?"Pending":p.status.charAt(0).toUpperCase()+p.status.slice(1)}</span></td>
                 {isP&&<td><div className="fx g8" style={{flexWrap:"wrap"}}>
-                  {p.status==="pending_approval"&&<><button className="btn bsc bsm" onClick={()=>approve(p.id)}><I n="check" s={12}/>Approve</button><button className="btn bd bsm" onClick={()=>reject(p.id)}><I n="x" s={12}/>Reject</button></>}
-                  {p.status==="active"&&<><button className="btn bp bsm" onClick={()=>setAM(p)}><I n="users" s={12}/>Assign</button>{(user.email===ADMIN_EMAIL||p.assignedPartnerId===user.id)&&<button className="btn bgh bsm" onClick={()=>close(p.id)}><I n="archive" s={12}/>Close</button>}</>}
+                  {p.status==="pending_approval"&&<>
+                    <button className="btn bsc bsm" onClick={()=>approve(p.id)}><I n="check" s={12}/>Approve</button>
+                    <button className="btn bd bsm" onClick={()=>{setRejectM(p);setRR("");}}><I n="x" s={12}/>Reject</button>
+                    <button className="btn bgh bic bsm" title="Edit before approving" onClick={()=>openEdit(p)}><I n="edit" s={13}/></button>
+                  </>}
+                  {p.status==="active"&&<>
+                    <button className="btn bp bsm" onClick={()=>setAM(p)}><I n="users" s={12}/>Assign</button>
+                    {(user.email===ADMIN_EMAIL||p.assignedPartnerId===user.id)&&<button className="btn bgh bsm" onClick={()=>close(p.id)}><I n="archive" s={12}/>Close</button>}
+                  </>}
+                  {p.status==="rejected"&&<button className="btn bgh bic bsm" title="Edit and resubmit" onClick={()=>openEdit(p)}><I n="edit" s={13}/></button>}
                   {(user.email===ADMIN_EMAIL||p.assignedPartnerId===user.id)&&<button className="btn bd bic bsm" title="Delete project" onClick={()=>deleteProject(p.id)}><I n="trash" s={13}/></button>}
                 </div></td>}
               </tr>;
@@ -1031,10 +1080,36 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
         )}
       </div>
 
+      {/* Pagination */}
+      {totalPages>1&&(
+        <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginTop:12}}>
+          <button className="btn bgh bsm" disabled={page===1} onClick={()=>setPage(p=>p-1)}>← Prev</button>
+          <span className="ts tsl">Page {page} of {totalPages} ({tabFiltered.length} total)</span>
+          <button className="btn bgh bsm" disabled={page===totalPages} onClick={()=>setPage(p=>p+1)}>Next →</button>
+        </div>
+      )}
+
+      {/* Reject modal with remarks */}
+      {rejectM&&(
+        <div className="mo" onClick={()=>setRejectM(null)}>
+          <div className="md" onClick={e=>e.stopPropagation()} style={{maxWidth:440}}>
+            <div className="md-title">Reject Project Code</div>
+            <div className="al al-w mb16"><I n="alert" s={14}/><div>Rejecting <strong>{rejectM.code}</strong> — {rejectM.name}</div></div>
+            <div className="fg"><label className="fl">Reason / Remarks</label>
+              <textarea className="fta" placeholder="Please give a reason for rejection..." value={rejectReason} onChange={e=>setRR(e.target.value)}/>
+            </div>
+            <div className="md-actions">
+              <button className="btn bgh" onClick={()=>setRejectM(null)}>Cancel</button>
+              <button className="btn bd" onClick={()=>{if(!rejectReason.trim()){return;}reject(rejectM.id,rejectReason);}}><I n="x" s={14}/>Confirm Reject</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showM&&(
         <div className="mo" onClick={()=>setSM(false)}>
           <div className="md" onClick={e=>e.stopPropagation()}>
-            <div className="md-title">Create Project Code</div>
+            <div className="md-title">{editP?"Edit Project Code":"Create Project Code"}</div>
             {!isP&&<div className="al al-i"><I n="info" s={15}/><div>Requires Partner approval before staff can book time.</div></div>}
             {ferr&&<div className="err">{ferr}</div>}
             <div className="g2">
@@ -1141,7 +1216,7 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
             </div>
             <div className="md-actions">
               <button className="btn bgh" onClick={()=>setSM(false)}>Cancel</button>
-              <button className="btn bp" onClick={save}><I n="check" s={15}/>{isP?"Create & Activate":"Submit for Approval"}</button>
+              <button className="btn bp" onClick={save}><I n="check" s={15}/>{editP?"Save Changes":isP?"Create & Activate":"Submit for Approval"}</button>
             </div>
           </div>
         </div>
