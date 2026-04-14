@@ -1044,11 +1044,19 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
       <div className="card">
         {paginated.length===0?<div className="es"><div className="es-icon"><I n="folder" s={36}/></div>No engagements in this category.</div>:(
           <div className="tw"><table>
-            <thead><tr><th>Code</th><th>Engagement</th><th>Client</th><th>Partner</th><th>Budget</th><th>Status</th>{isP&&<th>Actions</th>}</tr></thead>
+            <thead><tr><th>Code</th><th>Engagement</th><th>Client</th><th>Partner</th><th>Budget</th><th>Billing</th><th>Status</th><th>Actions</th></tr></thead>
             <tbody>{paginated.map(p=>{
               const usedH=tss.filter(t=>t.projectId===p.id&&t.status==="approved").reduce((s,t)=>s+t.hours,0);
               const pct=p.budgetHours?Math.min(Math.round(usedH/p.budgetHours*100),100):null;
               const partner=users.find(u=>u.id===p.assignedPartnerId);
+              // Billing display
+              const totalBilling = p.engagementFee||0;
+              const billingDisplay = totalBilling>0
+                ? <><div className="fw6 tgo">{fmtCurrency(totalBilling)}</div>
+                    <div className="tx tsl">{p.feeType==="retainer"?`${fmtCurrency(p.monthlyFee||0)}/mo × ${p.retainerMonths||0}m`:"Fixed Fee"}</div></>
+                : <span className="tx tsl">Not set</span>;
+              // Edit rights: manager can edit only if pending; partner can edit anytime
+              const canEditProj = isP || (!isP && p.status==="pending_approval" && p.createdBy===user.id);
               return <tr key={p.id}>
                 <td><span className="fw6 mono" style={{fontSize:14}}>{p.code}</span></td>
                 <td><div className="fw6">{p.name}</div><div className="tx tsl">{p.description}</div>
@@ -1056,24 +1064,26 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
                 </td>
                 <td>{p.clientName}</td>
                 <td className="ts">{partner?.name||"—"}</td>
-                <td style={{minWidth:130}}>{p.budgetHours
+                <td style={{minWidth:120}}>{p.budgetHours
                   ?<><div className="ts">{usedH}h / {p.budgetHours}h <span className={pct>=100?"tdn":pct>=80?"tam":"tsc"}>({pct}%)</span></div>
                     <div className="pbw"><div className={`pbf ${pct>=100?"pbov":pct>=80?"pbwn":"pbok"}`} style={{width:pct+"%"}}/></div></>
                   :<span className="tx tsl">No budget set</span>}</td>
+                <td style={{minWidth:110}}>{billingDisplay}</td>
                 <td><span className={`bdg ${statusClass(p.status)}`}>{p.status==="pending_approval"?"Pending":p.status.charAt(0).toUpperCase()+p.status.slice(1)}</span></td>
-                {isP&&<td><div className="fx g8" style={{flexWrap:"wrap"}}>
-                  {p.status==="pending_approval"&&<>
+                <td><div className="fx g8" style={{flexWrap:"wrap"}}>
+                  {isP&&p.status==="pending_approval"&&<>
                     <button className="btn bsc bsm" onClick={()=>approve(p.id)}><I n="check" s={12}/>Approve</button>
                     <button className="btn bd bsm" onClick={()=>{setRejectM(p);setRR("");}}><I n="x" s={12}/>Reject</button>
-                    <button className="btn bgh bic bsm" title="Edit before approving" onClick={()=>openEdit(p)}><I n="edit" s={13}/></button>
                   </>}
-                  {p.status==="active"&&<>
+                  {isP&&p.status==="active"&&<>
                     <button className="btn bp bsm" onClick={()=>setAM(p)}><I n="users" s={12}/>Assign</button>
                     {(user.email===ADMIN_EMAIL||p.assignedPartnerId===user.id)&&<button className="btn bgh bsm" onClick={()=>close(p.id)}><I n="archive" s={12}/>Close</button>}
                   </>}
-                  {p.status==="rejected"&&<button className="btn bgh bic bsm" title="Edit and resubmit" onClick={()=>openEdit(p)}><I n="edit" s={13}/></button>}
+                  {/* Edit: partner always, manager only if pending */}
+                  {canEditProj&&<button className="btn bgh bic bsm" title="Edit project" onClick={()=>openEdit(p)}><I n="edit" s={13}/></button>}
+                  {/* Delete: assigned partner or admin only */}
                   {(user.email===ADMIN_EMAIL||p.assignedPartnerId===user.id)&&<button className="btn bd bic bsm" title="Delete project" onClick={()=>deleteProject(p.id)}><I n="trash" s={13}/></button>}
-                </div></td>}
+                </div></td>
               </tr>;
             })}</tbody>
           </table></div>
