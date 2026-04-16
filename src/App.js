@@ -958,6 +958,12 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
   const [rejectReason,setRR]  =useState("");
   const [page,setPage]        =useState(1);
   const PAGE_SIZE             =10;
+  const [search,setSearch]    =useState("");
+  const [filterPartner,setFP] =useState("");
+  const [filterCat,setFC]     =useState("");
+  const [filterFee,setFF]     =useState("");
+  const [sortBy,setSortBy]    =useState("code");
+  const [sortDir,setSortDir]  =useState("asc");
   const [form,setF]           =useState({code:"",name:"",clientName:"",description:"",assignedPartnerId:"",budgetHours:"",monthlyBudgetHours:"",engagementFee:"",feeType:"fixed",retainerMonths:"",category:"Assurance",billable:true,assignedStaff:[],assignedManagers:[],assignedPartners:[]});
   const [ferr,setFerr]        =useState("");
   const isP=user.role==="partner";
@@ -1008,6 +1014,8 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
   const saveAssign=(pid,staff,managers,partners=[])=>{setProjects(p=>p.map(x=>x.id===pid?{...x,assignedStaff:staff,assignedManagers:managers,assignedPartners:partners}:x));addAudit(user.id,user.name,"ASSIGN_STAFF",`Updated assignments for ${pid}`);setAM(null);};
 
   const statusClass=s=>s==="active"?"bac":s==="closed"?"bcl":s==="pending_approval"?"bp2":"br";
+  const toggleSort = (col) => { if(sortBy===col){setSortDir(d=>d==="asc"?"desc":"asc");}else{setSortBy(col);setSortDir("asc");} setPage(1); };
+  const sortIcon = (col) => sortBy===col ? (sortDir==="asc"?" ↑":" ↓") : "";
 
   // Filter by tab
   const allVisible = isP?projects:projects.filter(p=>p.status==="active"&&[...(p.assignedStaff||[]),...(p.assignedManagers||[]),...(p.assignedPartners||[])].includes(user.id));
@@ -1018,9 +1026,34 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
     allVisible
   ) : allVisible;
 
-  const totalPages = Math.max(1,Math.ceil(tabFiltered.length/PAGE_SIZE));
-  const paginated = tabFiltered.slice((page-1)*PAGE_SIZE, page*PAGE_SIZE);
+  // Search + filters
+  const searchFiltered = tabFiltered.filter(p=>{
+    const q = search.toLowerCase();
+    if(q&&!p.code.toLowerCase().includes(q)&&!p.name.toLowerCase().includes(q)&&!p.clientName.toLowerCase().includes(q)) return false;
+    if(filterPartner&&p.assignedPartnerId!==filterPartner) return false;
+    if(filterCat&&p.category!==filterCat) return false;
+    if(filterFee&&p.feeType!==filterFee) return false;
+    return true;
+  });
+
+  // Sort
+  const sorted = [...searchFiltered].sort((a,b)=>{
+    let va,vb;
+    if(sortBy==="code"){va=a.code;vb=b.code;}
+    else if(sortBy==="client"){va=a.clientName;vb=b.clientName;}
+    else if(sortBy==="billing"){va=a.engagementFee||0;vb=b.engagementFee||0;}
+    else if(sortBy==="budget"){va=a.budgetHours||0;vb=b.budgetHours||0;}
+    else if(sortBy==="partner"){va=users.find(u=>u.id===a.assignedPartnerId)?.name||"";vb=users.find(u=>u.id===b.assignedPartnerId)?.name||"";}
+    else{va=a.name;vb=b.name;}
+    if(va<vb) return sortDir==="asc"?-1:1;
+    if(va>vb) return sortDir==="asc"?1:-1;
+    return 0;
+  });
+
+  const totalPages = Math.max(1,Math.ceil(sorted.length/PAGE_SIZE));
+  const paginated = sorted.slice((page-1)*PAGE_SIZE, page*PAGE_SIZE);
   const pendingCount = projects.filter(p=>p.status==="pending_approval").length;
+  const hasFilters = search||filterPartner||filterCat||filterFee;
 
   return (
     <div>
@@ -1041,10 +1074,40 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
         </div>
       )}
 
+      {/* Search + Filters */}
+      <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"center",marginBottom:12}}>
+        <input className="fi" placeholder="Search code, engagement, client..." value={search}
+          style={{flex:1,minWidth:200,padding:"8px 12px",fontSize:13}}
+          onChange={e=>{setSearch(e.target.value);setPage(1);}}/>
+        {isP&&<select className="fs" style={{width:"auto",fontSize:13,padding:"8px 12px"}} value={filterPartner} onChange={e=>{setFP(e.target.value);setPage(1);}}>
+          <option value="">All Partners</option>
+          {partners.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>}
+        <select className="fs" style={{width:"auto",fontSize:13,padding:"8px 12px"}} value={filterCat} onChange={e=>{setFC(e.target.value);setPage(1);}}>
+          <option value="">All Categories</option>
+          {ENGAGEMENT_CATEGORIES.map(c=><option key={c}>{c}</option>)}
+        </select>
+        <select className="fs" style={{width:"auto",fontSize:13,padding:"8px 12px"}} value={filterFee} onChange={e=>{setFF(e.target.value);setPage(1);}}>
+          <option value="">All Fee Types</option>
+          <option value="fixed">Fixed Fee</option>
+          <option value="retainer">Retainer</option>
+        </select>
+        {hasFilters&&<button className="btn bgh bsm" onClick={()=>{setSearch("");setFP("");setFC("");setFF("");setPage(1);}}>✕ Clear</button>}
+        <span className="tx tsl" style={{fontSize:12}}>{sorted.length} engagement{sorted.length!==1?"s":""}</span>
+      </div>
+
       <div className="card">
-        {paginated.length===0?<div className="es"><div className="es-icon"><I n="folder" s={36}/></div>No engagements in this category.</div>:(
+        {paginated.length===0?<div className="es"><div className="es-icon"><I n="folder" s={36}/></div>No engagements found.</div>:(
           <div className="tw"><table>
-            <thead><tr><th>Code</th><th>Engagement</th><th>Client</th><th>Partner</th><th>Budget</th><th>Billing</th><th>Status</th><th>Actions</th></tr></thead>
+            <thead><tr>
+              <th style={{cursor:"pointer"}} onClick={()=>toggleSort("code")}>Code{sortIcon("code")}</th>
+              <th style={{cursor:"pointer"}} onClick={()=>toggleSort("name")}>Engagement{sortIcon("name")}</th>
+              <th style={{cursor:"pointer"}} onClick={()=>toggleSort("client")}>Client{sortIcon("client")}</th>
+              <th style={{cursor:"pointer"}} onClick={()=>toggleSort("partner")}>Partner{sortIcon("partner")}</th>
+              <th style={{cursor:"pointer"}} onClick={()=>toggleSort("budget")}>Budget{sortIcon("budget")}</th>
+              <th style={{cursor:"pointer"}} onClick={()=>toggleSort("billing")}>Billing{sortIcon("billing")}</th>
+              <th>Status</th><th>Actions</th>
+            </tr></thead>
             <tbody>{paginated.map(p=>{
               const usedH=tss.filter(t=>t.projectId===p.id&&t.status==="approved").reduce((s,t)=>s+t.hours,0);
               const pct=p.budgetHours?Math.min(Math.round(usedH/p.budgetHours*100),100):null;
