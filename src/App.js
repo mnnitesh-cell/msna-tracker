@@ -121,7 +121,7 @@ function getWeekDates(offsetWeeks=0) {
   mon.setDate(d.getDate()-(day===0?6:day-1));
   return Array.from({length:7},(_,i)=>{ const x=new Date(mon); x.setDate(mon.getDate()+i); return x.toISOString().slice(0,10); });
 }
-function minDate() { const d=new Date(); d.setDate(d.getDate()-MAX_BACKDATE_DAYS); return d.toISOString().slice(0,10); }
+function minDate() { const d=new Date(); d.setDate(d.getDate()-MAX_BACKDATE_DAYS); const computed=d.toISOString().slice(0,10); return computed>"2026-04-01"?computed:"2026-04-01"; }
 
 function addAudit(userId, userName, action, detail) {
   const id = genId();
@@ -1693,25 +1693,41 @@ function AuditTrail({ audit=[] }) {
 // USER MANAGEMENT
 // ══════════════════════════════════════════════════════════════
 function UserManagement({ user, users=[], setUsers, isPartner=false }) {
-  const [showM,setSM]   =useState(false);
-  const [editU,setEU]   =useState(null);
-  const [form,setF]     =useState({name:"",email:"",role:"intern",billingRate:"",password:""});
-  const [ferr,setFerr]  =useState("");
+  const [showM,setSM]     =useState(false);
+  const [editU,setEU]     =useState(null);
+  const [form,setF]       =useState({name:"",email:"",role:"intern",billingRate:"",billingRateEffectiveDate:"",actualRate:"",actualRateEffectiveDate:"",password:""});
+  const [ferr,setFerr]    =useState("");
+  const [filterRole,setFR]=useState("");
+  const [filterStatus,setFS]=useState("");
+  const [search,setSrch]  =useState("");
+  const isAdmin = user.email===ADMIN_EMAIL;
+  const isPartnerUser = user.role==="partner";
 
-  const openAdd =()=>{setEU(null);setF({name:"",email:"",role:"intern",billingRate:"",password:""});setFerr("");setSM(true);};
-  const openEdit=u=>{setEU(u);setF({name:u.name,email:u.email,role:u.role,billingRate:u.billingRate,password:""});setFerr("");setSM(true);};
+  const openAdd=()=>{setEU(null);setF({name:"",email:"",role:"intern",billingRate:"",billingRateEffectiveDate:todayStr(),actualRate:"",actualRateEffectiveDate:todayStr(),password:""});setFerr("");setSM(true);};
+  const openEdit=u=>{setEU(u);setF({name:u.name,email:u.email,role:u.role,billingRate:u.billingRate,billingRateEffectiveDate:u.billingRateEffectiveDate||todayStr(),actualRate:u.actualRate||"",actualRateEffectiveDate:u.actualRateEffectiveDate||todayStr(),password:""});setFerr("");setSM(true);};
 
   const save=()=>{
     if(!form.name||!form.email||!form.billingRate){setFerr("Name, email and billing rate are required.");return;}
     if(!form.email.endsWith("@msna.co.in")){setFerr("Must be an @msna.co.in address.");return;}
     if(editU){
-      setUsers(p=>p.map(u=>u.id===editU.id?{...u,name:form.name,role:form.role,billingRate:Number(form.billingRate)}:u));
+      setUsers(p=>p.map(u=>u.id===editU.id?{...u,
+        name:form.name,role:form.role,
+        billingRate:Number(form.billingRate),
+        billingRateEffectiveDate:form.billingRateEffectiveDate||todayStr(),
+        actualRate:form.actualRate?Number(form.actualRate):null,
+        actualRateEffectiveDate:form.actualRateEffectiveDate||todayStr(),
+      }:u));
       if(form.password){ fsSet("passwords", btoa(form.email), {email:form.email, pw:form.password}); }
       addAudit(user.id,user.name,"EDIT_USER",`Updated ${form.email}`);
     } else {
       if(!form.password){setFerr("Password is required for new users.");return;}
       if(users.find(u=>u.email.toLowerCase()===form.email.toLowerCase())){setFerr("Email already exists.");return;}
-      setUsers(p=>[...p,{id:genId(),name:form.name,email:form.email,role:form.role,billingRate:Number(form.billingRate),active:true}]);
+      setUsers(p=>[...p,{id:genId(),name:form.name,email:form.email,role:form.role,
+        billingRate:Number(form.billingRate),
+        billingRateEffectiveDate:form.billingRateEffectiveDate||todayStr(),
+        actualRate:form.actualRate?Number(form.actualRate):null,
+        actualRateEffectiveDate:form.actualRateEffectiveDate||todayStr(),
+        active:true}]);
       fsSet("passwords", btoa(form.email), {email:form.email, pw:form.password});
       addAudit(user.id,user.name,"CREATE_USER",`Created ${form.email} as ${form.role}`);
     }
@@ -1725,28 +1741,68 @@ function UserManagement({ user, users=[], setUsers, isPartner=false }) {
     if(target.email===ADMIN_EMAIL){ alert("The Admin account cannot be deleted."); return; }
     if(!window.confirm(`Delete ${target.name}? Their timesheets will be kept for records but they will no longer be able to log in.`)) return;
     setUsers(p=>p.filter(u=>u.id!==id));
-    // Remove their password from Firestore
     fsDel("passwords", btoa(target.email));
     addAudit(user.id,user.name,"DELETE_USER",`Deleted user ${target.email}`);
   };
 
+  // Filter + search
+  const filtered = users.filter(u=>{
+    if(filterRole&&u.role!==filterRole) return false;
+    if(filterStatus==="active"&&!u.active) return false;
+    if(filterStatus==="inactive"&&u.active) return false;
+    const q=search.toLowerCase();
+    if(q&&!u.name.toLowerCase().includes(q)&&!u.email.toLowerCase().includes(q)) return false;
+    return true;
+  });
+
   return (
     <div>
-      <div className="sh"><div><div className="card-title">User Management</div><div className="card-sub mt4 ts">Manage staff accounts and billing rates</div></div>
-        {user.email===ADMIN_EMAIL&&<button className="btn bp" onClick={openAdd}><I n="plus" s={15}/>Add Staff</button>}
+      <div className="sh"><div><div className="card-title">User Management</div><div className="card-sub mt4 ts">Manage staff accounts, billing and cost rates</div></div>
+        {isAdmin&&<button className="btn bp" onClick={openAdd}><I n="plus" s={15}/>Add Staff</button>}
       </div>
+
+      {/* Filters */}
+      <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"center",marginBottom:12}}>
+        <input className="fi" placeholder="Search name or email..." value={search}
+          style={{flex:1,minWidth:180,padding:"8px 12px",fontSize:13}}
+          onChange={e=>setSrch(e.target.value)}/>
+        <select className="fs" style={{width:"auto",fontSize:13,padding:"8px 12px"}} value={filterRole} onChange={e=>setFR(e.target.value)}>
+          <option value="">All Roles</option>
+          <option value="partner">Partner</option>
+          <option value="manager">Manager</option>
+          <option value="intern">Intern</option>
+        </select>
+        <select className="fs" style={{width:"auto",fontSize:13,padding:"8px 12px"}} value={filterStatus} onChange={e=>setFS(e.target.value)}>
+          <option value="">All Statuses</option>
+          <option value="active">Active</option>
+          <option value="inactive">Inactive</option>
+        </select>
+        {(filterRole||filterStatus||search)&&<button className="btn bgh bsm" onClick={()=>{setFR("");setFS("");setSrch("");}}>✕ Clear</button>}
+        <span className="tx tsl" style={{fontSize:12}}>{filtered.length} user{filtered.length!==1?"s":""}</span>
+      </div>
+
       <div className="card">
         <div className="tw"><table>
-          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Billing Rate</th><th>Status</th><th>Actions</th></tr></thead>
-          <tbody>{users.map(u=>(
+          <thead><tr><th style={{width:36}}>#</th><th>Name</th><th>Email</th><th>Role</th><th>Billing Rate</th><th>Actual Cost</th><th>Status</th><th>Actions</th></tr></thead>
+          <tbody>{filtered.map((u,idx)=>(
             <tr key={u.id}>
+              <td className="tx tsl" style={{fontSize:12}}>{idx+1}</td>
               <td className="fw6">{u.name}{u.email===ADMIN_EMAIL&&<span className="tx tgo"> ★ Admin</span>}</td>
               <td className="ts tsl">{u.email}</td>
               <td><span className={`bdg ${u.role==="partner"?"rpa":u.role==="manager"?"rma":"ria"}`}>{u.role.charAt(0).toUpperCase()+u.role.slice(1)}</span></td>
-              <td className="fw6">{fmtCurrency(u.billingRate)}<span className="tx tsl">/hr</span></td>
+              <td>
+                <div className="fw6">{fmtCurrency(u.billingRate)}<span className="tx tsl">/hr</span></div>
+                {u.billingRateEffectiveDate&&<div className="tx tsl" style={{fontSize:11}}>w.e.f. {fmtDate(u.billingRateEffectiveDate)}</div>}
+              </td>
+              <td>
+                {u.actualRate
+                  ?<><div className="fw6">{fmtCurrency(u.actualRate)}<span className="tx tsl">/hr</span></div>
+                    {u.actualRateEffectiveDate&&<div className="tx tsl" style={{fontSize:11}}>w.e.f. {fmtDate(u.actualRateEffectiveDate)}</div>}</>
+                  :<span className="tx tsl">—</span>}
+              </td>
               <td><span className={`bdg ${u.active?"bac":"bcl"}`}>{u.active?"Active":"Inactive"}</span></td>
               <td><div className="fx g8">
-                {user.email===ADMIN_EMAIL&&<button className="btn bgh bic bsm" onClick={()=>openEdit(u)}><I n="edit" s={14}/></button>}
+                {isPartnerUser&&<button className="btn bgh bic bsm" onClick={()=>openEdit(u)}><I n="edit" s={14}/></button>}
                 {u.id!==user.id&&<button className={`btn bsm ${u.active?"bd":"bsc"}`} onClick={()=>toggle(u.id)}>{u.active?"Deactivate":"Activate"}</button>}
                 {u.id!==user.id&&u.email!==ADMIN_EMAIL&&<button className="btn bd bic bsm" title="Delete user" onClick={()=>deleteUser(u.id)}><I n="trash" s={14}/></button>}
               </div></td>
@@ -1762,13 +1818,27 @@ function UserManagement({ user, users=[], setUsers, isPartner=false }) {
             {ferr&&<div className="err">{ferr}</div>}
             <div className="fg"><label className="fl">Full Name</label><input className="fi" placeholder="e.g. Rahul Mehta" value={form.name} onChange={e=>setF(f=>({...f,name:e.target.value}))}/></div>
             <div className="fg"><label className="fl">Email</label><input className="fi" placeholder="rahul@msna.co.in" value={form.email} onChange={e=>setF(f=>({...f,email:e.target.value}))} disabled={!!editU}/></div>
-            <div className="g2">
-              <div className="fg"><label className="fl">Role</label>
-                <select className="fs" value={form.role} onChange={e=>setF(f=>({...f,role:e.target.value}))}>
-                  <option value="intern">Intern</option><option value="manager">Manager</option><option value="partner">Partner</option>
-                </select>
+            <div className="fg"><label className="fl">Role</label>
+              <select className="fs" value={form.role} onChange={e=>setF(f=>({...f,role:e.target.value}))}>
+                <option value="intern">Intern</option><option value="manager">Manager</option><option value="partner">Partner</option>
+              </select>
+            </div>
+            {/* Billing Rate */}
+            <div style={{background:"var(--cream)",borderRadius:8,padding:"14px 16px",border:"1px solid var(--border)"}}>
+              <div style={{fontSize:12,fontWeight:600,color:"var(--navy)",textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:10}}>Billing Rate (charged to client)</div>
+              <div className="g2">
+                <div className="fg"><label className="fl">Rate (₹/hr)</label><input type="number" className="fi" placeholder="e.g. 5000" value={form.billingRate} onChange={e=>setF(f=>({...f,billingRate:e.target.value}))}/></div>
+                <div className="fg"><label className="fl">With Effect From</label><input type="date" className="fi" value={form.billingRateEffectiveDate} onChange={e=>setF(f=>({...f,billingRateEffectiveDate:e.target.value}))}/></div>
               </div>
-              <div className="fg"><label className="fl">Billing Rate (₹/hr)</label><input type="number" className="fi" placeholder="e.g. 2500" value={form.billingRate} onChange={e=>setF(f=>({...f,billingRate:e.target.value}))}/></div>
+            </div>
+            {/* Actual Cost Rate */}
+            <div style={{background:"#fef9ec",borderRadius:8,padding:"14px 16px",border:"1px solid #fde68a"}}>
+              <div style={{fontSize:12,fontWeight:600,color:"#92400e",textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:10}}>Actual Cost Rate (firm's internal cost)</div>
+              <div className="g2">
+                <div className="fg"><label className="fl">Rate (₹/hr)</label><input type="number" className="fi" placeholder="e.g. 1500" value={form.actualRate} onChange={e=>setF(f=>({...f,actualRate:e.target.value}))}/></div>
+                <div className="fg"><label className="fl">With Effect From</label><input type="date" className="fi" value={form.actualRateEffectiveDate} onChange={e=>setF(f=>({...f,actualRateEffectiveDate:e.target.value}))}/></div>
+              </div>
+              <div className="tx tsl mt4" style={{fontSize:11}}>Used for internal profitability calculation. Not visible to staff.</div>
             </div>
             <div className="fg"><label className="fl">{editU?"New Password (blank = no change)":"Password *"}</label><input className="fi" type="password" placeholder="Set login password" value={form.password} onChange={e=>setF(f=>({...f,password:e.target.value}))}/></div>
             <div className="md-actions">
@@ -1834,30 +1904,64 @@ function Profitability({ users=[], projects=[], tss=[] }) {
   const calcProfit = (p) => {
     const sheets = approved.filter(t => t.projectId === p.id);
     const totalHrs = sheets.reduce((s,t) => s + t.hours, 0);
-    const staffCost = sheets.reduce((s,t) => s + t.hours * (users.find(u=>u.id===t.userId)?.billingRate||0), 0);
-    const fee = p.engagementFee || 0; // already the total fee (monthly × months for retainer)
+
+    // Get cost rate for a user on a given date — uses actualRate if date >= effectiveDate, else billingRate
+    const getCostRate = (u, date) => {
+      if(u.actualRate && u.actualRateEffectiveDate && date >= u.actualRateEffectiveDate) {
+        return u.actualRate;
+      }
+      return u.billingRate||0;
+    };
+
+    // Billing rate cost (what we charge the client per hour)
+    const staffCostBilling = sheets.reduce((s,t) => {
+      const u2 = users.find(u=>u.id===t.userId);
+      return s + t.hours * (u2?.billingRate||0);
+    }, 0);
+    // Actual cost (what the firm actually incurs — prospective from effectiveDate)
+    const staffCostActual = sheets.reduce((s,t) => {
+      const u2 = users.find(u=>u.id===t.userId);
+      return s + t.hours * getCostRate(u2||{}, t.date);
+    }, 0);
+    // Use actual if available, else billing
+    const hasActual = users.some(u=>u.actualRate);
+    const staffCost = staffCostActual; // primary for signal/margin
+
+    const fee = p.engagementFee || 0;
     const isRetainer = p.feeType === "retainer";
     const months = isRetainer ? (p.retainerMonths||1) : 1;
-    const totalFee = fee; // pre-calculated at creation time
-    const margin = totalFee - staffCost;
-    const marginPct = totalFee > 0 ? Math.round((margin/totalFee)*100) : null;
+    const totalFee = fee;
+
+    const marginActual = totalFee - staffCostActual;
+    const marginBilling = totalFee - staffCostBilling;
+    const marginPctActual = totalFee > 0 ? Math.round((marginActual/totalFee)*100) : null;
+    const marginPctBilling = totalFee > 0 ? Math.round((marginBilling/totalFee)*100) : null;
+    const margin = marginActual;
+    const marginPct = marginPctActual;
     const signal = !fee ? "nofee" : margin >= 0 && marginPct >= 20 ? "profit" : margin >= 0 ? "risk" : "loss";
-    // Staff breakdown
+
+    // Staff breakdown — both rates
     const staffBreakdown = users.map(u => {
       const uSheets = sheets.filter(t=>t.userId===u.id);
       const hrs = uSheets.reduce((s,t)=>s+t.hours,0);
-      const cost = hrs * u.billingRate;
-      return {u, hrs, cost};
+      const costActual = uSheets.reduce((s,t)=>s+t.hours*getCostRate(u,t.date),0);
+      const costBilling = hrs * (u.billingRate||0);
+      return {u, hrs, cost:costActual, costBilling};
     }).filter(d=>d.hrs>0).sort((a,b)=>b.cost-a.cost);
-    // Monthly breakdown
+
+    // Monthly breakdown — both rates
     const byMonth = {};
     sheets.forEach(t => {
+      const u2 = users.find(u=>u.id===t.userId);
       const mk = monthKey(t.date);
-      if(!byMonth[mk]) byMonth[mk]={hrs:0,cost:0};
+      if(!byMonth[mk]) byMonth[mk]={hrs:0,cost:0,costBilling:0};
       byMonth[mk].hrs += t.hours;
-      byMonth[mk].cost += t.hours*(users.find(u=>u.id===t.userId)?.billingRate||0);
+      byMonth[mk].cost += t.hours * getCostRate(u2||{}, t.date);
+      byMonth[mk].costBilling += t.hours * (u2?.billingRate||0);
     });
-    return {totalHrs, staffCost, totalFee, margin, marginPct, signal, staffBreakdown, byMonth, months};
+    return {totalHrs, staffCost, staffCostBilling, staffCostActual, hasActual,
+            totalFee, margin, marginActual, marginBilling, marginPct, marginPctActual, marginPctBilling,
+            signal, staffBreakdown, byMonth, months};
   };
 
   const allProfit = projects
@@ -1868,10 +1972,16 @@ function Profitability({ users=[], projects=[], tss=[] }) {
   const sigLabel = s => s==="profit"?"● Profitable":s==="risk"?"● At Risk":s==="loss"?"● Loss Making":"● No Fee Set";
   const sigClass = s => `signal sig-${s}`;
 
-  const firmFee     = allProfit.reduce((s,d)=>s+d.totalFee,0);
-  const firmCost    = allProfit.reduce((s,d)=>s+d.staffCost,0);
-  const firmMargin  = firmFee - firmCost;
-  const firmMarginPct = firmFee>0 ? Math.round((firmMargin/firmFee)*100) : 0;
+  const [profView, setProfView] = useState("actual"); // "actual" or "billing"
+  const firmFee          = allProfit.reduce((s,d)=>s+d.totalFee,0);
+  const firmCostActual   = allProfit.reduce((s,d)=>s+d.staffCostActual,0);
+  const firmCostBilling  = allProfit.reduce((s,d)=>s+d.staffCostBilling,0);
+  const firmCost         = profView==="actual" ? firmCostActual : firmCostBilling;
+  const firmMarginActual = firmFee - firmCostActual;
+  const firmMarginBilling= firmFee - firmCostBilling;
+  const firmMargin       = profView==="actual" ? firmMarginActual : firmMarginBilling;
+  const firmMarginPct    = firmFee>0 ? Math.round((firmMargin/firmFee)*100) : 0;
+  const hasAnyActual     = users.some(u=>u.actualRate);
 
   const selData = selected ? allProfit.find(d=>d.p.id===selected) : null;
 
@@ -1885,40 +1995,84 @@ function Profitability({ users=[], projects=[], tss=[] }) {
 
       {/* ── FIRM-WIDE VIEW ── */}
       {!selected && <>
+        {/* Method toggle */}
+        <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16,flexWrap:"wrap"}}>
+          <div style={{fontSize:13,fontWeight:600,color:"var(--navy)"}}>Profitability Method:</div>
+          <div style={{display:"flex",background:"var(--cream)",borderRadius:10,padding:3,border:"1px solid var(--border)"}}>
+            <button onClick={()=>setProfView("actual")} style={{padding:"7px 18px",borderRadius:8,border:"none",cursor:"pointer",fontSize:13,fontWeight:500,background:profView==="actual"?"var(--navy)":"transparent",color:profView==="actual"?"#fff":"var(--slate)",transition:"all .15s"}}>Actual Cost Basis</button>
+            <button onClick={()=>setProfView("billing")} style={{padding:"7px 18px",borderRadius:8,border:"none",cursor:"pointer",fontSize:13,fontWeight:500,background:profView==="billing"?"var(--navy)":"transparent",color:profView==="billing"?"#fff":"var(--slate)",transition:"all .15s"}}>Billing Rate Basis</button>
+          </div>
+          <div style={{fontSize:12,color:"var(--slate)",background:"var(--cream)",padding:"5px 12px",borderRadius:20,border:"1px solid var(--border)"}}>
+            {profView==="actual"?"Using actual cost incurred by firm":"Using billing rate charged to client"}
+          </div>
+        </div>
+
         <div className="prof-grid">
           <div className="prof-hero">
             <div className="prof-hero-val">{fmtCurrency(firmFee)}</div>
             <div className="prof-hero-lbl">Total Fee Value</div>
-            <div className="prof-hero-sub">{allProfit.filter(d=>d.totalFee>0).length} engagements with fees set</div>
+            <div className="prof-hero-sub">{allProfit.filter(d=>d.totalFee>0).length} engagements with fees</div>
           </div>
           <div className="prof-hero" style={{background:"var(--navy-mid)"}}>
             <div className="prof-hero-val">{fmtCurrency(firmCost)}</div>
-            <div className="prof-hero-lbl">Total Staff Cost</div>
+            <div className="prof-hero-lbl">Staff Cost ({profView==="actual"?"Actual":"Billing Rate"})</div>
             <div className="prof-hero-sub">{approved.reduce((s,t)=>s+t.hours,0).toFixed(1)} approved hours</div>
           </div>
-          <div className="prof-hero" style={{background: firmMargin>=0?"#064e3b":"#7f1d1d"}}>
+          <div className="prof-hero" style={{background:firmMargin>=0?"#064e3b":"#7f1d1d"}}>
             <div className="prof-hero-val" style={{color:firmMargin>=0?"#6ee7b7":"#fca5a5"}}>{fmtCurrency(firmMargin)}</div>
             <div className="prof-hero-lbl">Net Margin</div>
-            <div className="prof-hero-sub">{firmFee>0?firmMarginPct+"%  gross margin":"Set fees to see margin"}</div>
+            <div className="prof-hero-sub">{firmFee>0?firmMarginPct+"% gross margin":"Set fees to see margin"}</div>
           </div>
         </div>
 
-        {/* Waterfall chart */}
-        {firmFee > 0 && (
+        {/* Side-by-side comparison */}
+        {hasAnyActual&&firmFee>0&&(
+          <div className="card mb22" style={{padding:"18px 22px"}}>
+            <div style={{fontWeight:600,fontSize:14,color:"var(--navy)",marginBottom:14}}>Comparison — Both Methods</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+              {[
+                {label:"Actual Cost Basis",cost:firmCostActual,margin:firmMarginActual,isActive:profView==="actual"},
+                {label:"Billing Rate Basis",cost:firmCostBilling,margin:firmMarginBilling,isActive:profView==="billing"},
+              ].map(m=>(
+                <div key={m.label} style={{background:"var(--cream)",borderRadius:10,padding:"16px 18px",border:"2px solid",borderColor:m.isActive?"var(--navy)":"var(--border)"}}>
+                  <div style={{fontSize:11,fontWeight:600,textTransform:"uppercase",letterSpacing:"1px",color:"var(--navy)",marginBottom:12}}>
+                    {m.label}{m.isActive&&<span style={{fontSize:10,background:"var(--navy)",color:"#fff",padding:"2px 8px",borderRadius:20,marginLeft:8}}>Active</span>}
+                  </div>
+                  {[
+                    {label:"Fee Earned",val:firmFee,color:"var(--navy)"},
+                    {label:"Staff Cost",val:m.cost,color:"var(--red)"},
+                    {label:"Net Margin",val:m.margin,color:m.margin>=0?"var(--green)":"var(--red)"},
+                    {label:"Margin %",val:null,pct:firmFee>0?Math.round(m.margin/firmFee*100):0},
+                  ].map(r=>{
+                    const pctColor=!r.val&&r.pct<0?"var(--red)":!r.val&&r.pct<20?"var(--amber)":"var(--green)";
+                    return (
+                      <div key={r.label} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 0",borderBottom:"1px solid var(--border)"}}>
+                        <span style={{fontSize:13,color:"var(--slate)"}}>{r.label}</span>
+                        <span style={{fontSize:14,fontWeight:600,color:r.val!=null?(r.val<0?"var(--red)":r.color):pctColor}}>
+                          {r.val!=null?fmtCurrency(r.val):r.pct+"%"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {firmFee>0&&(
           <div className="card mb22">
-            <div className="card-title mb16">Firm-wide Waterfall</div>
+            <div className="card-title mb16">Firm-wide Waterfall — {profView==="actual"?"Actual Cost":"Billing Rate"} Basis</div>
             <div className="waterfall">
               {[
-                {label:"Fee Earned",  val:firmFee,    pct:100, cls:"wf-bar-fee"},
-                {label:"Staff Cost",  val:firmCost,   pct:Math.min(Math.round(firmCost/firmFee*100),100), cls:"wf-bar-cost"},
-                {label:"Net Margin",  val:firmMargin, pct:Math.max(0,firmMarginPct), cls:firmMargin>=0?"wf-bar-margin":"wf-bar-over"},
+                {label:"Fee Earned",val:firmFee,pct:100,cls:"wf-bar-fee"},
+                {label:"Staff Cost",val:firmCost,pct:Math.min(Math.round(firmCost/firmFee*100),100),cls:"wf-bar-cost"},
+                {label:"Net Margin",val:firmMargin,pct:Math.max(0,firmMarginPct),cls:firmMargin>=0?"wf-bar-margin":"wf-bar-over"},
               ].map(row=>(
                 <div key={row.label} className="wf-row">
                   <div className="wf-label">{row.label}</div>
                   <div className="wf-bar-wrap">
-                    <div className={`wf-bar ${row.cls}`} style={{width:Math.max(row.pct,2)+"%"}}>
-                      {row.pct>15&&row.label}
-                    </div>
+                    <div className={`wf-bar ${row.cls}`} style={{width:Math.max(row.pct,2)+"%"}}>{row.pct>15&&row.label}</div>
                   </div>
                   <div className="wf-val" style={{color:row.val<0?"var(--red)":"var(--navy)"}}>{fmtCurrency(row.val)}</div>
                 </div>
@@ -1927,32 +2081,44 @@ function Profitability({ users=[], projects=[], tss=[] }) {
           </div>
         )}
 
-        {/* Engagement table */}
         <div className="card">
-          <div className="card-title mb16">All Engagements — Profitability Ranking</div>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+            <div className="card-title">All Engagements — Profitability Ranking</div>
+          </div>
           {allProfit.length===0
             ? <div className="es"><div className="es-icon"><I n="target" s={36}/></div>No engagement data yet.</div>
             : <div className="tw"><table>
-                <thead><tr><th>Code</th><th>Client</th><th>Fee</th><th>Staff Cost</th><th>Margin</th><th>Margin %</th><th>Status</th><th>Signal</th><th></th></tr></thead>
-                <tbody>{allProfit.map(({p,totalFee,staffCost,margin,marginPct,signal})=>(
-                  <tr key={p.id} style={{cursor:"pointer"}} onClick={()=>setSelected(p.id)}>
-                    <td><span className="fw6 mono">{p.code}</span></td>
-                    <td>{p.clientName}<div className="tx tsl">{p.name}</div></td>
-                    <td className="fw6">{totalFee>0?fmtCurrency(totalFee):<span className="tsl tx">Not set</span>}
-                      {p.feeType==="retainer"&&p.retainerMonths&&<div className="tx tsl">{fmtCurrency(p.monthlyFee||0)}/mo × {p.retainerMonths}m</div>}
-                    </td>
-                    <td>{fmtCurrency(staffCost)}</td>
-                    <td className={margin>=0?"tsc fw6":"tdn fw6"}>{totalFee>0?fmtCurrency(margin):"—"}</td>
-                    <td>{marginPct!=null?<><span className={margin<0?"tdn":marginPct<20?"tam":"tsc"}>{marginPct}%</span></>:<span className="tsl tx">—</span>}</td>
-                    <td><span className={`bdg ${p.status==="active"?"bac":"bcl"}`}>{p.status}</span></td>
-                    <td><span className={sigClass(signal)}>{sigLabel(signal)}</span></td>
-                    <td><button className="btn bgh bxs" onClick={e=>{e.stopPropagation();setSelected(p.id);}}>Detail →</button></td>
-                  </tr>
-                ))}</tbody>
+                <thead><tr>
+                  <th>Code</th><th>Client</th><th>Fee</th>
+                  <th style={{color:"var(--red)"}}>Cost ({profView==="actual"?"Actual":"Billing"})</th>
+                  {hasAnyActual&&<th style={{color:"var(--slate)",fontSize:11}}>Alt. Cost</th>}
+                  <th>Margin</th><th>Margin %</th><th>Status</th><th>Signal</th><th></th>
+                </tr></thead>
+                <tbody>{allProfit.map(({p,totalFee,staffCostActual,staffCostBilling,marginActual,marginBilling,marginPctActual,marginPctBilling,signal})=>{
+                  const cost=profView==="actual"?staffCostActual:staffCostBilling;
+                  const otherCost=profView==="actual"?staffCostBilling:staffCostActual;
+                  const margin=profView==="actual"?marginActual:marginBilling;
+                  const mp=profView==="actual"?marginPctActual:marginPctBilling;
+                  return (
+                    <tr key={p.id} style={{cursor:"pointer"}} onClick={()=>setSelected(p.id)}>
+                      <td><span className="fw6 mono">{p.code}</span></td>
+                      <td>{p.clientName}<div className="tx tsl">{p.name}</div></td>
+                      <td className="fw6">{totalFee>0?fmtCurrency(totalFee):<span className="tsl tx">Not set</span>}
+                        {p.feeType==="retainer"&&p.retainerMonths&&<div className="tx tsl">{fmtCurrency(p.monthlyFee||0)}/mo × {p.retainerMonths}m</div>}
+                      </td>
+                      <td className="fw6">{fmtCurrency(cost)}</td>
+                      {hasAnyActual&&<td className="tx tsl" style={{fontSize:12}}>{fmtCurrency(otherCost)}</td>}
+                      <td className={margin>=0?"tsc fw6":"tdn fw6"}>{totalFee>0?fmtCurrency(margin):"—"}</td>
+                      <td>{mp!=null?<span className={margin<0?"tdn":mp<20?"tam":"tsc"}>{mp}%</span>:<span className="tsl tx">—</span>}</td>
+                      <td><span className={`bdg ${p.status==="active"?"bac":"bcl"}`}>{p.status}</span></td>
+                      <td><span className={sigClass(signal)}>{sigLabel(signal)}</span></td>
+                      <td><button className="btn bgh bxs" onClick={e=>{e.stopPropagation();setSelected(p.id);}}>Detail →</button></td>
+                    </tr>
+                  );
+                })}</tbody>
               </table></div>}
         </div>
       </>}
-
       {/* ── SINGLE ENGAGEMENT DRILL-DOWN ── */}
       {selData && (() => {
         const {p, totalHrs, staffCost, totalFee, margin, marginPct, signal, staffBreakdown, byMonth} = selData; // eslint-disable-line no-unused-vars
