@@ -1700,6 +1700,8 @@ function UserManagement({ user, users=[], setUsers, isPartner=false }) {
   const [filterRole,setFR]=useState("");
   const [filterStatus,setFS]=useState("");
   const [search,setSrch]  =useState("");
+  const [umPage,setUMPage]=useState(1);
+  const UM_PAGE = 10;
   const isAdmin = user.email===ADMIN_EMAIL;
   const isPartnerUser = user.role==="partner";
 
@@ -1765,28 +1767,28 @@ function UserManagement({ user, users=[], setUsers, isPartner=false }) {
       <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"center",marginBottom:12}}>
         <input className="fi" placeholder="Search name or email..." value={search}
           style={{flex:1,minWidth:180,padding:"8px 12px",fontSize:13}}
-          onChange={e=>setSrch(e.target.value)}/>
-        <select className="fs" style={{width:"auto",fontSize:13,padding:"8px 12px"}} value={filterRole} onChange={e=>setFR(e.target.value)}>
+          onChange={e=>{setSrch(e.target.value);setUMPage(1);}}/>
+        <select className="fs" style={{width:"auto",fontSize:13,padding:"8px 12px"}} value={filterRole} onChange={e=>{setFR(e.target.value);setUMPage(1);}}>
           <option value="">All Roles</option>
           <option value="partner">Partner</option>
           <option value="manager">Manager</option>
           <option value="intern">Intern</option>
         </select>
-        <select className="fs" style={{width:"auto",fontSize:13,padding:"8px 12px"}} value={filterStatus} onChange={e=>setFS(e.target.value)}>
+        <select className="fs" style={{width:"auto",fontSize:13,padding:"8px 12px"}} value={filterStatus} onChange={e=>{setFS(e.target.value);setUMPage(1);}}>
           <option value="">All Statuses</option>
           <option value="active">Active</option>
           <option value="inactive">Inactive</option>
         </select>
-        {(filterRole||filterStatus||search)&&<button className="btn bgh bsm" onClick={()=>{setFR("");setFS("");setSrch("");}}>✕ Clear</button>}
+        {(filterRole||filterStatus||search)&&<button className="btn bgh bsm" onClick={()=>{setFR("");setFS("");setSrch("");setUMPage(1);}}>✕ Clear</button>}
         <span className="tx tsl" style={{fontSize:12}}>{filtered.length} user{filtered.length!==1?"s":""}</span>
       </div>
 
       <div className="card">
         <div className="tw"><table>
           <thead><tr><th style={{width:36}}>#</th><th>Name</th><th>Email</th><th>Role</th><th>Billing Rate</th><th>Actual Cost</th><th>Status</th><th>Actions</th></tr></thead>
-          <tbody>{filtered.map((u,idx)=>(
+          <tbody>{filtered.slice((umPage-1)*UM_PAGE, umPage*UM_PAGE).map((u,idx)=>(
             <tr key={u.id}>
-              <td className="tx tsl" style={{fontSize:12}}>{idx+1}</td>
+              <td className="tx tsl" style={{fontSize:12}}>{(umPage-1)*UM_PAGE+idx+1}</td>
               <td className="fw6">{u.name}{u.email===ADMIN_EMAIL&&<span className="tx tgo"> ★ Admin</span>}</td>
               <td className="ts tsl">{u.email}</td>
               <td><span className={`bdg ${u.role==="partner"?"rpa":u.role==="manager"?"rma":"ria"}`}>{u.role.charAt(0).toUpperCase()+u.role.slice(1)}</span></td>
@@ -1809,6 +1811,13 @@ function UserManagement({ user, users=[], setUsers, isPartner=false }) {
             </tr>
           ))}</tbody>
         </table></div>
+        {Math.ceil(filtered.length/UM_PAGE)>1&&(
+          <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginTop:12,paddingTop:12,borderTop:"1px solid var(--border)"}}>
+            <button className="btn bgh bsm" disabled={umPage===1} onClick={()=>setUMPage(p=>p-1)}>← Prev</button>
+            <span className="ts tsl">Page {umPage} of {Math.ceil(filtered.length/UM_PAGE)} · {filtered.length} users</span>
+            <button className="btn bgh bsm" disabled={umPage===Math.ceil(filtered.length/UM_PAGE)} onClick={()=>setUMPage(p=>p+1)}>Next →</button>
+          </div>
+        )}
       </div>
 
       {showM&&(
@@ -1896,7 +1905,9 @@ const PROF_CSS = `
 `;
 
 function Profitability({ users=[], projects=[], tss=[] }) {
-  const [selected, setSelected] = useState(null); // null = firm-wide view
+  const [selected, setSelected] = useState(null);
+  const [profPage, setProfPage] = useState(1);
+  const PROF_PAGE = 10;
 
   const approved = tss.filter(t => t.status === "approved");
 
@@ -1924,7 +1935,7 @@ function Profitability({ users=[], projects=[], tss=[] }) {
       return s + t.hours * getCostRate(u2||{}, t.date);
     }, 0);
     // Use actual if available, else billing
-    const hasActual = users.some(u=>u.actualRate);
+    const hasActual = users.some(u=>u.actualRate&&u.actualRate>0);
     const staffCost = staffCostActual; // primary for signal/margin
 
     const fee = p.engagementFee || 0;
@@ -1981,7 +1992,7 @@ function Profitability({ users=[], projects=[], tss=[] }) {
   const firmMarginBilling= firmFee - firmCostBilling;
   const firmMargin       = profView==="actual" ? firmMarginActual : firmMarginBilling;
   const firmMarginPct    = firmFee>0 ? Math.round((firmMargin/firmFee)*100) : 0;
-  const hasAnyActual     = users.some(u=>u.actualRate);
+  const hasAnyActual     = users.some(u=>u.actualRate&&u.actualRate>0);
 
   const selData = selected ? allProfit.find(d=>d.p.id===selected) : null;
 
@@ -2005,6 +2016,11 @@ function Profitability({ users=[], projects=[], tss=[] }) {
           <div style={{fontSize:12,color:"var(--slate)",background:"var(--cream)",padding:"5px 12px",borderRadius:20,border:"1px solid var(--border)"}}>
             {profView==="actual"?"Using actual cost incurred by firm":"Using billing rate charged to client"}
           </div>
+          {!hasAnyActual&&profView==="actual"&&(
+            <div style={{fontSize:12,background:"#fef3c7",color:"#92400e",padding:"5px 12px",borderRadius:20,border:"1px solid #fde68a"}}>
+              ⚠ No actual cost rates set yet — showing billing rate as fallback. Set actual rates in User Management.
+            </div>
+          )}
         </div>
 
         <div className="prof-grid">
@@ -2087,20 +2103,23 @@ function Profitability({ users=[], projects=[], tss=[] }) {
           </div>
           {allProfit.length===0
             ? <div className="es"><div className="es-icon"><I n="target" s={36}/></div>No engagement data yet.</div>
-            : <div className="tw"><table>
+            : <>
+              <div className="tw"><table>
                 <thead><tr>
+                  <th style={{width:32}}>#</th>
                   <th>Code</th><th>Client</th><th>Fee</th>
                   <th style={{color:"var(--red)"}}>Cost ({profView==="actual"?"Actual":"Billing"})</th>
                   {hasAnyActual&&<th style={{color:"var(--slate)",fontSize:11}}>Alt. Cost</th>}
                   <th>Margin</th><th>Margin %</th><th>Status</th><th>Signal</th><th></th>
                 </tr></thead>
-                <tbody>{allProfit.map(({p,totalFee,staffCostActual,staffCostBilling,marginActual,marginBilling,marginPctActual,marginPctBilling,signal})=>{
+                <tbody>{allProfit.slice((profPage-1)*PROF_PAGE, profPage*PROF_PAGE).map(({p,totalFee,staffCostActual,staffCostBilling,marginActual,marginBilling,marginPctActual,marginPctBilling,signal},idx)=>{
                   const cost=profView==="actual"?staffCostActual:staffCostBilling;
                   const otherCost=profView==="actual"?staffCostBilling:staffCostActual;
                   const margin=profView==="actual"?marginActual:marginBilling;
                   const mp=profView==="actual"?marginPctActual:marginPctBilling;
                   return (
                     <tr key={p.id} style={{cursor:"pointer"}} onClick={()=>setSelected(p.id)}>
+                      <td className="tx tsl" style={{fontSize:12}}>{(profPage-1)*PROF_PAGE+idx+1}</td>
                       <td><span className="fw6 mono">{p.code}</span></td>
                       <td>{p.clientName}<div className="tx tsl">{p.name}</div></td>
                       <td className="fw6">{totalFee>0?fmtCurrency(totalFee):<span className="tsl tx">Not set</span>}
@@ -2116,7 +2135,15 @@ function Profitability({ users=[], projects=[], tss=[] }) {
                     </tr>
                   );
                 })}</tbody>
-              </table></div>}
+              </table></div>
+              {Math.ceil(allProfit.length/PROF_PAGE)>1&&(
+                <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginTop:12}}>
+                  <button className="btn bgh bsm" disabled={profPage===1} onClick={()=>setProfPage(p=>p-1)}>← Prev</button>
+                  <span className="ts tsl">Page {profPage} of {Math.ceil(allProfit.length/PROF_PAGE)} · {allProfit.length} engagements</span>
+                  <button className="btn bgh bsm" disabled={profPage===Math.ceil(allProfit.length/PROF_PAGE)} onClick={()=>setProfPage(p=>p+1)}>Next →</button>
+                </div>
+              )}
+            </>}
         </div>
       </>}
       {/* ── SINGLE ENGAGEMENT DRILL-DOWN ── */}
