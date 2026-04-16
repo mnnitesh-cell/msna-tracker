@@ -1247,12 +1247,20 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
   const appRole=isP?"manager":"intern";
   const myProjIds=projects.filter(p=>p.assignedPartnerId===user.id).map(p=>p.id);
 
-  // Regular pending: managers approve interns, partners approve managers
+  // Projects where this manager is assigned as a manager (for approving interns)
+  const myMgrProjIds = !isP
+    ? projects.filter(p=>(p.assignedManagers||[]).includes(user.id)).map(p=>p.id)
+    : [];
+
+  // Regular pending: managers approve interns on their assigned projects only
+  // Partners approve managers on their assigned projects only
   const pending=tss.filter(t=>{
     const u2=users.find(u=>u.id===t.userId);
     if(u2?.role!==appRole) return false;
     if(!["pending","resubmitted"].includes(t.status)) return false;
     if(isP&&!myProjIds.includes(t.projectId)) return false;
+    // Manager: only see interns on projects where this manager is assigned
+    if(!isP&&!t.isInternal&&!myMgrProjIds.includes(t.projectId)) return false;
     return true;
   });
 
@@ -1269,6 +1277,8 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
     if(u2?.role!==appRole) return false;
     if(["pending","resubmitted"].includes(t.status)) return false;
     if(isP&&!myProjIds.includes(t.projectId)) return false;
+    // Manager: only show history for their assigned projects
+    if(!isP&&!t.isInternal&&!myMgrProjIds.includes(t.projectId)) return false;
     return true;
   }).slice().reverse().slice(0,40);
 
@@ -2968,7 +2978,8 @@ export default function App() {
       ? tss.filter(t=>(["pending","resubmitted"].includes(t.status)&&users.find(u=>u.id===t.userId)?.role==="manager")||
           (t.status==="pending_partner"&&t.userId===currentUser.id)).length
       : currentUser.role==="manager"
-      ? tss.filter(t=>["pending","resubmitted"].includes(t.status)&&users.find(u=>u.id===t.userId)?.role==="intern").length
+      ? tss.filter(t=>["pending","resubmitted"].includes(t.status)&&users.find(u=>u.id===t.userId)?.role==="intern"&&
+          (t.isInternal||projects.filter(p=>(p.assignedManagers||[]).includes(currentUser.id)).map(p=>p.id).includes(t.projectId))).length
       : 0
   ):0;
 
