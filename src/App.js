@@ -2097,6 +2097,7 @@ function Profitability({ users=[], projects=[], tss=[] }) {
   const [selected, setSelected] = useState(null);
   const [profPage, setProfPage] = useState(1);
   const PROF_PAGE = 10;
+  const [profView, setProfView] = useState("actual");
   const [profSearch, setProfSearch] = useState("");
   const [profFilterStatus, setProfFilterStatus] = useState("");
   const [profFilterSignal, setProfFilterSignal] = useState("");
@@ -2204,8 +2205,6 @@ function Profitability({ users=[], projects=[], tss=[] }) {
 
   const sigLabel = s => s==="profit"?"● Profitable":s==="risk"?"● At Risk":s==="loss"?"● Loss Making":"● No Fee Set";
   const sigClass = s => `signal sig-${s}`;
-
-  const [profView, setProfView] = useState("actual"); // "actual" or "billing"
   const firmFee          = allProfit.reduce((s,d)=>s+d.totalFee,0);
   const firmCostActual   = allProfit.reduce((s,d)=>s+d.staffCostActual,0);
   const firmCostBilling  = allProfit.reduce((s,d)=>s+d.staffCostBilling,0);
