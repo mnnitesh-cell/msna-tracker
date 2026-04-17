@@ -393,13 +393,13 @@ function Login({ onLogin }) {
 // ══════════════════════════════════════════════════════════════
 // SIDEBAR
 // ══════════════════════════════════════════════════════════════
-function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=0 }) {
+function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=0, projPendingCount=0 }) {
   const isAdmin = user.email===ADMIN_EMAIL;
   const nav = [
     { id:"dashboard",  icon:"chart",    label:"Dashboard",      roles:["partner","manager","intern"] },
     { id:"week",       icon:"calendar", label:"My Week",        roles:["partner","manager","intern"] },
     { id:"timesheets", icon:"clock",    label:"Timesheets",     roles:["partner","manager","intern"] },
-    { id:"projects",   icon:"folder",   label:"Projects",       roles:["partner","manager","intern"] },
+    { id:"projects",   icon:"folder",   label:"Projects",       roles:["partner","manager","intern"], projBadge:true },
     { id:"approvals",  icon:"shield",   label:"Approvals",      roles:["partner","manager"], badge:true },
     { id:"reports",    icon:"chart",    label:"Reports",        roles:["partner"] },
     { id:"profitability", icon:"target", label:"Profitability",  roles:["partner"] },
@@ -422,6 +422,7 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=
             <I n={n.icon} s={16}/>{n.label}
             {n.badge&&pendingCount>0&&<span className="nb">{pendingCount}</span>}
             {n.leaveBadge&&leavePendingCount>0&&<span className="nb">{leavePendingCount}</span>}
+            {n.projBadge&&projPendingCount>0&&<span className="nb">{projPendingCount}</span>}
           </div>
         ))}
       </div>
@@ -3420,7 +3421,8 @@ export default function App() {
             if(currentUser.role==="manager") return l.status==="pending_manager"&&(l.approverManagers||[]).includes(currentUser.id)&&!(l.managerApprovals||[]).includes(currentUser.id);
             if(currentUser.role==="partner") return l.status==="pending_partner"&&(l.approverPartners||[]).includes(currentUser.id)&&!(l.partnerApprovals||[]).includes(currentUser.id);
             return false;
-          }).length}/>
+          }).length}
+          projPendingCount={currentUser.role==="partner" ? projects.filter(p=>p.status==="pending_approval").length : 0}/>
         <div className="main">
           <div className="topbar">
             <div className="tb-title">{titles[tab]}</div>
