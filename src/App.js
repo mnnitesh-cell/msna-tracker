@@ -80,26 +80,45 @@ const initStorage = async () => {
 // Keep for password lookups only (passwords stay local, never in cloud)
 const getStoreObj = k => { try { return JSON.parse(localStorage.getItem(k)||"{}"); } catch { return {}; } };
 
-// ── FIRESTORE REAL-TIME HOOK (replaces useLS) ──
+// ── FIRESTORE REAL-TIME HOOK ──
 function useLS(colName, fallback=[]) {
   const [data, setData] = useState(fallback);
   const isArr = Array.isArray(fallback);
-  useEffect(() => {
-    if (!isArr) return; // passwords handled separately
-    const unsub = onSnapshot(collection(db, colName), snap => {
-      setData(snap.docs.map(d => ({ ...d.data(), id: d.id })));
-    }, err => console.error("onSnapshot error", colName, err));
-    return unsub;
-  }, [colName, isArr]);  // eslint-disable-line react-hooks/exhaustive-deps
 
-  const set = useCallback(async (updater) => {
+  // Subscribe to Firestore real-time updates
+  useEffect(() => {
+    if (!isArr) return;
+    const unsub = onSnapshot(
+      collection(db, colName),
+      snap => { setData(snap.docs.map(d => ({ ...d.data(), id: d.id }))); },
+      err => console.error("onSnapshot error", colName, err)
+    );
+    return unsub;
+  }, [colName, isArr]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Write only changed/new/deleted items to Firestore
+  const set = useCallback((updater) => {
     setData(prev => {
       const next = typeof updater === "function" ? updater(prev) : updater;
-      // Sync to Firestore
-      const prevIds = new Set(prev.map(x=>x.id));
-      const nextIds = new Set(next.map(x=>x.id));
-      next.forEach(item => fsSet(colName, item.id, item));
-      [...prevIds].filter(id=>!nextIds.has(id)).forEach(id=>fsDel(colName, id));
+
+      // Compute diff — only write what changed
+      const prevMap = new Map(prev.map(x=>[x.id, x]));
+      const nextMap = new Map(next.map(x=>[x.id, x]));
+
+      // Write new or updated items only
+      next.forEach(item => {
+        const existing = prevMap.get(item.id);
+        // Deep compare: only write if changed
+        if(!existing || JSON.stringify(existing) !== JSON.stringify(item)) {
+          fsSet(colName, item.id, item);
+        }
+      });
+
+      // Delete removed items
+      prev.forEach(item => {
+        if(!nextMap.has(item.id)) fsDel(colName, item.id);
+      });
+
       return next;
     });
   }, [colName]);
