@@ -393,7 +393,7 @@ function Login({ onLogin }) {
 // ══════════════════════════════════════════════════════════════
 // SIDEBAR
 // ══════════════════════════════════════════════════════════════
-function Sidebar({ user, tab, setTab, onLogout, pendingCount }) {
+function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=0 }) {
   const isAdmin = user.email===ADMIN_EMAIL;
   const nav = [
     { id:"dashboard",  icon:"chart",    label:"Dashboard",      roles:["partner","manager","intern"] },
@@ -403,8 +403,8 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount }) {
     { id:"approvals",  icon:"shield",   label:"Approvals",      roles:["partner","manager"], badge:true },
     { id:"reports",    icon:"chart",    label:"Reports",        roles:["partner"] },
     { id:"profitability", icon:"target", label:"Profitability",  roles:["partner"] },
-    { id:"leave",      icon:"calendar", label:"Leave",                roles:["intern","manager","partner"] },
-    { id:"compliance", icon:"shield",   label:"Timesheet Compliance", roles:["partner"] },
+    { id:"leave",      icon:"calendar", label:"Leave",                roles:["intern","manager","partner"], leaveBadge:true },
+    { id:"compliance", icon:"shield",   label:"Timesheet Compliance", roles:["partner","manager"] },
     { id:"audit",      icon:"history",  label:"Audit Trail",    roles:["partner"] },
     { id:"users",      icon:"users",    label:"User Management",roles:["partner"] },
   ].filter(n=>n.roles.includes(user.role)&&(!n.adminOnly||isAdmin));
@@ -421,6 +421,7 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount }) {
           <div key={n.id} className={`ni ${tab===n.id?"active":""}`} onClick={()=>setTab(n.id)}>
             <I n={n.icon} s={16}/>{n.label}
             {n.badge&&pendingCount>0&&<span className="nb">{pendingCount}</span>}
+            {n.leaveBadge&&leavePendingCount>0&&<span className="nb">{leavePendingCount}</span>}
           </div>
         ))}
       </div>
@@ -2473,7 +2474,7 @@ const COMPLIANCE_CSS = `
 .comp-toggle { font-size:11px; color:var(--slate); }
 `;
 
-function Compliance({ users=[], tss=[], projects=[] }) {
+function Compliance({ user, users=[], tss=[], projects=[] }) {
   const [weekOffset, setWeekOffset] = useState(-1); // default = last week
   const [expanded, setExpanded] = useState({});
   const [filterRole, setFilterRole] = useState("all");
@@ -2493,8 +2494,10 @@ function Compliance({ users=[], tss=[], projects=[] }) {
   const workdays = week.slice(0,5).filter(d=>d<=today); // eslint-disable-line no-unused-vars
   const dayNames = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 
-  // Staff to check: interns and managers only
-  const staff = users.filter(u=>u.active&&["intern","manager"].includes(u.role))
+  // Partners see interns + managers; managers see only interns (their team)
+  const isCompPartner = user.role==="partner";
+  const allowedRoles = isCompPartner ? ["intern","manager"] : ["intern"];
+  const staff = users.filter(u=>u.active&&allowedRoles.includes(u.role))
     .filter(u=>filterRole==="all"||u.role===filterRole);
 
   // For each staff member compute compliance
@@ -2549,7 +2552,7 @@ function Compliance({ users=[], tss=[], projects=[] }) {
         <div style={{flex:1}}/>
         <select className="fs" style={{width:"auto",fontSize:13,padding:"7px 12px"}} value={filterRole} onChange={e=>setFilterRole(e.target.value)}>
           <option value="all">All Staff</option>
-          <option value="manager">Managers Only</option>
+          {isCompPartner&&<option value="manager">Managers Only</option>}
           <option value="intern">Interns Only</option>
         </select>
         <select className="fs" style={{width:"auto",fontSize:13,padding:"7px 12px"}} value={filterStatus} onChange={e=>setFilterStatus(e.target.value)}>
@@ -2789,12 +2792,11 @@ function Leave({ user, users=[], leaves=[], setLeaves, tss=[] }) {
     if(!form.startDate||!form.endDate){setFerr("Please select start and end dates.");return;}
     if(form.endDate<form.startDate){setFerr("End date cannot be before start date.");return;}
     if(workdays===0){setFerr("No working days in selected range.");return;}
-    if(form.approverManagers.length===0&&!isPartner){setFerr("Please select at least one manager approver.");return;}
-    if(form.approverPartners.length===0&&!isPartner){setFerr("Please select at least one partner approver.");return;}
+    if(isIntern&&form.approverManagers.length===0){setFerr("Please select at least one manager approver.");return;}
+    if(!isPartner&&form.approverPartners.length===0){setFerr("Please select at least one partner approver.");return;}
 
-    // Determine initial status
-    // For manager: skip manager step → pending_partner
-    // For intern/partner: pending_manager first
+    // Managers skip the manager approval step — go straight to partner
+    // Interns start at manager approval
     const initStatus = (isManager||isPartner) ? "pending_partner" : "pending_manager";
 
     const newLeave = {
@@ -3364,7 +3366,12 @@ export default function App() {
     <>
       <style>{CSS}</style>
       <div className="app">
-        <Sidebar user={currentUser} tab={tab} setTab={setTab} onLogout={()=>setCU(null)} pendingCount={pendingCount}/>
+        <Sidebar user={currentUser} tab={tab} setTab={setTab} onLogout={()=>setCU(null)} pendingCount={pendingCount}
+          leavePendingCount={leaves.filter(l=>{
+            if(currentUser.role==="manager") return l.status==="pending_manager"&&(l.approverManagers||[]).includes(currentUser.id)&&!(l.managerApprovals||[]).includes(currentUser.id);
+            if(currentUser.role==="partner") return l.status==="pending_partner"&&(l.approverPartners||[]).includes(currentUser.id)&&!(l.partnerApprovals||[]).includes(currentUser.id);
+            return false;
+          }).length}/>
         <div className="main">
           <div className="topbar">
             <div className="tb-title">{titles[tab]}</div>
@@ -3381,7 +3388,7 @@ export default function App() {
             {tab==="approvals"  &&["partner","manager"].includes(currentUser.role)&&<Approvals user={currentUser} {...db_props}/>}
             {tab==="reports"    &&currentUser.role==="partner"&&<Reports  user={currentUser} {...db_props} setLocked={setLocked}/>}
             {tab==="profitability"&&currentUser.role==="partner"&&<Profitability {...db_props}/>}
-            {tab==="compliance" &&currentUser.role==="partner"&&<Compliance {...db_props}/>}
+            {tab==="compliance" &&["partner","manager"].includes(currentUser.role)&&<Compliance user={currentUser} {...db_props}/>}
             {tab==="leave"       &&<Leave user={currentUser} {...db_props} tss={tss}/>}
             {tab==="audit"      &&currentUser.role==="partner"&&<AuditTrail audit={audit}/>}
             {tab==="users"      &&currentUser.role==="partner"&&<UserManagement user={currentUser} {...db_props}/>}
