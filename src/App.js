@@ -581,7 +581,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
   const [editE,setEE]        = useState(null);
   const [fs,setFs]           = useState("all");
   const [onBehalf,setOB]     = useState(false);
-  const [form,setF]          = useState({date:todayStr(),projectId:"",hours:"",category:"Assurance",description:"",billable:true,onBehalfOfId:"",isInternal:false,internalType:"Leave",internalApprovers:[],internalPartnerApprovers:[]});
+  const [form,setF]          = useState({date:todayStr(),projectId:"",hours:"",category:"Assurance",description:"",billable:false,onBehalfOfId:"",isInternal:false,internalType:"Leave",internalApprovers:[],internalPartnerApprovers:[]});
   const [isInternal,setIsInt]= useState(false);
   const [ferr,setFerr]       = useState("");
   // Filters, sort, pagination
@@ -664,7 +664,11 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
     setOB(behalf);
     setIsInt(internal);
     setEE(null);
-    setF({date:todayStr(),projectId:"",hours:"",category:"Assurance",description:"",billable:true,onBehalfOfId:"",isInternal:internal,internalType:"Leave",internalApprovers:[],internalPartnerApprovers:[]});
+    setF({date:todayStr(),projectId:"",hours:"",
+      category:internal?"Leave":"Assurance",  // default category matches mode
+      description:"",billable:true,onBehalfOfId:"",
+      isInternal:internal,internalType:"Leave",
+      internalApprovers:[],internalPartnerApprovers:[]});
     setFerr("");
     setSM(true);
   };
@@ -681,12 +685,15 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
   };
 
   const save = () => {
-    // Internal entries don't need project or description
     if(isInternal){
       if(!form.date||!form.hours){ setFerr("Date and hours are required."); return; }
+      if(!isP){
+        if(!isMgr&&(form.internalApprovers||[]).length===0){ setFerr("Please select at least one manager approver."); return; }
+        if((form.internalPartnerApprovers||[]).length===0){ setFerr("Please select at least one partner approver."); return; }
+      }
     } else {
       if(!form.date||!form.projectId||!form.hours||!form.description.trim()){ setFerr("All fields are required."); return; }
-      // onBehalf check now handled above
+      if(onBehalf&&!form.onBehalfOfId){ setFerr("Please select the Partner you are filing for."); return; }
     }
     // onBehalf check now handled above
     const h=Number(form.hours);
