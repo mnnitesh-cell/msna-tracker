@@ -580,7 +580,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
   const [editE,setEE]        = useState(null);
   const [fs,setFs]           = useState("all");
   const [onBehalf,setOB]     = useState(false);
-  const [form,setF]          = useState({date:todayStr(),projectId:"",hours:"",category:"Assurance",description:"",billable:true,onBehalfOfId:"",isInternal:false,internalType:"Leave"});
+  const [form,setF]          = useState({date:todayStr(),projectId:"",hours:"",category:"Assurance",description:"",billable:true,onBehalfOfId:"",isInternal:false,internalType:"Leave",internalApprovers:[],internalPartnerApprovers:[]});
   const [isInternal,setIsInt]= useState(false);
   const [ferr,setFerr]       = useState("");
   // Filters, sort, pagination
@@ -663,7 +663,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
     setOB(behalf);
     setIsInt(internal);
     setEE(null);
-    setF({date:todayStr(),projectId:"",hours:"",category:"Assurance",description:"",billable:true,onBehalfOfId:"",isInternal:internal,internalType:"Leave"});
+    setF({date:todayStr(),projectId:"",hours:"",category:"Assurance",description:"",billable:true,onBehalfOfId:"",isInternal:internal,internalType:"Leave",internalApprovers:[],internalPartnerApprovers:[]});
     setFerr("");
     setSM(true);
   };
@@ -720,10 +720,12 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
         id:genId(),
         userId: ownerId,
         ...form, hours:h,
-        // Internal entries: auto-approve if partner, otherwise pending (goes to manager)
+        // Internal entries: auto-approve if partner, otherwise pending
         status: isInternal
           ? (user.role==="partner" ? "approved" : "pending")
           : onBehalf ? "pending_partner" : autoApprove ? "approved" : "pending",
+        // Store selected approvers for internal entries
+        ...(isInternal&&!isP?{internalApprovers:form.internalApprovers||[],internalPartnerApprovers:form.internalPartnerApprovers||[]}:{}),
         ...(onBehalf?{filedById:user.id,filedByName:user.name}:{}),
         ...(autoApprove?{approvedBy:user.id,approvedAt:new Date().toISOString()}:{}),
         createdAt:new Date().toISOString()
@@ -835,6 +837,9 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
                 ? (user.id===ts.userId&&["pending_partner","rejected_partner"].includes(ts.status))
                   || (user.id===ts.filedById&&ts.status==="rejected_partner")
                 : isP||(ts.userId===user.id&&["pending","rejected","resubmitted"].includes(ts.status)&&!locked);
+              // Can delete: partner (assigned), or own entry not yet approved
+              const canDelete = isP&&!locked&&(user.email===ADMIN_EMAIL||projects.find(p=>p.id===ts.projectId)?.assignedPartnerId===user.id)
+                || (!isP&&ts.userId===user.id&&["pending","rejected","resubmitted"].includes(ts.status)&&!locked);
               return <tr key={ts.id}>
                 <td className="tx tsl" style={{fontSize:12}}>{(tsPage-1)*TS_PAGE+idx+1}</td>
                 {isP&&<td className="fw6">{u2?.name}<div className="tx tsl">{u2?.role}{isOnBehalf&&<span className="tx tsl"> · filed by {ts.filedByName}</span>}</div></td>}
@@ -851,8 +856,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
                 <td><span className={`bdg ${statusClass(ts.status)}`}>{statusLabel(ts.status)}</span></td>
                 <td><div className="fx g8">
                   {canEdit&&<button className="btn bgh bic bsm" onClick={()=>openEdit(ts)}><I n="edit" s={14}/></button>}
-                  {(isP&&!locked&&(user.email===ADMIN_EMAIL||projects.find(p=>p.id===ts.projectId)?.assignedPartnerId===user.id))&&
-                    <button className="btn bd bic bsm" onClick={()=>del(ts.id)}><I n="trash" s={14}/></button>}
+                  {canDelete&&<button className="btn bd bic bsm" title="Delete entry" onClick={()=>del(ts.id)}><I n="trash" s={14}/></button>}
                 </div></td>
               </tr>;
             })}</tbody>
@@ -884,20 +888,55 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
               <div className="fg"><label className="fl">Hours</label><input type="number" className="fi" placeholder="e.g. 8" min="0.5" max="24" step="0.5" value={form.hours} onChange={e=>setF(f=>({...f,hours:e.target.value}))}/></div>
             </div>
             {isInternal?(
-              <div className="fg">
-                <label className="fl">Type</label>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-                  {INTERNAL_CATEGORIES.map(cat=>(
-                    <label key={cat} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",borderRadius:8,border:"1.5px solid",borderColor:form.internalType===cat?"var(--navy)":"var(--border)",background:form.internalType===cat?"var(--cream)":"#fff",cursor:"pointer"}}>
-                      <input type="radio" name="internalType" checked={form.internalType===cat} onChange={()=>setF(f=>({...f,internalType:cat,category:cat}))} style={{accentColor:"var(--navy)"}}/>
-                      <div>
-                        <div style={{fontSize:13,fontWeight:form.internalType===cat?600:400,color:"var(--navy)"}}>{cat}</div>
-                        <div style={{fontSize:11,color:"var(--slate)"}}>{cat==="Leave"?"Personal/sick leave":cat==="Holiday"?"Public/firm holiday":cat==="Idle"?"No billable work":"Training & development"}</div>
-                      </div>
-                    </label>
-                  ))}
+              <>
+                <div className="fg">
+                  <label className="fl">Type</label>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                    {INTERNAL_CATEGORIES.map(cat=>(
+                      <label key={cat} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",borderRadius:8,border:"1.5px solid",borderColor:form.internalType===cat?"var(--navy)":"var(--border)",background:form.internalType===cat?"var(--cream)":"#fff",cursor:"pointer"}}>
+                        <input type="radio" name="internalType" checked={form.internalType===cat} onChange={()=>setF(f=>({...f,internalType:cat,category:cat}))} style={{accentColor:"var(--navy)"}}/>
+                        <div>
+                          <div style={{fontSize:13,fontWeight:form.internalType===cat?600:400,color:"var(--navy)"}}>{cat}</div>
+                          <div style={{fontSize:11,color:"var(--slate)"}}>{cat==="Leave"?"Personal/sick leave":cat==="Holiday"?"Public/firm holiday":cat==="Idle"?"No billable work":"Training & development"}</div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
                 </div>
-              </div>
+                <div className="fg"><label className="fl">Description (optional)</label>
+                  <textarea className="fta" placeholder="Brief notes..." value={form.description} onChange={e=>setF(f=>({...f,description:e.target.value}))}/>
+                </div>
+                {/* Approver selection for internal time */}
+                {!isP&&(
+                  <div style={{background:"var(--cream)",borderRadius:8,padding:"12px 14px",border:"1px solid var(--border)"}}>
+                    <div style={{fontSize:12,fontWeight:600,color:"var(--navy)",marginBottom:10,textTransform:"uppercase",letterSpacing:"0.5px"}}>Select Approver(s)</div>
+                    {!isMgr&&(
+                      <div className="fg" style={{marginBottom:10}}>
+                        <label className="fl">Manager(s)</label>
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+                          {users.filter(u=>u.role==="manager"&&u.active).map(m=>(
+                            <label key={m.id} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",borderRadius:7,border:"1.5px solid",borderColor:(form.internalApprovers||[]).includes(m.id)?"var(--navy)":"var(--border)",background:(form.internalApprovers||[]).includes(m.id)?"var(--cream)":"#fff",cursor:"pointer"}}>
+                              <input type="checkbox" checked={(form.internalApprovers||[]).includes(m.id)} onChange={()=>setF(f=>({...f,internalApprovers:(f.internalApprovers||[]).includes(m.id)?(f.internalApprovers||[]).filter(x=>x!==m.id):[...(f.internalApprovers||[]),m.id]}))} style={{accentColor:"var(--navy)"}}/>
+                              <span style={{fontSize:13}}>{m.name}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <div className="fg">
+                      <label className="fl">Partner(s)</label>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+                        {users.filter(u=>u.role==="partner"&&u.active).map(p=>(
+                          <label key={p.id} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",borderRadius:7,border:"1.5px solid",borderColor:(form.internalPartnerApprovers||[]).includes(p.id)?"var(--navy)":"var(--border)",background:(form.internalPartnerApprovers||[]).includes(p.id)?"var(--cream)":"#fff",cursor:"pointer"}}>
+                            <input type="checkbox" checked={(form.internalPartnerApprovers||[]).includes(p.id)} onChange={()=>setF(f=>({...f,internalPartnerApprovers:(f.internalPartnerApprovers||[]).includes(p.id)?(f.internalPartnerApprovers||[]).filter(x=>x!==p.id):[...(f.internalPartnerApprovers||[]),p.id]}))} style={{accentColor:"var(--navy)"}}/>
+                            <span style={{fontSize:13}}>{p.name}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
             ):(
               <>
                 <div className="fg">
@@ -1085,6 +1124,7 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
   const [form,setF]           =useState({code:"",name:"",clientName:"",description:"",assignedPartnerId:"",budgetHours:"",monthlyBudgetHours:"",engagementFee:"",feeType:"fixed",retainerMonths:"",category:"Assurance",billable:true,assignedStaff:[],assignedManagers:[],assignedPartners:[]});
   const [ferr,setFerr]        =useState("");
   const isP=user.role==="partner";
+  const isMgr=user.role==="manager";
   const partners=users.filter(u=>u.role==="partner"&&u.active);
 
   const openAdd=()=>{setEditP(null);setF({code:"",name:"",clientName:"",description:"",assignedPartnerId:isP?user.id:"",budgetHours:"",monthlyBudgetHours:"",engagementFee:"",feeType:"fixed",retainerMonths:"",category:"Assurance",billable:true,assignedStaff:[],assignedManagers:[],assignedPartners:[]});setFerr("");setSM(true);};
@@ -1256,9 +1296,11 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
                     <button className="btn bsc bsm" onClick={()=>approve(p.id)}><I n="check" s={12}/>Approve</button>
                     <button className="btn bd bsm" onClick={()=>{setRejectM(p);setRR("");}}><I n="x" s={12}/>Reject</button>
                   </>}
-                  {isP&&p.status==="active"&&<>
-                    <button className="btn bp bsm" onClick={()=>setAM(p)}><I n="users" s={12}/>Assign</button>
-                    {(user.email===ADMIN_EMAIL||p.assignedPartnerId===user.id)&&<button className="btn bgh bsm" onClick={()=>close(p.id)}><I n="archive" s={12}/>Close</button>}
+                  {p.status==="active"&&<>
+                    {/* Partners always see Assign; Managers see it if assigned to the project */}
+                    {(isP||(isMgr&&(p.assignedManagers||[]).includes(user.id)))&&
+                      <button className="btn bp bsm" onClick={()=>setAM(p)}><I n="users" s={12}/>Assign</button>}
+                    {isP&&(user.email===ADMIN_EMAIL||p.assignedPartnerId===user.id)&&<button className="btn bgh bsm" onClick={()=>close(p.id)}><I n="archive" s={12}/>Close</button>}
                   </>}
                   {/* Edit: partner always, manager only if pending */}
                   {canEditProj&&<button className="btn bgh bic bsm" title="Edit project" onClick={()=>openEdit(p)}><I n="edit" s={13}/></button>}
@@ -1428,21 +1470,26 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
   const appRole=isP?"manager":"intern";
   const myProjIds=projects.filter(p=>p.assignedPartnerId===user.id).map(p=>p.id);
 
-  // Projects where this manager is assigned as a manager (for approving interns)
   const myMgrProjIds = !isP
     ? projects.filter(p=>(p.assignedManagers||[]).includes(user.id)).map(p=>p.id)
     : [];
 
-  // Regular pending: managers approve interns on their assigned projects only
-  // Partners approve managers on their assigned projects only
   const pending=tss.filter(t=>{
     const u2=users.find(u=>u.id===t.userId);
     if(u2?.role!==appRole) return false;
     if(!["pending","resubmitted"].includes(t.status)) return false;
-    if(isP&&!myProjIds.includes(t.projectId)) return false;
-    // Manager: only see interns on projects where this manager is assigned
-    if(!isP&&!t.isInternal&&!myMgrProjIds.includes(t.projectId)) return false;
-    return true;
+    if(isP){
+      // For internal entries with specific partner approvers, only show to selected partners
+      if(t.isInternal&&t.internalPartnerApprovers?.length>0&&!t.internalPartnerApprovers.includes(user.id)) return false;
+      // For non-internal entries, check project assignment
+      if(!t.isInternal&&!myProjIds.includes(t.projectId)) return false;
+      return true;
+    }
+    // Manager: internal entries only if selected as approver; engagement entries only if assigned to project
+    if(t.isInternal){
+      return (t.internalApprovers||[]).includes(user.id);
+    }
+    return myMgrProjIds.includes(t.projectId);
   });
 
   // On-behalf pending: entries filed by managers on behalf of this partner
