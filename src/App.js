@@ -571,12 +571,25 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
   const [showM,setSM]        = useState(false);
   const [editE,setEE]        = useState(null);
   const [fs,setFs]           = useState("all");
-  const [onBehalf,setOB]     = useState(false); // Manager filing for Partner
+  const [onBehalf,setOB]     = useState(false);
   const [form,setF]          = useState({date:todayStr(),projectId:"",hours:"",category:"Assurance",description:"",billable:true,onBehalfOfId:"",isInternal:false,internalType:"Leave"});
-  const [isInternal,setIsInt]= useState(false); // track which modal mode
+  const [isInternal,setIsInt]= useState(false);
   const [ferr,setFerr]       = useState("");
+  // Filters, sort, pagination
+  const [filterStaff,setFStaff]   = useState("");
+  const [filterProj,setFProj]     = useState("");
+  const [filterCat,setFCat]       = useState("");
+  const [filterBill,setFBill]     = useState("");
+  const [filterFrom,setFFrom]     = useState("");
+  const [filterTo,setFTo]         = useState("");
+  const [sortCol,setSortCol]      = useState("date");
+  const [sortDir,setSortDir]      = useState("desc");
+  const [tsPage,setTsPage]        = useState(1);
+  const TS_PAGE = 10;
   const isP = user.role==="partner";
   const isMgr = user.role==="manager";
+  const toggleSort = col => { if(sortCol===col){setSortDir(d=>d==="asc"?"desc":"asc");}else{setSortCol(col);setSortDir("desc");} setTsPage(1); };
+  const sortIcon = col => sortCol===col?(sortDir==="asc"?" ↑":" ↓"):"";
 
   // Projects this user is assigned to
   const bookable = isP
@@ -609,10 +622,34 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
     t.userId===user.id ||
     (t.filedById===user.id && ["pending_partner","rejected_partner"].includes(t.status))
   );
-  const filtered = mine.filter(t=>fs==="all"||t.status===fs||
-    (fs==="pending"&&t.status==="pending_partner")||
-    (fs==="rejected"&&t.status==="rejected_partner")
-  ).slice().reverse();
+  const filtered = mine.filter(t=>{
+    if(fs!=="all"&&t.status!==fs&&
+      !(fs==="pending"&&t.status==="pending_partner")&&
+      !(fs==="rejected"&&t.status==="rejected_partner")) return false;
+    if(filterStaff&&t.userId!==filterStaff) return false;
+    if(filterProj&&t.projectId!==filterProj) return false;
+    if(filterCat&&t.category!==filterCat) return false;
+    if(filterBill==="yes"&&!t.billable) return false;
+    if(filterBill==="no"&&t.billable) return false;
+    if(filterFrom&&t.date<filterFrom) return false;
+    if(filterTo&&t.date>filterTo) return false;
+    return true;
+  }).slice().sort((a,b)=>{
+    let va,vb;
+    if(sortCol==="date"){va=a.date;vb=b.date;}
+    else if(sortCol==="hours"){va=a.hours;vb=b.hours;}
+    else if(sortCol==="staff"){va=users.find(u=>u.id===a.userId)?.name||"";vb=users.find(u=>u.id===b.userId)?.name||"";}
+    else if(sortCol==="project"){va=projects.find(p=>p.id===a.projectId)?.code||"";vb=projects.find(p=>p.id===b.projectId)?.code||"";}
+    else if(sortCol==="category"){va=a.category||"";vb=b.category||"";}
+    else if(sortCol==="status"){va=a.status;vb=b.status;}
+    else{va=a.date;vb=b.date;}
+    if(va<vb) return sortDir==="asc"?-1:1;
+    if(va>vb) return sortDir==="asc"?1:-1;
+    return 0;
+  });
+  const totalTsPages = Math.max(1,Math.ceil(filtered.length/TS_PAGE));
+  const paginated = filtered.slice((tsPage-1)*TS_PAGE, tsPage*TS_PAGE);
+  const hasFilters = filterStaff||filterProj||filterCat||filterBill||filterFrom||filterTo;
 
   const openAdd = (behalf=false, internal=false) => {
     setOB(behalf);
@@ -724,28 +761,74 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
         </div>
       </div>
 
+      {/* Status tabs */}
       <div className="tabs">
         {["all","pending","resubmitted","approved","rejected"].map(s=>(
-          <div key={s} className={`tab ${fs===s?"active":""}`} onClick={()=>setFs(s)}>
+          <div key={s} className={`tab ${fs===s?"active":""}`} onClick={()=>{setFs(s);setTsPage(1);}}>
             {s.charAt(0).toUpperCase()+s.slice(1)}
+            {s!=="all"&&<span style={{marginLeft:5,fontSize:11,background:"var(--border)",borderRadius:20,padding:"1px 6px"}}>
+              {mine.filter(t=>t.status===s||(s==="pending"&&t.status==="pending_partner")||(s==="rejected"&&t.status==="rejected_partner")).length}
+            </span>}
           </div>
         ))}
       </div>
 
+      {/* Filters */}
+      <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",marginBottom:12}}>
+        {isP&&<select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={filterStaff} onChange={e=>{setFStaff(e.target.value);setTsPage(1);}}>
+          <option value="">All Staff</option>
+          {users.filter(u=>u.active).map(u=><option key={u.id} value={u.id}>{u.name}</option>)}
+        </select>}
+        <select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={filterProj} onChange={e=>{setFProj(e.target.value);setTsPage(1);}}>
+          <option value="">All Projects</option>
+          {projects.map(p=><option key={p.id} value={p.id}>{p.code} — {p.clientName}</option>)}
+        </select>
+        <select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={filterCat} onChange={e=>{setFCat(e.target.value);setTsPage(1);}}>
+          <option value="">All Categories</option>
+          {[...ENGAGEMENT_CATEGORIES,...INTERNAL_CATEGORIES].map(c=><option key={c}>{c}</option>)}
+        </select>
+        <select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={filterBill} onChange={e=>{setFBill(e.target.value);setTsPage(1);}}>
+          <option value="">Billable: All</option>
+          <option value="yes">Billable only</option>
+          <option value="no">Non-billable only</option>
+        </select>
+        <div style={{display:"flex",alignItems:"center",gap:4}}>
+          <span style={{fontSize:11,color:"var(--slate)"}}>From</span>
+          <input type="date" className="fi" style={{fontSize:12,padding:"6px 8px",width:130}} value={filterFrom} onChange={e=>{setFFrom(e.target.value);setTsPage(1);}}/>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:4}}>
+          <span style={{fontSize:11,color:"var(--slate)"}}>To</span>
+          <input type="date" className="fi" style={{fontSize:12,padding:"6px 8px",width:130}} value={filterTo} onChange={e=>{setFTo(e.target.value);setTsPage(1);}}/>
+        </div>
+        {hasFilters&&<button className="btn bgh bsm" onClick={()=>{setFStaff("");setFProj("");setFCat("");setFBill("");setFFrom("");setFTo("");setTsPage(1);}}>✕ Clear</button>}
+        <span className="tx tsl" style={{fontSize:12,marginLeft:"auto"}}>{filtered.length} entr{filtered.length===1?"y":"ies"}</span>
+      </div>
+
       <div className="card">
         {filtered.length===0?<div className="es"><div className="es-icon"><I n="clock" s={36}/></div>No entries found.</div>:(
+          <>
           <div className="tw"><table>
-            <thead><tr>{isP&&<th>Staff</th>}<th>Date</th><th>Project</th><th>Category</th><th>Hrs</th><th>Billable</th><th>Description</th><th>Status</th><th></th></tr></thead>
-            <tbody>{filtered.map(ts=>{
+            <thead><tr>
+              <th style={{width:32}}>#</th>
+              {isP&&<th style={{cursor:"pointer"}} onClick={()=>toggleSort("staff")}>Staff{sortIcon("staff")}</th>}
+              <th style={{cursor:"pointer"}} onClick={()=>toggleSort("date")}>Date{sortIcon("date")}</th>
+              <th style={{cursor:"pointer"}} onClick={()=>toggleSort("project")}>Project{sortIcon("project")}</th>
+              <th style={{cursor:"pointer"}} onClick={()=>toggleSort("category")}>Category{sortIcon("category")}</th>
+              <th style={{cursor:"pointer"}} onClick={()=>toggleSort("hours")}>Hrs{sortIcon("hours")}</th>
+              <th>Billable</th><th>Description</th>
+              <th style={{cursor:"pointer"}} onClick={()=>toggleSort("status")}>Status{sortIcon("status")}</th>
+              <th></th>
+            </tr></thead>
+            <tbody>{paginated.map((ts,idx)=>{
               const u2=users.find(u=>u.id===ts.userId); const p=projects.find(p=>p.id===ts.projectId);
               const locked=lockedMonths.includes(monthKey(ts.date));
-              // Only the partner the entry is filed for can edit/delete their on-behalf entries
               const isOnBehalf = !!ts.filedById;
               const canEdit = isOnBehalf
-                ? (user.id===ts.userId&&["pending_partner","rejected_partner"].includes(ts.status)) // partner approves/edits own
-                  || (user.id===ts.filedById&&ts.status==="rejected_partner") // manager can re-file if rejected
+                ? (user.id===ts.userId&&["pending_partner","rejected_partner"].includes(ts.status))
+                  || (user.id===ts.filedById&&ts.status==="rejected_partner")
                 : isP||(ts.userId===user.id&&["pending","rejected","resubmitted"].includes(ts.status)&&!locked);
               return <tr key={ts.id}>
+                <td className="tx tsl" style={{fontSize:12}}>{(tsPage-1)*TS_PAGE+idx+1}</td>
                 {isP&&<td className="fw6">{u2?.name}<div className="tx tsl">{u2?.role}{isOnBehalf&&<span className="tx tsl"> · filed by {ts.filedByName}</span>}</div></td>}
                 <td>{fmtDate(ts.date)}{locked&&<div><span className="bdg blk tx" style={{marginTop:3}}><I n="lock" s={10}/>locked</span></div>}</td>
                 <td>{p?<><div className="fw6 mono">{p.code}</div><div className="tx tsl">{p.name}</div></>:"—"}</td>
@@ -766,6 +849,14 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
               </tr>;
             })}</tbody>
           </table></div>
+          {totalTsPages>1&&(
+            <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginTop:12,paddingTop:12,borderTop:"1px solid var(--border)"}}>
+              <button className="btn bgh bsm" disabled={tsPage===1} onClick={()=>setTsPage(p=>p-1)}>← Prev</button>
+              <span className="ts tsl">Page {tsPage} of {totalTsPages} · {filtered.length} entr{filtered.length===1?"y":"ies"}</span>
+              <button className="btn bgh bsm" disabled={tsPage===totalTsPages} onClick={()=>setTsPage(p=>p+1)}>Next →</button>
+            </div>
+          )}
+          </>
         )}
       </div>
 
