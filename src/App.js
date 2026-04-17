@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { initializeApp } from "firebase/app";
 import { getFirestore, collection, doc, onSnapshot, setDoc, deleteDoc, getDoc, getDocs } from "firebase/firestore";
 
@@ -84,42 +84,49 @@ const getStoreObj = k => { try { return JSON.parse(localStorage.getItem(k)||"{}"
 function useLS(colName, fallback=[]) {
   const [data, setData] = useState(fallback);
   const isArr = Array.isArray(fallback);
+  // Keep a ref to latest data for use in set() without stale closure
+  const dataRef = useRef(fallback);
 
   // Subscribe to Firestore real-time updates
   useEffect(() => {
     if (!isArr) return;
     const unsub = onSnapshot(
       collection(db, colName),
-      snap => { setData(snap.docs.map(d => ({ ...d.data(), id: d.id }))); },
+      snap => {
+        const docs = snap.docs.map(d => ({ ...d.data(), id: d.id }));
+        dataRef.current = docs;
+        setData(docs);
+      },
       err => console.error("onSnapshot error", colName, err)
     );
     return unsub;
   }, [colName, isArr]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Write only changed/new/deleted items to Firestore
+  // Write to Firestore FIRST, then update local state
+  // This avoids calling fsSet inside a state updater
   const set = useCallback((updater) => {
-    setData(prev => {
-      const next = typeof updater === "function" ? updater(prev) : updater;
+    const prev = dataRef.current;
+    const next = typeof updater === "function" ? updater(prev) : updater;
 
-      // Compute diff — only write what changed
-      const prevMap = new Map(prev.map(x=>[x.id, x]));
-      const nextMap = new Map(next.map(x=>[x.id, x]));
+    // Update local state immediately for responsive UI
+    dataRef.current = next;
+    setData(next);
 
-      // Write new or updated items only
-      next.forEach(item => {
-        const existing = prevMap.get(item.id);
-        // Deep compare: only write if changed
-        if(!existing || JSON.stringify(existing) !== JSON.stringify(item)) {
-          fsSet(colName, item.id, item);
-        }
-      });
+    // Compute diff and write only changed items to Firestore
+    const prevMap = new Map(prev.map(x=>[x.id, JSON.stringify(x)]));
+    const nextMap = new Map(next.map(x=>[x.id, x]));
 
-      // Delete removed items
-      prev.forEach(item => {
-        if(!nextMap.has(item.id)) fsDel(colName, item.id);
-      });
+    // Write new or changed items
+    next.forEach(item => {
+      const prevStr = prevMap.get(item.id);
+      if(!prevStr || prevStr !== JSON.stringify(item)) {
+        fsSet(colName, item.id, item);
+      }
+    });
 
-      return next;
+    // Delete removed items
+    prev.forEach(item => {
+      if(!nextMap.has(item.id)) fsDel(colName, item.id);
     });
   }, [colName]);
 
