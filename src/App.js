@@ -1475,6 +1475,8 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
   const [rejectM,setRM]=useState(null);
   const [reason,setR]  =useState("");
   const [reasonErr,setRE]=useState("");
+  const [histPage,setHistPage]=useState(1);
+  const HIST_PAGE=10;
   const isP=user.role==="partner";
   const appRole=isP?"manager":"intern";
   const myProjIds=projects.filter(p=>p.assignedPartnerId===user.id).map(p=>p.id);
@@ -1517,7 +1519,7 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
     // Manager: only show history for their assigned projects
     if(!isP&&!t.isInternal&&!myMgrProjIds.includes(t.projectId)) return false;
     return true;
-  }).slice().reverse().slice(0,40);
+  }).slice().reverse();
 
   const approve=id=>{
     setTss(p=>p.map(t=>t.id===id?{...t,status:"approved",approvedBy:user.id,approvedAt:new Date().toISOString()}:t));
@@ -1571,13 +1573,18 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
       </div>
 
       <div className="card">
-        <div className="card-title mb16">History</div>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+          <div className="card-title">History</div>
+          <span className="ts tsl" style={{fontSize:12}}>{history.length} entries</span>
+        </div>
         {history.length===0?<div className="es"><div className="es-icon"><I n="history" s={36}/></div>No history yet.</div>:(
+          <>
           <div className="tw"><table>
-            <thead><tr><th>Staff</th><th>Date</th><th>Project</th><th>Hrs</th><th>Status</th><th>Notes</th></tr></thead>
-            <tbody>{history.map(ts=>{
+            <thead><tr><th style={{width:32}}>#</th><th>Staff</th><th>Date</th><th>Project</th><th>Hrs</th><th>Status</th><th>Notes</th></tr></thead>
+            <tbody>{history.slice((histPage-1)*HIST_PAGE, histPage*HIST_PAGE).map((ts,idx)=>{
               const u2=users.find(u=>u.id===ts.userId); const p=projects.find(p=>p.id===ts.projectId);
               return <tr key={ts.id}>
+                <td className="tx tsl" style={{fontSize:12}}>{(histPage-1)*HIST_PAGE+idx+1}</td>
                 <td className="fw6">{u2?.name}</td><td>{fmtDate(ts.date)}</td>
                 <td><div className="mono fw6">{p?.code}</div><div className="tx tsl">{p?.clientName}</div></td><td>{ts.hours}h</td>
                 <td><span className={`bdg ${sc(ts.status)}`}>{ts.status}</span></td>
@@ -1585,6 +1592,14 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
               </tr>;
             })}</tbody>
           </table></div>
+          {Math.ceil(history.length/HIST_PAGE)>1&&(
+            <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginTop:12,paddingTop:12,borderTop:"1px solid var(--border)"}}>
+              <button className="btn bgh bsm" disabled={histPage===1} onClick={()=>setHistPage(p=>p-1)}>← Prev</button>
+              <span className="ts tsl">Page {histPage} of {Math.ceil(history.length/HIST_PAGE)} · {history.length} entries</span>
+              <button className="btn bgh bsm" disabled={histPage===Math.ceil(history.length/HIST_PAGE)} onClick={()=>setHistPage(p=>p+1)}>Next →</button>
+            </div>
+          )}
+          </>
         )}
       </div>
 
