@@ -3407,11 +3407,24 @@ export default function App() {
 
   const pendingCount = currentUser?(
     currentUser.role==="partner"
-      ? tss.filter(t=>(["pending","resubmitted"].includes(t.status)&&users.find(u=>u.id===t.userId)?.role==="manager")||
-          (t.status==="pending_partner"&&t.userId===currentUser.id)).length
+      ? tss.filter(t=>{
+          const u2=users.find(u=>u.id===t.userId);
+          if(!["pending","resubmitted"].includes(t.status)&&t.status!=="pending_partner") return false;
+          if(t.status==="pending_partner") return t.userId===currentUser.id;
+          if(u2?.role!=="manager") return false;
+          // Internal: only if this partner is a selected approver
+          if(t.isInternal) return (t.internalPartnerApprovers||[]).includes(currentUser.id);
+          // Engagement: only if from assigned project
+          return projects.filter(p=>p.assignedPartnerId===currentUser.id).map(p=>p.id).includes(t.projectId);
+        }).length
       : currentUser.role==="manager"
-      ? tss.filter(t=>["pending","resubmitted"].includes(t.status)&&users.find(u=>u.id===t.userId)?.role==="intern"&&
-          (t.isInternal||projects.filter(p=>(p.assignedManagers||[]).includes(currentUser.id)).map(p=>p.id).includes(t.projectId))).length
+      ? tss.filter(t=>{
+          const u2=users.find(u=>u.id===t.userId);
+          if(!["pending","resubmitted"].includes(t.status)) return false;
+          if(u2?.role!=="intern") return false;
+          if(t.isInternal) return (t.internalApprovers||[]).includes(currentUser.id);
+          return projects.filter(p=>(p.assignedManagers||[]).includes(currentUser.id)).map(p=>p.id).includes(t.projectId);
+        }).length
       : 0
   ):0;
 
