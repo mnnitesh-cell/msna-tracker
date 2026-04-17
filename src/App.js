@@ -2097,6 +2097,13 @@ function Profitability({ users=[], projects=[], tss=[] }) {
   const [selected, setSelected] = useState(null);
   const [profPage, setProfPage] = useState(1);
   const PROF_PAGE = 10;
+  const [profSearch, setProfSearch] = useState("");
+  const [profFilterStatus, setProfFilterStatus] = useState("");
+  const [profFilterSignal, setProfFilterSignal] = useState("");
+  const [profSortCol, setProfSortCol] = useState("margin_pct");
+  const [profSortDir, setProfSortDir] = useState("desc");
+  const toggleProfSort = col => { if(profSortCol===col){setProfSortDir(d=>d==="asc"?"desc":"asc");}else{setProfSortCol(col);setProfSortDir("desc");} setProfPage(1); };
+  const profSortIcon = col => profSortCol===col?(profSortDir==="asc"?" ↑":" ↓"):"";
 
   const approved = tss.filter(t => t.status === "approved");
 
@@ -2164,10 +2171,36 @@ function Profitability({ users=[], projects=[], tss=[] }) {
             signal, staffBreakdown, byMonth, months};
   };
 
-  const allProfit = projects
+  const allProfitRaw = projects
     .filter(p=>p.status==="active"||p.status==="closed")
-    .map(p=>({p, ...calcProfit(p)}))
-    .sort((a,b)=>(b.marginPct??-999)-(a.marginPct??-999));
+    .map(p=>({p, ...calcProfit(p)}));
+
+  // Apply search + filters
+  const allProfit = allProfitRaw.filter(({p,signal})=>{
+    const q = profSearch.toLowerCase();
+    if(q&&!p.code.toLowerCase().includes(q)&&!p.clientName.toLowerCase().includes(q)&&!p.name.toLowerCase().includes(q)) return false;
+    if(profFilterStatus&&p.status!==profFilterStatus) return false;
+    if(profFilterSignal&&signal!==profFilterSignal) return false;
+    return true;
+  }).sort((a,b)=>{
+    const getVal = (d,col) => {
+      const margin = profView==="actual"?d.marginActual:d.marginBilling;
+      const mp = profView==="actual"?d.marginPctActual:d.marginPctBilling;
+      const cost = profView==="actual"?d.staffCostActual:d.staffCostBilling;
+      if(col==="code") return d.p.code;
+      if(col==="client") return d.p.clientName;
+      if(col==="fee") return d.totalFee||0;
+      if(col==="cost") return cost||0;
+      if(col==="margin") return margin||0;
+      if(col==="margin_pct") return mp??-999;
+      if(col==="created") return d.p.createdAt||"";
+      return mp??-999;
+    };
+    const va=getVal(a,profSortCol), vb=getVal(b,profSortCol);
+    if(va<vb) return profSortDir==="asc"?-1:1;
+    if(va>vb) return profSortDir==="asc"?1:-1;
+    return 0;
+  });
 
   const sigLabel = s => s==="profit"?"● Profitable":s==="risk"?"● At Risk":s==="loss"?"● Loss Making":"● No Fee Set";
   const sigClass = s => `signal sig-${s}`;
@@ -2286,20 +2319,46 @@ function Profitability({ users=[], projects=[], tss=[] }) {
           </div>
         )}
 
+        {/* Search + Filters */}
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",marginBottom:12}}>
+          <input className="fi" placeholder="Search code, client, engagement..." value={profSearch}
+            style={{flex:1,minWidth:200,padding:"8px 12px",fontSize:13}}
+            onChange={e=>{setProfSearch(e.target.value);setProfPage(1);}}/>
+          <select className="fs" style={{width:"auto",fontSize:13,padding:"8px 12px"}} value={profFilterStatus} onChange={e=>{setProfFilterStatus(e.target.value);setProfPage(1);}}>
+            <option value="">All Statuses</option>
+            <option value="active">Active</option>
+            <option value="closed">Closed</option>
+          </select>
+          <select className="fs" style={{width:"auto",fontSize:13,padding:"8px 12px"}} value={profFilterSignal} onChange={e=>{setProfFilterSignal(e.target.value);setProfPage(1);}}>
+            <option value="">All Signals</option>
+            <option value="profit">Profitable</option>
+            <option value="risk">At Risk</option>
+            <option value="loss">Loss Making</option>
+            <option value="nofee">No Fee Set</option>
+          </select>
+          {(profSearch||profFilterStatus||profFilterSignal)&&
+            <button className="btn bgh bsm" onClick={()=>{setProfSearch("");setProfFilterStatus("");setProfFilterSignal("");setProfPage(1);}}>✕ Clear</button>}
+          <span className="tx tsl" style={{fontSize:12}}>{allProfit.length} engagement{allProfit.length!==1?"s":""}</span>
+        </div>
+
         <div className="card">
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
-            <div className="card-title">All Engagements — Profitability Ranking</div>
-          </div>
-          {allProfit.length===0
+          {allProfitRaw.length===0
             ? <div className="es"><div className="es-icon"><I n="target" s={36}/></div>No engagement data yet.</div>
+            : allProfit.length===0
+            ? <div className="es">No engagements match your filters.</div>
             : <>
               <div className="tw"><table>
                 <thead><tr>
                   <th style={{width:32}}>#</th>
-                  <th>Code</th><th>Client</th><th>Fee</th>
-                  <th style={{color:"var(--red)"}}>Cost ({profView==="actual"?"Actual":"Billing"})</th>
+                  <th style={{cursor:"pointer",whiteSpace:"nowrap"}} onClick={()=>toggleProfSort("created")}>Created{profSortIcon("created")}</th>
+                  <th style={{cursor:"pointer"}} onClick={()=>toggleProfSort("code")}>Code{profSortIcon("code")}</th>
+                  <th style={{cursor:"pointer"}} onClick={()=>toggleProfSort("client")}>Client{profSortIcon("client")}</th>
+                  <th style={{cursor:"pointer"}} onClick={()=>toggleProfSort("fee")}>Fee{profSortIcon("fee")}</th>
+                  <th style={{cursor:"pointer",color:"var(--red)"}} onClick={()=>toggleProfSort("cost")}>Cost ({profView==="actual"?"Actual":"Billing"}){profSortIcon("cost")}</th>
                   {hasAnyActual&&<th style={{color:"var(--slate)",fontSize:11}}>Alt. Cost</th>}
-                  <th>Margin</th><th>Margin %</th><th>Status</th><th>Signal</th><th></th>
+                  <th style={{cursor:"pointer"}} onClick={()=>toggleProfSort("margin")}>Margin{profSortIcon("margin")}</th>
+                  <th style={{cursor:"pointer"}} onClick={()=>toggleProfSort("margin_pct")}>Margin %{profSortIcon("margin_pct")}</th>
+                  <th>Status</th><th>Signal</th><th></th>
                 </tr></thead>
                 <tbody>{allProfit.slice((profPage-1)*PROF_PAGE, profPage*PROF_PAGE).map(({p,totalFee,staffCostActual,staffCostBilling,marginActual,marginBilling,marginPctActual,marginPctBilling,signal},idx)=>{
                   const cost=profView==="actual"?staffCostActual:staffCostBilling;
@@ -2309,6 +2368,7 @@ function Profitability({ users=[], projects=[], tss=[] }) {
                   return (
                     <tr key={p.id} style={{cursor:"pointer"}} onClick={()=>setSelected(p.id)}>
                       <td className="tx tsl" style={{fontSize:12}}>{(profPage-1)*PROF_PAGE+idx+1}</td>
+                      <td className="tx tsl" style={{fontSize:12,whiteSpace:"nowrap"}}>{p.createdAt?fmtDate(p.createdAt.slice(0,10)):"—"}</td>
                       <td><span className="fw6 mono">{p.code}</span></td>
                       <td>{p.clientName}<div className="tx tsl">{p.name}</div></td>
                       <td className="fw6">{totalFee>0?fmtCurrency(totalFee):<span className="tsl tx">Not set</span>}
@@ -2326,7 +2386,7 @@ function Profitability({ users=[], projects=[], tss=[] }) {
                 })}</tbody>
               </table></div>
               {Math.ceil(allProfit.length/PROF_PAGE)>1&&(
-                <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginTop:12}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginTop:12,paddingTop:12,borderTop:"1px solid var(--border)"}}>
                   <button className="btn bgh bsm" disabled={profPage===1} onClick={()=>setProfPage(p=>p-1)}>← Prev</button>
                   <span className="ts tsl">Page {profPage} of {Math.ceil(allProfit.length/PROF_PAGE)} · {allProfit.length} engagements</span>
                   <button className="btn bgh bsm" disabled={profPage===Math.ceil(allProfit.length/PROF_PAGE)} onClick={()=>setProfPage(p=>p+1)}>Next →</button>
