@@ -2508,10 +2508,11 @@ function Compliance({ user, users=[], tss=[], projects=[] }) {
       const isPast = d<=today;
       const isWeekend = i>=5;
       const isFuture = d>today;
-      return { date:d, dayName:dayNames[i], hrs, isPast, isWeekend, isFuture,
-        status: isFuture||isWeekend?"na": hrs>=MIN_HOURS?"ok": hrs>0?"low":"zero" };
+      const isBeforeTracking = d<"2026-04-01";
+      return { date:d, dayName:dayNames[i], hrs, isPast, isWeekend, isFuture, isBeforeTracking,
+        status: isFuture||isWeekend||isBeforeTracking?"na": hrs>=MIN_HOURS?"ok": hrs>0?"low":"zero" };
     });
-    const workdayResults = days.filter(d=>!d.isWeekend&&d.isPast);
+    const workdayResults = days.filter(d=>!d.isWeekend&&d.isPast&&!d.isBeforeTracking);
     const okDays = workdayResults.filter(d=>d.status==="ok").length;
     const lowDays = workdayResults.filter(d=>d.status==="low").length;
     const zeroDays = workdayResults.filter(d=>d.status==="zero").length;
@@ -2609,7 +2610,7 @@ function Compliance({ user, users=[], tss=[], projects=[] }) {
                     {days.map((d,i)=>(
                       <div key={d.date} className={`comp-pill ${d.isWeekend?"weekend":d.isFuture?"future":d.status}`}>
                         <span className="comp-pill-day">{d.dayName}</span>
-                        <span className="comp-pill-hrs">{d.isWeekend||d.isFuture?"—":d.hrs>0?d.hrs+"h":"✕"}</span>
+                        <span className="comp-pill-hrs">{d.isWeekend||d.isFuture||d.isBeforeTracking?"—":d.hrs>0?d.hrs+"h":"✕"}</span>
                       </div>
                     ))}
                   </div>
