@@ -838,7 +838,8 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
                   || (user.id===ts.filedById&&ts.status==="rejected_partner")
                 : isP||(ts.userId===user.id&&["pending","rejected","resubmitted"].includes(ts.status)&&!locked);
               // Can delete: partner (assigned), or own entry not yet approved
-              const canDelete = isP&&!locked&&(user.email===ADMIN_EMAIL||projects.find(p=>p.id===ts.projectId)?.assignedPartnerId===user.id)
+              // eslint-disable-next-line no-mixed-operators
+              const canDelete = (isP&&!locked&&(user.email===ADMIN_EMAIL||projects.find(p=>p.id===ts.projectId)?.assignedPartnerId===user.id))
                 || (!isP&&ts.userId===user.id&&["pending","rejected","resubmitted"].includes(ts.status)&&!locked);
               return <tr key={ts.id}>
                 <td className="tx tsl" style={{fontSize:12}}>{(tsPage-1)*TS_PAGE+idx+1}</td>
