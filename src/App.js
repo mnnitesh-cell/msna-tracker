@@ -415,6 +415,31 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=
       <div className="sb-user">
         <div className="sb-name">{user.name}</div>
         <div className={`sb-role r${user.role[0]}`}>{user.role.charAt(0).toUpperCase()+user.role.slice(1)}{isAdmin?" · Admin":""}</div>
+        {/* Quick actions right under the name */}
+        <div style={{display:"flex",gap:6,marginTop:12}}>
+          <button onClick={()=>setTab("changepassword")}
+            title="Change Password"
+            style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:6,padding:"7px 10px",borderRadius:7,
+              background:tab==="changepassword"?"rgba(201,168,76,0.15)":"rgba(255,255,255,0.05)",
+              color:tab==="changepassword"?"var(--gold)":"rgba(255,255,255,0.7)",
+              border:"1px solid",
+              borderColor:tab==="changepassword"?"rgba(201,168,76,0.3)":"rgba(255,255,255,0.08)",
+              fontSize:11,fontWeight:500,cursor:"pointer",transition:"all .15s",
+              letterSpacing:"0.3px"}}>
+            <I n="lock" s={12}/>Password
+          </button>
+          <button onClick={onLogout}
+            title="Sign Out"
+            style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:6,padding:"7px 10px",borderRadius:7,
+              background:"rgba(255,255,255,0.05)",color:"rgba(255,255,255,0.7)",
+              border:"1px solid rgba(255,255,255,0.08)",
+              fontSize:11,fontWeight:500,cursor:"pointer",transition:"all .15s",
+              letterSpacing:"0.3px"}}
+            onMouseEnter={e=>{e.currentTarget.style.background="rgba(220,38,38,0.15)";e.currentTarget.style.color="#fca5a5";e.currentTarget.style.borderColor="rgba(220,38,38,0.3)";}}
+            onMouseLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,0.05)";e.currentTarget.style.color="rgba(255,255,255,0.7)";e.currentTarget.style.borderColor="rgba(255,255,255,0.08)";}}>
+            <I n="logout" s={12}/>Sign Out
+          </button>
+        </div>
       </div>
       <div className="sb-nav">
         {nav.map(n=>(
@@ -425,14 +450,6 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=
             {n.projBadge&&projPendingCount>0&&<span className="nb">{projPendingCount}</span>}
           </div>
         ))}
-      </div>
-      <div className="sb-ft">
-        <div className="ni" style={{marginBottom:4,color:"rgba(255,255,255,.4)"}} onClick={()=>setTab("changepassword")}>
-          <I n="lock" s={15}/>Change Password
-        </div>
-        <button className="btn bgh bfl bsm" onClick={onLogout} style={{color:"rgba(255,255,255,.4)",borderColor:"rgba(255,255,255,.1)"}}>
-          <I n="logout" s={15}/>Sign Out
-        </button>
       </div>
     </div>
   );
