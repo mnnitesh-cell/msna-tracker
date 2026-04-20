@@ -1490,23 +1490,31 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
     if(u2?.role!==appRole) return false;
     if(!["pending","resubmitted"].includes(t.status)) return false;
     if(isP){
-      // Internal entries: show if selected as partner approver
-      if(t.isInternal&&t.internalPartnerApprovers?.length>0&&!t.internalPartnerApprovers.includes(user.id)) return false;
-      if(!t.isInternal){
-        if(!myProjIds.includes(t.projectId)) return false;
-        // If project has no managers assigned, intern entries skip manager and come to partner
-        const proj = projects.find(px=>px.id===t.projectId);
-        const projHasManagers = (proj?.assignedManagers||[]).length > 0;
-        // If project has managers, intern entries go to managers — not partner
-        // UNLESS the entry is flagged noManagerProject (submitted before managers were assigned)
-        if(u2?.role==="intern" && projHasManagers && !t.noManagerProject) return false;
+      // Internal time: show only to specifically selected partner approvers
+      if(t.isInternal){
+        if(t.internalPartnerApprovers?.length>0) return t.internalPartnerApprovers.includes(user.id);
+        return false; // no approver selected — don't show to anyone
       }
-      return true;
+      // Engagement time: find the project
+      const proj = projects.find(px=>px.id===t.projectId);
+      if(!proj) return false;
+      const projHasManagers = (proj.assignedManagers||[]).length > 0;
+      if(u2?.role==="manager"){
+        // Manager entries go to their project's assigned partner
+        return proj.assignedPartnerId===user.id || (proj.assignedPartners||[]).includes(user.id);
+      }
+      if(u2?.role==="intern"){
+        // If project has no managers → intern entries go directly to assigned partner
+        if(!projHasManagers){
+          return proj.assignedPartnerId===user.id || (proj.assignedPartners||[]).includes(user.id);
+        }
+        // Project has managers → managers handle it, not partners
+        return false;
+      }
+      return false;
     }
     // Manager: internal entries only if selected as approver; engagement entries only if assigned to project
-    if(t.isInternal){
-      return (t.internalApprovers||[]).includes(user.id);
-    }
+    if(t.isInternal) return (t.internalApprovers||[]).includes(user.id);
     return myMgrProjIds.includes(t.projectId);
   });
 
@@ -1522,8 +1530,12 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
     const u2=users.find(u=>u.id===t.userId);
     if(u2?.role!==appRole) return false;
     if(["pending","resubmitted"].includes(t.status)) return false;
-    if(isP&&!myProjIds.includes(t.projectId)) return false;
-    // Manager: only show history for their assigned projects
+    if(isP){
+      if(t.isInternal) return (t.internalPartnerApprovers||[]).includes(user.id);
+      const proj = projects.find(px=>px.id===t.projectId);
+      if(!proj) return false;
+      return proj.assignedPartnerId===user.id || (proj.assignedPartners||[]).includes(user.id);
+    }
     if(!isP&&!t.isInternal&&!myMgrProjIds.includes(t.projectId)) return false;
     return true;
   }).slice().reverse();
@@ -3516,7 +3528,6 @@ export default function App() {
     if(!cu) return 0;
     const isP = cu.role==="partner";
     const appRole = isP?"manager":"intern";
-    const myProjIds = projects.filter(p=>p.assignedPartnerId===cu.id).map(p=>p.id);
     const myMgrProjIds = !isP ? projects.filter(p=>(p.assignedManagers||[]).includes(cu.id)).map(p=>p.id) : [];
 
     const reg = tss.filter(t=>{
@@ -3524,14 +3535,16 @@ export default function App() {
       if(u2?.role!==appRole) return false;
       if(!["pending","resubmitted"].includes(t.status)) return false;
       if(isP){
-        if(t.isInternal&&t.internalPartnerApprovers?.length>0&&!t.internalPartnerApprovers.includes(cu.id)) return false;
-        if(!t.isInternal){
-          if(!myProjIds.includes(t.projectId)) return false;
-          const proj = projects.find(px=>px.id===t.projectId);
-          const projHasManagers = (proj?.assignedManagers||[]).length > 0;
-          if(u2?.role==="intern" && projHasManagers && !t.noManagerProject) return false;
+        if(t.isInternal){
+          if(t.internalPartnerApprovers?.length>0) return t.internalPartnerApprovers.includes(cu.id);
+          return false;
         }
-        return true;
+        const proj = projects.find(px=>px.id===t.projectId);
+        if(!proj) return false;
+        const projHasManagers = (proj.assignedManagers||[]).length > 0;
+        if(u2?.role==="manager") return proj.assignedPartnerId===cu.id||(proj.assignedPartners||[]).includes(cu.id);
+        if(u2?.role==="intern") return !projHasManagers&&(proj.assignedPartnerId===cu.id||(proj.assignedPartners||[]).includes(cu.id));
+        return false;
       }
       if(t.isInternal) return (t.internalApprovers||[]).includes(cu.id);
       return myMgrProjIds.includes(t.projectId);
