@@ -1479,6 +1479,7 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
   const HIST_PAGE=10;
   const isP=user.role==="partner";
   const appRole=isP?"manager":"intern";
+  // eslint-disable-next-line no-unused-vars
   const myProjIds=projects.filter(p=>p.assignedPartnerId===user.id).map(p=>p.id);
 
   const myMgrProjIds = !isP
