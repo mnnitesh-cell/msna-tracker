@@ -2166,7 +2166,10 @@ function Profitability({ users=[], projects=[], tss=[] }) {
     const marginPctBilling = totalFee > 0 ? Math.round((marginBilling/totalFee)*100) : null;
     const margin = marginActual;
     const marginPct = marginPctActual;
-    const signal = !fee ? "nofee" : margin >= 0 && marginPct >= 20 ? "profit" : margin >= 0 ? "risk" : "loss";
+    // Signal based on ACTIVE method (actual if actual rates exist, else billing)
+    const signalActual = !fee ? "nofee" : marginActual >= 0 && (marginPctActual||0) >= 20 ? "profit" : marginActual >= 0 ? "risk" : "loss";
+    const signalBilling = !fee ? "nofee" : marginBilling >= 0 && (marginPctBilling||0) >= 20 ? "profit" : marginBilling >= 0 ? "risk" : "loss";
+    const signal = signalActual; // default; overridden at render time by profView
 
     // Staff breakdown — both rates
     const staffBreakdown = users.map(u => {
@@ -2189,7 +2192,7 @@ function Profitability({ users=[], projects=[], tss=[] }) {
     });
     return {totalHrs, staffCost, staffCostBilling, staffCostActual, hasActual,
             totalFee, margin, marginActual, marginBilling, marginPct, marginPctActual, marginPctBilling,
-            signal, staffBreakdown, byMonth, months};
+            signal, signalActual, signalBilling, staffBreakdown, byMonth, months};
   };
 
   const allProfitRaw = projects
@@ -2398,7 +2401,7 @@ function Profitability({ users=[], projects=[], tss=[] }) {
                       <td className={margin>=0?"tsc fw6":"tdn fw6"}>{totalFee>0?fmtCurrency(margin):"—"}</td>
                       <td>{mp!=null?<span className={margin<0?"tdn":mp<20?"tam":"tsc"}>{mp}%</span>:<span className="tsl tx">—</span>}</td>
                       <td><span className={`bdg ${p.status==="active"?"bac":"bcl"}`}>{p.status}</span></td>
-                      <td><span className={sigClass(signal)}>{sigLabel(signal)}</span></td>
+                      <td><span className={sigClass(profView==="actual"?signalActual:signalBilling)}>{sigLabel(profView==="actual"?signalActual:signalBilling)}</span></td>
                       <td><button className="btn bgh bxs" onClick={e=>{e.stopPropagation();setSelected(p.id);}}>Detail →</button></td>
                     </tr>
                   );
@@ -2416,9 +2419,13 @@ function Profitability({ users=[], projects=[], tss=[] }) {
       </>}
       {/* ── SINGLE ENGAGEMENT DRILL-DOWN ── */}
       {selData && (() => {
-        const {p, totalHrs, staffCost, totalFee, margin, marginPct, signal, staffBreakdown, byMonth} = selData; // eslint-disable-line no-unused-vars
+        const {p, totalHrs, totalFee, staffCostActual, staffCostBilling, marginActual, marginBilling,
+               marginPctActual, marginPctBilling, signalActual, signalBilling, staffBreakdown, byMonth, hasActual} = selData; // eslint-disable-line no-unused-vars
+        const activeSignal = profView==="actual" ? signalActual : signalBilling;
+        const activeCost   = profView==="actual" ? staffCostActual : staffCostBilling;
+        const activeMargin = profView==="actual" ? marginActual : marginBilling;
+        const activeMPct   = profView==="actual" ? marginPctActual : marginPctBilling;
         const budgetPct = p.budgetHours ? Math.min(Math.round(totalHrs/p.budgetHours*100),100) : null;
-        const maxStaffCost = staffBreakdown[0]?.cost || 1;
         const partner = users.find(u=>u.id===p.assignedPartnerId);
         return (
           <div>
@@ -2427,7 +2434,10 @@ function Profitability({ users=[], projects=[], tss=[] }) {
               <div className="phc-left">
                 <div className="phc-code">{p.code}</div>
                 <div className="phc-name">{p.name} · {p.clientName}</div>
-                <div style={{marginTop:10}}><span className={sigClass(signal)}>{sigLabel(signal)}</span></div>
+                <div style={{marginTop:10,display:"flex",gap:8,flexWrap:"wrap"}}>
+                  <span className={sigClass(signalActual)}>{sigLabel(signalActual)} (Actual)</span>
+                  <span className={sigClass(signalBilling)}>{sigLabel(signalBilling)} (Billing)</span>
+                </div>
               </div>
               <div style={{textAlign:"right",color:"rgba(255,255,255,.7)",fontSize:13}}>
                 <div>Partner: {partner?.name||"—"}</div>
@@ -2436,36 +2446,48 @@ function Profitability({ users=[], projects=[], tss=[] }) {
               </div>
             </div>
 
-            {/* KPI row */}
-            <div className="sg" style={{gridTemplateColumns:"repeat(4,1fr)"}}>
-              <div className="sc">
-                <div className="sv" style={{color:"var(--gold)"}}>{fmtCurrency(totalFee)}</div>
-                <div className="sl">Engagement Fee</div>
-              </div>
-              <div className="sc">
-                <div className="sv" style={{color:"var(--red)"}}>{fmtCurrency(staffCost)}</div>
-                <div className="sl">Staff Cost</div>
-              </div>
-              <div className="sc">
-                <div className="sv" style={{color:margin>=0?"var(--green)":"var(--red)"}}>{totalFee>0?fmtCurrency(margin):"—"}</div>
-                <div className="sl">Net Margin</div>
-              </div>
-              <div className="sc">
-                <div className="sv" style={{color:marginPct==null?"var(--slate)":marginPct<0?"var(--red)":marginPct<20?"var(--amber)":"var(--green)"}}>{marginPct!=null?marginPct+"%":"—"}</div>
-                <div className="sl">Margin %</div>
-              </div>
+            {/* Dual KPI comparison */}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:20}}>
+              {[
+                {label:"Actual Cost Basis",cost:staffCostActual,margin:marginActual,mp:marginPctActual,signal:signalActual,active:profView==="actual"},
+                {label:"Billing Rate Basis",cost:staffCostBilling,margin:marginBilling,mp:marginPctBilling,signal:signalBilling,active:profView==="billing"},
+              ].map(m=>(
+                <div key={m.label} style={{background:"var(--cream)",borderRadius:12,padding:"16px 18px",border:"2px solid",borderColor:m.active?"var(--navy)":"var(--border)"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                    <div style={{fontSize:11,fontWeight:600,textTransform:"uppercase",letterSpacing:"1px",color:"var(--navy)"}}>{m.label}</div>
+                    {m.active&&<span style={{fontSize:10,background:"var(--navy)",color:"#fff",padding:"2px 8px",borderRadius:20}}>Active</span>}
+                  </div>
+                  {[
+                    {label:"Fee",val:totalFee,color:"var(--navy)"},
+                    {label:"Staff Cost",val:m.cost,color:"var(--red)"},
+                    {label:"Net Margin",val:m.margin,color:m.margin>=0?"var(--green)":"var(--red)"},
+                    {label:"Margin %",val:null,pct:m.mp},
+                  ].map(r=>{
+                    const pctColor = r.pct==null?"var(--slate)":r.pct<0?"var(--red)":r.pct<20?"var(--amber)":"var(--green)";
+                    return (
+                      <div key={r.label} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:"1px solid var(--border)"}}>
+                        <span style={{fontSize:13,color:"var(--slate)"}}>{r.label}</span>
+                        <span style={{fontWeight:600,fontSize:13,color:r.val!=null?(r.val<0?"var(--red)":r.color):pctColor}}>
+                          {r.val!=null?fmtCurrency(r.val):r.pct!=null?r.pct+"%":"—"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                  <div style={{marginTop:10}}><span className={sigClass(m.signal)}>{sigLabel(m.signal)}</span></div>
+                </div>
+              ))}
             </div>
 
             <div className="g2" style={{gap:16,marginBottom:22}}>
-              {/* Waterfall */}
+              {/* Waterfall for active method */}
               <div className="card">
-                <div className="card-title mb16">Fee vs Cost Breakdown</div>
+                <div className="card-title mb16">Fee vs Cost — {profView==="actual"?"Actual Cost":"Billing Rate"}</div>
                 {totalFee>0?(
                   <div className="waterfall">
                     {[
                       {label:"Fee Earned", val:totalFee, pct:100, cls:"wf-bar-fee"},
-                      {label:"Staff Cost", val:staffCost, pct:Math.min(Math.round(staffCost/totalFee*100),100), cls:"wf-bar-cost"},
-                      {label:margin>=0?"Margin":"Overrun", val:margin, pct:Math.max(0,marginPct||0), cls:margin>=0?"wf-bar-margin":"wf-bar-over"},
+                      {label:"Staff Cost", val:activeCost, pct:Math.min(Math.round(activeCost/totalFee*100),100), cls:"wf-bar-cost"},
+                      {label:activeMargin>=0?"Margin":"Overrun", val:activeMargin, pct:Math.max(0,activeMPct||0), cls:activeMargin>=0?"wf-bar-margin":"wf-bar-over"},
                     ].map(row=>(
                       <div key={row.label} className="wf-row">
                         <div className="wf-label">{row.label}</div>
@@ -2477,14 +2499,11 @@ function Profitability({ users=[], projects=[], tss=[] }) {
                     ))}
                   </div>
                 ):<div className="es" style={{padding:"30px 0"}}>No fee set for this engagement.</div>}
-
                 {p.budgetHours&&(
                   <div style={{marginTop:20,paddingTop:16,borderTop:"1px solid var(--border)"}}>
                     <div className="fxb mb8">
                       <span className="ts fw6">Hours Budget</span>
-                      <span className="ts tsl">{totalHrs}h / {p.budgetHours}h
-                        {p.feeType==="retainer"&&p.monthlyBudgetHours&&<span className="tx tsl"> ({p.monthlyBudgetHours}h/month × {p.retainerMonths}m)</span>}
-                      </span>
+                      <span className="ts tsl">{totalHrs}h / {p.budgetHours}h</span>
                     </div>
                     <div className="pbw" style={{height:10}}><div className={`pbf ${budgetPct>=100?"pbov":budgetPct>=80?"pbwn":"pbok"}`} style={{width:budgetPct+"%"}}/></div>
                     <div className="tx tsl mt4">{budgetPct}% of budget consumed</div>
@@ -2492,33 +2511,43 @@ function Profitability({ users=[], projects=[], tss=[] }) {
                 )}
               </div>
 
-              {/* Realization rate */}
+              {/* Effective rate */}
               <div className="card" style={{display:"flex",flexDirection:"column"}}>
                 <div className="card-title mb16">Effective Rate Analysis</div>
                 {totalHrs>0&&totalFee>0?(
                   <>
-                    <div style={{flex:1,display:"flex",flexDirection:"column",justifyContent:"center"}}>
-                      <div className="realization-ring">
-                        <div className="ring-val" style={{color:totalFee/totalHrs>=(staffCost/totalHrs)?"var(--green)":"var(--red)"}}>
-                          {fmtCurrency(Math.round(totalFee/totalHrs))}
-                        </div>
-                        <div className="ring-lbl">Effective Fee / Hour</div>
+                    <div style={{textAlign:"center",padding:"16px 0"}}>
+                      <div className="ring-val" style={{color:totalFee/totalHrs>=(activeCost/totalHrs)?"var(--green)":"var(--red)"}}>{fmtCurrency(Math.round(totalFee/totalHrs))}</div>
+                      <div className="ring-lbl">Fee / Hour</div>
+                    </div>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+                      <div style={{background:"var(--cream)",borderRadius:8,padding:"12px",textAlign:"center"}}>
+                        <div className="fw6 ts">{fmtCurrency(Math.round(activeCost/totalHrs))}</div>
+                        <div className="tx tsl">Cost / Hour</div>
+                        <div className="tx tsl" style={{fontSize:10}}>{profView==="actual"?"Actual":"Billing"}</div>
                       </div>
-                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginTop:8}}>
-                        <div style={{background:"var(--cream)",borderRadius:8,padding:"12px 14px",textAlign:"center"}}>
-                          <div className="fw6 ts">{fmtCurrency(Math.round(staffCost/totalHrs))}</div>
-                          <div className="tx tsl">Cost / Hour</div>
-                        </div>
-                        <div style={{background:"var(--cream)",borderRadius:8,padding:"12px 14px",textAlign:"center"}}>
-                          <div className="fw6 ts" style={{color:margin>=0?"var(--green)":"var(--red)"}}>{fmtCurrency(Math.round(margin/totalHrs))}</div>
-                          <div className="tx tsl">Margin / Hour</div>
-                        </div>
+                      <div style={{background:"var(--cream)",borderRadius:8,padding:"12px",textAlign:"center"}}>
+                        <div className="fw6 ts" style={{color:activeMargin>=0?"var(--green)":"var(--red)"}}>{fmtCurrency(Math.round(activeMargin/totalHrs))}</div>
+                        <div className="tx tsl">Margin / Hour</div>
                       </div>
                     </div>
-                    {totalFee/totalHrs < staffCost/totalHrs && (
-                      <div className="al al-d" style={{marginTop:14,marginBottom:0}}>
+                    {hasActual&&staffCostActual!==staffCostBilling&&(
+                      <div style={{background:"#fef9ec",borderRadius:8,padding:"10px 12px",border:"1px solid #fde68a",fontSize:12}}>
+                        <div style={{fontWeight:600,color:"#92400e",marginBottom:6}}>Rate Comparison</div>
+                        <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                          <span style={{color:"var(--slate)"}}>Actual cost/hr</span>
+                          <span style={{fontWeight:600}}>{fmtCurrency(Math.round(staffCostActual/totalHrs))}</span>
+                        </div>
+                        <div style={{display:"flex",justifyContent:"space-between"}}>
+                          <span style={{color:"var(--slate)"}}>Billing rate/hr</span>
+                          <span style={{fontWeight:600}}>{fmtCurrency(Math.round(staffCostBilling/totalHrs))}</span>
+                        </div>
+                      </div>
+                    )}
+                    {activeMargin<0&&(
+                      <div className="al al-d" style={{marginTop:10,marginBottom:0}}>
                         <I n="alert" s={14}/>
-                        <div>Fee per hour ({fmtCurrency(Math.round(totalFee/totalHrs))}) is below staff cost per hour ({fmtCurrency(Math.round(staffCost/totalHrs))}). This engagement is loss-making.</div>
+                        <div>This engagement is loss-making on {profView==="actual"?"actual cost":"billing rate"} basis.</div>
                       </div>
                     )}
                   </>
