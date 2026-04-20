@@ -3511,36 +3511,36 @@ export default function App() {
     }));
   }, [tss.length, projects.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const pendingCount = currentUser?(
-    currentUser.role==="partner"
-      ? tss.filter(t=>{
-          const u2=users.find(u=>u.id===t.userId);
-          if(!["pending","resubmitted"].includes(t.status)&&t.status!=="pending_partner") return false;
-          if(t.status==="pending_partner") return t.userId===currentUser.id;
-          const myAssignedProjIds = projects.filter(p=>p.assignedPartnerId===currentUser.id).map(p=>p.id);
-          if(!t.isInternal&&!myAssignedProjIds.includes(t.projectId)) return false;
-          if(u2?.role==="manager"){
-            if(t.isInternal) return (t.internalPartnerApprovers||[]).includes(currentUser.id);
-            return true;
-          }
-          if(u2?.role==="intern"&&!t.isInternal){
-            // Show to partner only if project has no managers assigned
-            const proj = projects.find(p=>p.id===t.projectId);
-            const hasManagers = (proj?.assignedManagers||[]).length > 0;
-            return !hasManagers || t.noManagerProject;
-          }
-          return false;
-        }).length
-      : currentUser.role==="manager"
-      ? tss.filter(t=>{
-          const u2=users.find(u=>u.id===t.userId);
-          if(!["pending","resubmitted"].includes(t.status)) return false;
-          if(u2?.role!=="intern") return false;
-          if(t.isInternal) return (t.internalApprovers||[]).includes(currentUser.id);
-          return projects.filter(p=>(p.assignedManagers||[]).includes(currentUser.id)).map(p=>p.id).includes(t.projectId);
-        }).length
-      : 0
-  ):0;
+  // Helper: exact same logic as Approvals tab pending filter
+  const calcPendingCount = (cu) => {
+    if(!cu) return 0;
+    const isP = cu.role==="partner";
+    const appRole = isP?"manager":"intern";
+    const myProjIds = projects.filter(p=>p.assignedPartnerId===cu.id).map(p=>p.id);
+    const myMgrProjIds = !isP ? projects.filter(p=>(p.assignedManagers||[]).includes(cu.id)).map(p=>p.id) : [];
+
+    const reg = tss.filter(t=>{
+      const u2=users.find(u=>u.id===t.userId);
+      if(u2?.role!==appRole) return false;
+      if(!["pending","resubmitted"].includes(t.status)) return false;
+      if(isP){
+        if(t.isInternal&&t.internalPartnerApprovers?.length>0&&!t.internalPartnerApprovers.includes(cu.id)) return false;
+        if(!t.isInternal){
+          if(!myProjIds.includes(t.projectId)) return false;
+          const proj = projects.find(px=>px.id===t.projectId);
+          const projHasManagers = (proj?.assignedManagers||[]).length > 0;
+          if(u2?.role==="intern" && projHasManagers && !t.noManagerProject) return false;
+        }
+        return true;
+      }
+      if(t.isInternal) return (t.internalApprovers||[]).includes(cu.id);
+      return myMgrProjIds.includes(t.projectId);
+    }).length;
+
+    const onBehalf = isP ? tss.filter(t=>t.status==="pending_partner"&&t.userId===cu.id).length : 0;
+    return reg + onBehalf;
+  };
+  const pendingCount = calcPendingCount(currentUser);
 
   const titles={dashboard:"Dashboard",week:"My Week",timesheets:"Timesheets",projects:"Projects",approvals:"Approvals",reports:"Reports",profitability:"Profitability",compliance:"Timesheet Compliance",leave:"Leave",audit:"Audit Trail",users:"User Management",changepassword:"Change Password"};
 
