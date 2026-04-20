@@ -1558,7 +1558,7 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
 
   return (
     <div>
-      <div className="sh"><div><div className="card-title">Approvals</div><div className="card-sub mt4 ts">Review {appRole} timesheets</div></div></div>
+      <div className="sh"><div><div className="card-title">Approvals</div><div className="card-sub mt4 ts">Review pending timesheets</div></div></div>
 
       <div className="card mb22">
         <div className="fxb mb16"><div className="card-title">Pending <span style={{color:"var(--amber)",fontSize:14}}>({allPending.length})</span></div></div>
@@ -3559,7 +3559,6 @@ export default function App() {
 
     const reg = tss.filter(t=>{
       const u2=users.find(u=>u.id===t.userId);
-      if(u2?.role!==appRole) return false;
       if(!["pending","resubmitted"].includes(t.status)) return false;
       if(isP){
         if(u2?.role!=="manager"&&u2?.role!=="intern") return false;
