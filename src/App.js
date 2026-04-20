@@ -1490,10 +1490,17 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
     if(u2?.role!==appRole) return false;
     if(!["pending","resubmitted"].includes(t.status)) return false;
     if(isP){
-      // For internal entries with specific partner approvers, only show to selected partners
+      // Internal entries: show if selected as partner approver
       if(t.isInternal&&t.internalPartnerApprovers?.length>0&&!t.internalPartnerApprovers.includes(user.id)) return false;
-      // For non-internal entries, check project assignment
-      if(!t.isInternal&&!myProjIds.includes(t.projectId)) return false;
+      if(!t.isInternal){
+        if(!myProjIds.includes(t.projectId)) return false;
+        // If project has no managers assigned, intern entries skip manager and come to partner
+        const proj = projects.find(px=>px.id===t.projectId);
+        const projHasManagers = (proj?.assignedManagers||[]).length > 0;
+        // If project has managers, intern entries go to managers — not partner
+        // UNLESS the entry is flagged noManagerProject (submitted before managers were assigned)
+        if(u2?.role==="intern" && projHasManagers && !t.noManagerProject) return false;
+      }
       return true;
     }
     // Manager: internal entries only if selected as approver; engagement entries only if assigned to project
@@ -3479,17 +3486,50 @@ export default function App() {
 
   const db_props = { users, setUsers, projects, setProjects, tss, setTss, locked, setLocked, audit, leaves, setLeaves };
 
+  // ── Migration: fix existing pending intern entries on projects with no managers ──
+  // These entries were stuck — no manager to approve them, not visible to partner either
+  useEffect(() => {
+    if(!tss.length||!projects.length) return;
+    const toFix = tss.filter(t => {
+      if(!["pending","resubmitted"].includes(t.status)) return false;
+      const u2 = users.find(u=>u.id===t.userId);
+      if(u2?.role!=="intern") return false;
+      if(t.isInternal) return false;
+      const proj = projects.find(p=>p.id===t.projectId);
+      if(!proj) return false;
+      const hasManagers = (proj.assignedManagers||[]).length > 0;
+      if(hasManagers) return false; // already routed correctly
+      return true; // no managers on this project — needs migration flag
+    });
+    if(toFix.length === 0) return;
+    // Mark these entries so partners can see them (no change to status, just flag)
+    setTss(prev => prev.map(t => {
+      const needsFix = toFix.find(x=>x.id===t.id);
+      if(!needsFix) return t;
+      if(t.noManagerProject) return t; // already flagged
+      return {...t, noManagerProject: true};
+    }));
+  }, [tss.length, projects.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const pendingCount = currentUser?(
     currentUser.role==="partner"
       ? tss.filter(t=>{
           const u2=users.find(u=>u.id===t.userId);
           if(!["pending","resubmitted"].includes(t.status)&&t.status!=="pending_partner") return false;
           if(t.status==="pending_partner") return t.userId===currentUser.id;
-          if(u2?.role!=="manager") return false;
-          // Internal: only if this partner is a selected approver
-          if(t.isInternal) return (t.internalPartnerApprovers||[]).includes(currentUser.id);
-          // Engagement: only if from assigned project
-          return projects.filter(p=>p.assignedPartnerId===currentUser.id).map(p=>p.id).includes(t.projectId);
+          const myAssignedProjIds = projects.filter(p=>p.assignedPartnerId===currentUser.id).map(p=>p.id);
+          if(!t.isInternal&&!myAssignedProjIds.includes(t.projectId)) return false;
+          if(u2?.role==="manager"){
+            if(t.isInternal) return (t.internalPartnerApprovers||[]).includes(currentUser.id);
+            return true;
+          }
+          if(u2?.role==="intern"&&!t.isInternal){
+            // Show to partner only if project has no managers assigned
+            const proj = projects.find(p=>p.id===t.projectId);
+            const hasManagers = (proj?.assignedManagers||[]).length > 0;
+            return !hasManagers || t.noManagerProject;
+          }
+          return false;
         }).length
       : currentUser.role==="manager"
       ? tss.filter(t=>{
