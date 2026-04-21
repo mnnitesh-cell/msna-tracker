@@ -2807,7 +2807,7 @@ function Compliance({ user, users=[], tss=[], projects=[] }) {
                     {days.map((d,i)=>(
                       <div key={d.date} className={`comp-pill ${d.isWeekend?"weekend":d.isFuture?"future":d.status}`}>
                         <span className="comp-pill-day">{d.dayName}</span>
-                        <span className="comp-pill-hrs">{d.isWeekend||d.isFuture||d.isBeforeTracking?"—":d.hrs>0?d.hrs+"h":"✕"}</span>
+                        <span className="comp-pill-hrs">{d.isWeekend||d.isFuture||d.isBeforeTracking?"—":d.hrs>0?(Math.round(d.hrs*10)/10)+"h":"✕"}</span>
                       </div>
                     ))}
                   </div>
@@ -2835,9 +2835,9 @@ function Compliance({ user, users=[], tss=[], projects=[] }) {
                         <div style={{width:60,color:"var(--slate)",fontSize:12}}>{d.dayName}</div>
                         <div style={{flex:1}}>
                           {d.status==="ok"
-                            ?<span style={{color:"var(--green)",fontWeight:600}}>{d.hrs}h logged</span>
+                            ?<span style={{color:"var(--green)",fontWeight:600}}>{(Math.round(d.hrs*10)/10)}h logged</span>
                             :d.status==="low"
-                            ?<span style={{color:"var(--amber)",fontWeight:600}}>{d.hrs}h logged</span>
+                            ?<span style={{color:"var(--amber)",fontWeight:600}}>{(Math.round(d.hrs*10)/10)}h logged</span>
                             :<span style={{color:"var(--slate)"}}>No entries</span>}
                         </div>
                         <div>
