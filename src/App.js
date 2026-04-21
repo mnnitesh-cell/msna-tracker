@@ -482,12 +482,37 @@ function Dashboard({ user, users=[], projects=[], tss=[] }) {
   return (
     <div>
       {budgetAlerts.length>0&&(
-        <div className="al al-w">
-          <I n="alert" s={16}/>
-          <div><strong>Budget Alert — </strong>{budgetAlerts.map(p=>{
-            const used=tss.filter(t=>t.projectId===p.id&&t.status==="approved").reduce((s,t)=>s+t.hours,0);
-            return `${p.code}: ${Math.round(used/p.budgetHours*100)}% of budget used`;
-          }).join(" · ")}</div>
+        <div style={{background:"#fef9ec",border:"1px solid #fde68a",borderRadius:12,padding:"16px 20px",marginBottom:20}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
+            <I n="alert" s={18}/>
+            <div style={{fontSize:14,fontWeight:600,color:"#92400e"}}>Budget Alert — {budgetAlerts.length} engagement{budgetAlerts.length>1?"s":""} nearing or exceeding budget</div>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(280px, 1fr))",gap:10}}>
+            {budgetAlerts.map(p=>{
+              const used=tss.filter(t=>t.projectId===p.id&&t.status==="approved").reduce((s,t)=>s+t.hours,0);
+              const pct=Math.round(used/p.budgetHours*100);
+              const isOver=pct>=100;
+              return (
+                <div key={p.id} style={{background:"#fff",borderRadius:8,padding:"12px 14px",border:"1px solid #fde68a"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10,marginBottom:6}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:11,fontFamily:"monospace",color:"var(--slate)",marginBottom:2}}>{p.code}</div>
+                      <div style={{fontSize:13,fontWeight:600,color:"var(--navy)",lineHeight:1.3}}>{p.clientName}</div>
+                      <div style={{fontSize:11,color:"var(--slate)",marginTop:2,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.name}</div>
+                    </div>
+                    <div style={{fontSize:16,fontWeight:700,color:isOver?"var(--red)":"#d97706",flexShrink:0}}>{pct}%</div>
+                  </div>
+                  <div style={{background:"#fef3c7",borderRadius:4,height:6,overflow:"hidden"}}>
+                    <div style={{background:isOver?"var(--red)":"#d97706",height:"100%",width:Math.min(pct,100)+"%",transition:"width .3s"}}/>
+                  </div>
+                  <div style={{fontSize:11,color:"var(--slate)",marginTop:6,display:"flex",justifyContent:"space-between"}}>
+                    <span>{used}h used</span>
+                    <span>of {p.budgetHours}h budget</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
       <div className="sg">
