@@ -627,9 +627,12 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
         [...(p.assignedStaff||[]),...(p.assignedManagers||[])].includes(user.id)
       ));
 
-  // For "on behalf" mode: projects where this manager is assigned
-  const onBehalfProjects = isMgr
-    ? projects.filter(p=>p.status==="active"&&(p.assignedManagers||[]).includes(user.id))
+  // For "on behalf" mode: projects where the user (manager OR intern) is assigned
+  const onBehalfProjects = !isP
+    ? projects.filter(p=>p.status==="active"&&(
+        (isMgr && (p.assignedManagers||[]).includes(user.id)) ||
+        (!isMgr && (p.assignedStaff||[]).includes(user.id))
+      ))
     : [];
 
   // Get ALL partners for a given project (assigned + additional)
@@ -788,7 +791,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
       <div className="sh">
         <div><div className="card-title">Timesheets</div><div className="card-sub mt4 ts">{isP?"All staff entries":"Your daily time log"}</div></div>
         <div className="fxc g8">
-          {isMgr&&onBehalfProjects.length>0&&(
+          {!isP&&onBehalfProjects.length>0&&(
             <button className="btn bgh bsm" onClick={()=>openAdd(true,false)}><I n="users" s={14}/>File for Partner</button>
           )}
           <button className="btn bgh bsm" onClick={()=>openAdd(false,true)} style={{borderColor:"var(--amber)",color:"var(--amber)"}}><I n="calendar" s={14}/>Internal Time</button>
