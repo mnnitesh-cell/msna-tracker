@@ -1497,6 +1497,18 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
   const [reasonErr,setRE]=useState("");
   const [histPage,setHistPage]=useState(1);
   const HIST_PAGE=10;
+  const [pendPage,setPendPage]=useState(1);
+  const PEND_PAGE=10;
+  // Filters
+  const [fStaff,setFStaff]=useState("");
+  const [fProj,setFProj]=useState("");
+  const [fCat,setFCat]=useState("");
+  const [fBill,setFBill]=useState("");
+  // Sort
+  const [sortCol,setSortCol]=useState("date");
+  const [sortDir,setSortDir]=useState("desc");
+  const toggleSort=col=>{if(sortCol===col){setSortDir(d=>d==="asc"?"desc":"asc");}else{setSortCol(col);setSortDir("desc");}setPendPage(1);};
+  const sortIcon=col=>sortCol===col?(sortDir==="asc"?" ↑":" ↓"):"";
   const isP=user.role==="partner";
   const myMgrProjIds = !isP
     ? projects.filter(p=>(p.assignedManagers||[]).includes(user.id)).map(p=>p.id)
@@ -1580,34 +1592,113 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
     <div>
       <div className="sh"><div><div className="card-title">Approvals</div><div className="card-sub mt4 ts">Review pending timesheets</div></div></div>
 
-      <div className="card mb22">
-        <div className="fxb mb16"><div className="card-title">Pending <span style={{color:"var(--amber)",fontSize:14}}>({allPending.length})</span></div></div>
-        {allPending.length===0?<div className="es"><div className="es-icon"><I n="check" s={36}/></div>All clear — no pending approvals.</div>:(
-          <div className="tw"><table>
-            <thead><tr><th>Staff</th><th>Date</th><th>Project</th><th>Category</th><th>Hrs</th><th>Billable</th><th>Description</th><th>Status</th><th>Actions</th></tr></thead>
-            <tbody>{allPending.map(ts=>{
-              const u2=users.find(u=>u.id===ts.userId); const p=projects.find(p=>p.id===ts.projectId); const rate=u2?.billingRate||0;
-              return <tr key={ts.id}>
-                <td className="fw6">{u2?.name}
-                  {ts.filedById&&<div className="tx" style={{color:"var(--gold)",fontSize:11}}>Filed by {ts.filedByName}</div>}
-                  <div className="tx tsl">{fmtCurrency(rate)}/hr</div>
-                </td>
-                <td>{fmtDate(ts.date)}</td>
-                <td><div className="fw6 mono">{p?.code}</div><div className="tx tsl">{p?.clientName} — {p?.name}</div></td>
-                <td className="ts">{ts.category}</td>
-                <td className="fw6">{ts.hours}h{ts.billable&&<div className="tx tgo">{fmtCurrency(ts.hours*rate)}</div>}</td>
-                <td>{ts.billable?<span className="tsc fw6">✓</span>:<span className="tsl">—</span>}</td>
-                <td className="ts tsl" style={{maxWidth:170}}>{ts.description}</td>
-                <td><span className={`bdg ${sc(ts.status)}`}>{ts.status}</span></td>
-                <td><div className="fx g8">
-                  <button className="btn bsc bsm" onClick={()=>ts.status==="pending_partner"?approveOnBehalf(ts.id):approve(ts.id)}><I n="check" s={13}/>Approve</button>
-                  <button className="btn bd bsm" onClick={()=>{setRM(ts);setR("");setRE("");}}><I n="x" s={13}/>Reject</button>
-                </div></td>
-              </tr>;
-            })}</tbody>
-          </table></div>
-        )}
-      </div>
+      {/* Filters + Sort */}
+      {allPending.length>0&&(
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",marginBottom:12}}>
+          <select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={fStaff} onChange={e=>{setFStaff(e.target.value);setPendPage(1);}}>
+            <option value="">All Staff</option>
+            {[...new Set(allPending.map(t=>t.userId))].map(uid=>{
+              const u2=users.find(u=>u.id===uid);
+              return u2?<option key={uid} value={uid}>{u2.name}</option>:null;
+            })}
+          </select>
+          <select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={fProj} onChange={e=>{setFProj(e.target.value);setPendPage(1);}}>
+            <option value="">All Projects</option>
+            {[...new Set(allPending.map(t=>t.projectId).filter(Boolean))].map(pid=>{
+              const p=projects.find(x=>x.id===pid);
+              return p?<option key={pid} value={pid}>{p.code} — {p.clientName}</option>:null;
+            })}
+          </select>
+          <select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={fCat} onChange={e=>{setFCat(e.target.value);setPendPage(1);}}>
+            <option value="">All Categories</option>
+            {[...new Set(allPending.map(t=>t.category).filter(Boolean))].map(c=><option key={c}>{c}</option>)}
+          </select>
+          <select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={fBill} onChange={e=>{setFBill(e.target.value);setPendPage(1);}}>
+            <option value="">Billable: All</option>
+            <option value="yes">Billable only</option>
+            <option value="no">Non-billable only</option>
+          </select>
+          {(fStaff||fProj||fCat||fBill)&&<button className="btn bgh bsm" onClick={()=>{setFStaff("");setFProj("");setFCat("");setFBill("");setPendPage(1);}}>✕ Clear</button>}
+        </div>
+      )}
+
+      {(() => {
+        // Apply filters + sort
+        const filteredPending = allPending.filter(t=>{
+          if(fStaff&&t.userId!==fStaff) return false;
+          if(fProj&&t.projectId!==fProj) return false;
+          if(fCat&&t.category!==fCat) return false;
+          if(fBill==="yes"&&!t.billable) return false;
+          if(fBill==="no"&&t.billable) return false;
+          return true;
+        }).slice().sort((a,b)=>{
+          let va,vb;
+          if(sortCol==="date"){va=a.date;vb=b.date;}
+          else if(sortCol==="hours"){va=a.hours;vb=b.hours;}
+          else if(sortCol==="staff"){va=users.find(u=>u.id===a.userId)?.name||"";vb=users.find(u=>u.id===b.userId)?.name||"";}
+          else if(sortCol==="project"){va=projects.find(p=>p.id===a.projectId)?.code||"";vb=projects.find(p=>p.id===b.projectId)?.code||"";}
+          else if(sortCol==="category"){va=a.category||"";vb=b.category||"";}
+          else{va=a.date;vb=b.date;}
+          if(va<vb) return sortDir==="asc"?-1:1;
+          if(va>vb) return sortDir==="asc"?1:-1;
+          return 0;
+        });
+        const totalPages = Math.max(1,Math.ceil(filteredPending.length/PEND_PAGE));
+        const paginatedPending = filteredPending.slice((pendPage-1)*PEND_PAGE, pendPage*PEND_PAGE);
+
+        return (
+          <div className="card mb22">
+            <div className="fxb mb16">
+              <div className="card-title">Pending <span style={{color:"var(--amber)",fontSize:14}}>({filteredPending.length}{filteredPending.length!==allPending.length&&` of ${allPending.length}`})</span></div>
+            </div>
+            {allPending.length===0
+              ?<div className="es"><div className="es-icon"><I n="check" s={36}/></div>All clear — no pending approvals.</div>
+              :filteredPending.length===0
+              ?<div className="es">No entries match your filters.</div>
+              :<>
+              <div className="tw"><table>
+                <thead><tr>
+                  <th style={{width:32}}>#</th>
+                  <th style={{cursor:"pointer"}} onClick={()=>toggleSort("staff")}>Staff{sortIcon("staff")}</th>
+                  <th style={{cursor:"pointer"}} onClick={()=>toggleSort("date")}>Date{sortIcon("date")}</th>
+                  <th style={{cursor:"pointer"}} onClick={()=>toggleSort("project")}>Project{sortIcon("project")}</th>
+                  <th style={{cursor:"pointer"}} onClick={()=>toggleSort("category")}>Category{sortIcon("category")}</th>
+                  <th style={{cursor:"pointer"}} onClick={()=>toggleSort("hours")}>Hrs{sortIcon("hours")}</th>
+                  <th>Billable</th><th>Description</th><th>Status</th><th>Actions</th>
+                </tr></thead>
+                <tbody>{paginatedPending.map((ts,idx)=>{
+                  const u2=users.find(u=>u.id===ts.userId); const p=projects.find(p=>p.id===ts.projectId); const rate=u2?.billingRate||0;
+                  return <tr key={ts.id}>
+                    <td className="tx tsl" style={{fontSize:12}}>{(pendPage-1)*PEND_PAGE+idx+1}</td>
+                    <td className="fw6">{u2?.name}
+                      {ts.filedById&&<div className="tx" style={{color:"var(--gold)",fontSize:11}}>Filed by {ts.filedByName}</div>}
+                      <div className="tx tsl">{fmtCurrency(rate)}/hr</div>
+                    </td>
+                    <td>{fmtDate(ts.date)}</td>
+                    <td><div className="fw6 mono">{p?.code}</div><div className="tx tsl">{p?.clientName} — {p?.name}</div></td>
+                    <td className="ts">{ts.category}</td>
+                    <td className="fw6">{ts.hours}h{ts.billable&&<div className="tx tgo">{fmtCurrency(ts.hours*rate)}</div>}</td>
+                    <td>{ts.billable?<span className="tsc fw6">✓</span>:<span className="tsl">—</span>}</td>
+                    <td className="ts tsl" style={{maxWidth:170}}>{ts.description}</td>
+                    <td><span className={`bdg ${sc(ts.status)}`}>{ts.status}</span></td>
+                    <td><div className="fx g8">
+                      <button className="btn bsc bsm" onClick={()=>ts.status==="pending_partner"?approveOnBehalf(ts.id):approve(ts.id)}><I n="check" s={13}/>Approve</button>
+                      <button className="btn bd bsm" onClick={()=>{setRM(ts);setR("");setRE("");}}><I n="x" s={13}/>Reject</button>
+                    </div></td>
+                  </tr>;
+                })}</tbody>
+              </table></div>
+              {totalPages>1&&(
+                <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginTop:12,paddingTop:12,borderTop:"1px solid var(--border)"}}>
+                  <button className="btn bgh bsm" disabled={pendPage===1} onClick={()=>setPendPage(p=>p-1)}>← Prev</button>
+                  <span className="ts tsl">Page {pendPage} of {totalPages} · {filteredPending.length} entries</span>
+                  <button className="btn bgh bsm" disabled={pendPage===totalPages} onClick={()=>setPendPage(p=>p+1)}>Next →</button>
+                </div>
+              )}
+              </>}
+          </div>
+        );
+      })()}
 
       <div className="card">
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
