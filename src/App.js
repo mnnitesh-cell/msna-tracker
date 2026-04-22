@@ -3055,6 +3055,17 @@ const LEAVE_CSS = `
 `;
 
 function Leave({ user, users=[], leaves=[], setLeaves, tss=[] }) {
+  // Filters & modify modal
+  const [filtStaff,setFiltStaff]=useState("");
+  const [filtStatus,setFiltStatus]=useState("");
+  const [filtType,setFiltType]=useState("");
+  const [filtMonth,setFiltMonth]=useState("");
+  const [modifyM,setModifyM]=useState(null);
+  const [modStart,setModStart]=useState("");
+  const [modEnd,setModEnd]=useState("");
+  const [modReason,setModReason]=useState("");
+  const [modErr,setModErr]=useState("");
+
   const [activeTab, setActiveTab] = useState("calendar");
   const [calOffset, setCalOffset] = useState(0);
   const [rejectM, setRejectM] = useState(null);
@@ -3159,6 +3170,56 @@ function Leave({ user, users=[], leaves=[], setLeaves, tss=[] }) {
     setLeaves(prev=>prev.map(l=>l.id===rejectM.id?{...l,status:"rejected",rejectedBy:user.id,rejectReason}:l));
     addAudit(user.id,user.name,"LEAVE_REJECT",`Rejected leave for ${rejectM.userName}: ${rejectReason}`);
     setRejectM(null); setRejectReason("");
+  };
+
+  // Cancel leave (own, not yet fully approved)
+  const cancelLeave = (l) => {
+    if(!window.confirm(`Cancel your leave request from ${fmtDate(l.startDate)} to ${fmtDate(l.endDate)}?`)) return;
+    setLeaves(prev=>prev.filter(x=>x.id!==l.id));
+    addAudit(user.id,user.name,"LEAVE_CANCEL",`Cancelled own leave ${fmtDate(l.startDate)} to ${fmtDate(l.endDate)}`);
+  };
+
+  // Partner action: delete any leave (mistakes/corrections)
+  const deleteLeave = (l) => {
+    const msg = l.status==="approved"
+      ? `Delete APPROVED leave for ${l.userName} (${fmtDate(l.startDate)} to ${fmtDate(l.endDate)})?\n\nThis cannot be undone. Ask the staff to re-submit the correct leave.`
+      : `Delete leave for ${l.userName} (${fmtDate(l.startDate)} to ${fmtDate(l.endDate)})?`;
+    if(!window.confirm(msg)) return;
+    setLeaves(prev=>prev.filter(x=>x.id!==l.id));
+    addAudit(user.id,user.name,"LEAVE_DELETE",`Deleted ${l.status} leave of ${l.userName}: ${fmtDate(l.startDate)} to ${fmtDate(l.endDate)}`);
+  };
+
+  // Partner action: modify dates of any leave
+  const openModify = (l) => {
+    setModifyM(l);
+    setModStart(l.startDate);
+    setModEnd(l.endDate);
+    setModReason("");
+    setModErr("");
+  };
+  const saveModify = () => {
+    if(!modStart||!modEnd){setModErr("Please select valid start and end dates.");return;}
+    if(modEnd<modStart){setModErr("End date cannot be before start date.");return;}
+    if(!modReason.trim()){setModErr("Please provide a reason for the modification.");return;}
+    const days = Math.round((new Date(modEnd)-new Date(modStart))/86400000)+1;
+    const actualDays = modifyM.halfDay ? days*0.5 : days;
+    setLeaves(prev=>prev.map(l=>l.id===modifyM.id?{
+      ...l,
+      startDate: modStart,
+      endDate: modEnd,
+      days: actualDays,
+      modifiedBy: user.id,
+      modifiedByName: user.name,
+      modifiedAt: new Date().toISOString(),
+      modifyReason: modReason,
+      modifyHistory: [
+        ...(l.modifyHistory||[]),
+        {at: new Date().toISOString(), by: user.name, from: `${l.startDate} to ${l.endDate}`, to: `${modStart} to ${modEnd}`, reason: modReason}
+      ]
+    }:l));
+    addAudit(user.id,user.name,"LEAVE_MODIFY",
+      `Modified ${modifyM.userName}'s leave: ${fmtDate(modifyM.startDate)}-${fmtDate(modifyM.endDate)} → ${fmtDate(modStart)}-${fmtDate(modEnd)}. Reason: ${modReason}`);
+    setModifyM(null);
   };
 
   // Pending leaves for current user to action
@@ -3407,6 +3468,7 @@ function Leave({ user, users=[], leaves=[], setLeaves, tss=[] }) {
                       <div style={{display:"flex",gap:6}}>
                         <button className="btn bsc bsm" onClick={()=>approve(l)}><I n="check" s={13}/>Approve</button>
                         <button className="btn bd bsm" onClick={()=>{setRejectM(l);setRejectReason("");}}><I n="x" s={13}/>Reject</button>
+                        {isPartner&&<button className="btn bgh bic bsm" title="Modify dates before approving" onClick={()=>openModify(l)}><I n="edit" s={13}/></button>}
                       </div>
                     </div>
                   </div>
@@ -3525,10 +3587,52 @@ function Leave({ user, users=[], leaves=[], setLeaves, tss=[] }) {
       {activeTab==="history"&&(
         <div className="card">
           <div style={{fontWeight:600,fontSize:13,marginBottom:14}}>{isPartner||isManager?"All Leave Requests":"My Leave Requests"}</div>
+          {/* Filters */}
+          {(isPartner||isManager)&&allRequests.length>0&&(
+            <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",marginBottom:14}}>
+              <select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={filtStaff} onChange={e=>setFiltStaff(e.target.value)}>
+                <option value="">All Staff</option>
+                {[...new Set(allRequests.map(l=>l.userId))].map(uid=>{
+                  const u2=users.find(u=>u.id===uid);
+                  return u2?<option key={uid} value={uid}>{u2.name}</option>:null;
+                })}
+              </select>
+              <select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={filtStatus} onChange={e=>setFiltStatus(e.target.value)}>
+                <option value="">All Statuses</option>
+                <option value="pending_manager">Pending Manager</option>
+                <option value="pending_partner">Pending Partner</option>
+                <option value="approved">Approved</option>
+                <option value="rejected">Rejected</option>
+              </select>
+              <select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={filtType} onChange={e=>setFiltType(e.target.value)}>
+                <option value="">All Types</option>
+                <option value="planned">Planned Leave</option>
+                <option value="sick">Sick Leave</option>
+              </select>
+              <input type="month" className="fi" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={filtMonth} onChange={e=>setFiltMonth(e.target.value)}/>
+              {(filtStaff||filtStatus||filtType||filtMonth)&&
+                <button className="btn bgh bsm" onClick={()=>{setFiltStaff("");setFiltStatus("");setFiltType("");setFiltMonth("");}}>✕ Clear</button>}
+              <span className="tx tsl" style={{fontSize:12,marginLeft:"auto"}}>
+                {allRequests.filter(l=>{
+                  if(filtStaff&&l.userId!==filtStaff) return false;
+                  if(filtStatus&&l.status!==filtStatus) return false;
+                  if(filtType&&l.leaveType!==filtType) return false;
+                  if(filtMonth){const mEnd=new Date(filtMonth.slice(0,4),filtMonth.slice(5,7),0).toISOString().slice(0,10);if(l.startDate>mEnd||l.endDate<`${filtMonth}-01`) return false;}
+                  return true;
+                }).length} request(s)
+              </span>
+            </div>
+          )}
           {allRequests.length===0
             ?<div className="lv-empty">No leave requests yet.</div>
             :<div style={{display:"flex",flexDirection:"column",gap:10}}>
-              {allRequests.map(l=>{
+              {allRequests.filter(l=>{
+                if(filtStaff&&l.userId!==filtStaff) return false;
+                if(filtStatus&&l.status!==filtStatus) return false;
+                if(filtType&&l.leaveType!==filtType) return false;
+                if(filtMonth){const mEnd=new Date(filtMonth.slice(0,4),filtMonth.slice(5,7),0).toISOString().slice(0,10);if(l.startDate>mEnd||l.endDate<`${filtMonth}-01`) return false;}
+                return true;
+              }).map(l=>{
                 const req=users.find(u=>u.id===l.userId);
                 const mgrsDone=(l.managerApprovals||[]).length;
                 const mgrsNeeded=(l.approverManagers||[]).length;
@@ -3548,7 +3652,17 @@ function Leave({ user, users=[], leaves=[], setLeaves, tss=[] }) {
                       </div>}
                       {l.status==="rejected"&&l.rejectReason&&<div style={{fontSize:11,color:"var(--red)",marginTop:3}}>Rejected: {l.rejectReason}</div>}
                     </div>
-                    <span className={`lv-badge ${statusClass(l.status)}`}>{statusLabel(l.status)}</span>
+                    <div style={{display:"flex",flexDirection:"column",gap:6,alignItems:"flex-end",flexShrink:0}}>
+                      <span className={`lv-badge ${statusClass(l.status)}`}>{statusLabel(l.status)}</span>
+                      <div style={{display:"flex",gap:6}}>
+                        {l.userId===user.id&&["pending_manager","pending_partner"].includes(l.status)&&
+                          <button className="btn bd bsm" title="Cancel this request" onClick={()=>cancelLeave(l)}><I n="x" s={12}/>Cancel</button>}
+                        {isPartner&&l.userId!==user.id&&<>
+                          <button className="btn bgh bic bsm" title="Modify leave dates" onClick={()=>openModify(l)}><I n="edit" s={13}/></button>
+                          <button className="btn bd bic bsm" title="Delete leave" onClick={()=>deleteLeave(l)}><I n="trash" s={13}/></button>
+                        </>}
+                      </div>
+                    </div>
                   </div>
                 );
               })}
@@ -3573,6 +3687,40 @@ function Leave({ user, users=[], leaves=[], setLeaves, tss=[] }) {
             }).length} leave request(s) found for {new Date(reportMonth+"-01").toLocaleString("default",{month:"long",year:"numeric"})}
           </div>
           <button className="btn bp" onClick={downloadReport}><I n="chart" s={15}/>Download Attendance Report (.csv)</button>
+        </div>
+      )}
+
+      {/* ── MODIFY LEAVE MODAL ── */}
+      {modifyM&&(
+        <div className="mo" onClick={()=>setModifyM(null)}>
+          <div className="md" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
+            <div className="md-title">Modify Leave Dates</div>
+            <div className="al al-i mb16"><I n="info" s={14}/>
+              <div>Modifying leave for <strong>{modifyM.userName}</strong>
+                {modifyM.status==="approved"&&<div style={{marginTop:4,fontSize:12,color:"#92400e"}}>This leave is already approved — changes will update immediately.</div>}
+              </div>
+            </div>
+            {modErr&&<div className="err">{modErr}</div>}
+            <div style={{background:"var(--cream)",borderRadius:8,padding:"10px 14px",marginBottom:16,fontSize:12}}>
+              <div style={{color:"var(--slate)",marginBottom:4}}>Current Dates</div>
+              <div style={{fontWeight:600}}>{fmtDate(modifyM.startDate)} — {fmtDate(modifyM.endDate)} · {modifyM.days} day{modifyM.days!==1?"s":""}</div>
+            </div>
+            <div className="g2">
+              <div className="fg"><label className="fl">New Start Date</label>
+                <input type="date" className="fi" value={modStart} onChange={e=>setModStart(e.target.value)}/>
+              </div>
+              <div className="fg"><label className="fl">New End Date</label>
+                <input type="date" className="fi" value={modEnd} onChange={e=>setModEnd(e.target.value)}/>
+              </div>
+            </div>
+            <div className="fg"><label className="fl">Reason for Modification</label>
+              <textarea className="fta" placeholder="e.g. Wrong date selected by staff, date extension requested etc." value={modReason} onChange={e=>setModReason(e.target.value)}/>
+            </div>
+            <div className="md-actions">
+              <button className="btn bgh" onClick={()=>setModifyM(null)}>Cancel</button>
+              <button className="btn bp" onClick={saveModify}><I n="check" s={15}/>Save Changes</button>
+            </div>
+          </div>
         </div>
       )}
 
