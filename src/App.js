@@ -2749,8 +2749,8 @@ function Profitability({ users=[], projects=[], tss=[] }) {
                 </table></div>}
             </div>
 
-            {/* Monthly trend — both methods */}
-            {Object.keys(byMonth).length>0&&(
+            {/* Monthly trend — retainer only (not useful for fixed fee) */}
+            {p.feeType==="retainer"&&Object.keys(byMonth).length>0&&(
               <div className="card" style={{padding:0,overflow:"hidden"}}>
                 {/* Card header */}
                 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"18px 24px",borderBottom:"1px solid var(--border)"}}>
