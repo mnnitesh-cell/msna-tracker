@@ -137,7 +137,9 @@ function useLS(colName, fallback=[]) {
 const genId       = () => Math.random().toString(36).slice(2,10);
 const todayStr    = () => new Date().toISOString().slice(0,10);
 const fmtDate     = d  => d ? new Date(d).toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"}) : "—";
-const fmtCurrency = n  => "₹"+Number(n||0).toLocaleString("en-IN");
+const fmtCurrency = n  => "₹"+Math.round(Number(n||0)).toLocaleString("en-IN");
+// Format hours: 1 decimal place max, strip trailing .0
+const fmtHrs     = h  => { const n = Number(h||0); return Number.isInteger(n)?n:Math.round(n*10)/10; };
 const monthKey    = d  => d ? d.slice(0,7) : "";
 const monthLabel  = mk => { if(!mk) return ""; const [y,m]=mk.split("-"); return new Date(y,m-1).toLocaleDateString("en-IN",{month:"long",year:"numeric"}); };
 
@@ -506,7 +508,7 @@ function Dashboard({ user, users=[], projects=[], tss=[] }) {
                     <div style={{background:isOver?"var(--red)":"#d97706",height:"100%",width:Math.min(pct,100)+"%",transition:"width .3s"}}/>
                   </div>
                   <div style={{fontSize:11,color:"var(--slate)",marginTop:6,display:"flex",justifyContent:"space-between"}}>
-                    <span>{used}h used</span>
+                    <span>{fmtHrs(used)}h used</span>
                     <span>of {p.budgetHours}h budget</span>
                   </div>
                 </div>
@@ -532,7 +534,7 @@ function Dashboard({ user, users=[], projects=[], tss=[] }) {
                 {isP&&<td className="fw6">{u2?.name}<div className="tx tsl">{u2?.role}</div></td>}
                 <td>{fmtDate(ts.date)}</td>
                 <td>{p?<><span className="fw6">{p.code}</span><div className="tx tsl">{p.name}</div></>:"—"}</td>
-                <td className="fw6">{ts.hours}h</td>
+                <td className="fw6">{fmtHrs(ts.hours)}h</td>
                 <td>{ts.billable?<span className="tsc fw6">✓</span>:<span className="tsl">—</span>}</td>
                 <td><span className={`bdg ${ts.status==="approved"?"ba":ts.status==="rejected"?"br":ts.status==="resubmitted"?"brs":"bp2"}`}>{ts.status}</span></td>
               </tr>;
@@ -600,7 +602,7 @@ function WeekView({ user, tss=[], projects=[] }) {
                 <td>{fmtDate(ts.date)}</td>
                 <td>{p?<><div className="fw6">{p.code}</div><div className="tx tsl">{p.name}</div></>:"—"}</td>
                 <td className="ts">{ts.category}</td>
-                <td className="fw6">{ts.hours}h</td>
+                <td className="fw6">{fmtHrs(ts.hours)}h</td>
                 <td>{ts.billable?<span className="tsc fw6">✓</span>:<span className="tsl">—</span>}</td>
                 <td className="ts tsl" style={{maxWidth:180}}>{ts.description}</td>
                 <td>
@@ -900,7 +902,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
                 <td>{fmtDate(ts.date)}{locked&&<div><span className="bdg blk tx" style={{marginTop:3}}><I n="lock" s={10}/>locked</span></div>}</td>
                 <td>{p?<><div className="fw6 mono">{p.code}</div><div className="tx tsl">{p.name}</div></>:"—"}</td>
                 <td className="ts">{ts.category}</td>
-                <td className="fw6">{ts.hours}h</td>
+                <td className="fw6">{fmtHrs(ts.hours)}h</td>
                 <td>{ts.billable?<span className="tsc fw6">✓</span>:<span className="tsl">—</span>}</td>
                 <td className="ts tsl" style={{maxWidth:180}}>
                   {ts.description}
@@ -1026,7 +1028,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
                           {pct!==null&&(
                             <div style={{textAlign:"right",flexShrink:0}}>
                               <div style={{fontSize:12,color:"var(--slate)",marginBottom:4}}>Budget</div>
-                              <div style={{fontSize:13,fontWeight:600,color:pct>=100?"var(--red)":pct>=80?"var(--amber)":"var(--green)"}}>{used}h / {sel.budgetHours}h ({pct}%)</div>
+                              <div style={{fontSize:13,fontWeight:600,color:pct>=100?"var(--red)":pct>=80?"var(--amber)":"var(--green)"}}>{fmtHrs(used)}h / {sel.budgetHours}h ({pct}%)</div>
                               <div style={{width:90,height:5,background:"var(--border)",borderRadius:4,marginTop:5,overflow:"hidden"}}>
                                 <div style={{width:pct+"%",height:"100%",borderRadius:4,background:pct>=100?"var(--red)":pct>=80?"var(--amber)":"var(--green)"}}/>
                               </div>
@@ -1340,7 +1342,7 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
                 <td>{p.clientName}</td>
                 <td className="ts">{partner?.name||"—"}</td>
                 <td style={{minWidth:120}}>{p.budgetHours
-                  ?<><div className="ts">{usedH}h / {p.budgetHours}h <span className={pct>=100?"tdn":pct>=80?"tam":"tsc"}>({pct}%)</span></div>
+                  ?<><div className="ts">{fmtHrs(usedH)}h / {p.budgetHours}h <span className={pct>=100?"tdn":pct>=80?"tam":"tsc"}>({pct}%)</span></div>
                     <div className="pbw"><div className={`pbf ${pct>=100?"pbov":pct>=80?"pbwn":"pbok"}`} style={{width:pct+"%"}}/></div></>
                   :<span className="tx tsl">No budget set</span>}</td>
                 <td style={{minWidth:110}}>{billingDisplay}</td>
@@ -1702,7 +1704,7 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
                     <td>{fmtDate(ts.date)}</td>
                     <td><div className="fw6 mono">{p?.code}</div><div className="tx tsl">{p?.clientName} — {p?.name}</div></td>
                     <td className="ts">{ts.category}</td>
-                    <td className="fw6">{ts.hours}h{ts.billable&&<div className="tx tgo">{fmtCurrency(ts.hours*rate)}</div>}</td>
+                    <td className="fw6">{fmtHrs(ts.hours)}h{ts.billable&&<div className="tx tgo">{fmtCurrency(ts.hours*rate)}</div>}</td>
                     <td>{ts.billable?<span className="tsc fw6">✓</span>:<span className="tsl">—</span>}</td>
                     <td className="ts tsl" style={{maxWidth:170}}>{ts.description}</td>
                     <td><span className={`bdg ${sc(ts.status)}`}>{ts.status}</span></td>
@@ -1739,7 +1741,7 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
               return <tr key={ts.id}>
                 <td className="tx tsl" style={{fontSize:12}}>{(histPage-1)*HIST_PAGE+idx+1}</td>
                 <td className="fw6">{u2?.name}</td><td>{fmtDate(ts.date)}</td>
-                <td><div className="mono fw6">{p?.code}</div><div className="tx tsl">{p?.clientName}</div></td><td>{ts.hours}h</td>
+                <td><div className="mono fw6">{p?.code}</div><div className="tx tsl">{p?.clientName}</div></td><td>{fmtHrs(ts.hours)}h</td>
                 <td><span className={`bdg ${sc(ts.status)}`}>{ts.status}</span></td>
                 <td className="ts tsl">{ts.rejectReason||"—"}</td>
               </tr>;
@@ -1906,7 +1908,7 @@ function Reports({ user, users=[], projects=[], tss=[], locked:lockedMonths=[], 
               return <tr key={d.p.id}>
                 <td className="fw6 mono">{d.p.code}</td><td>{d.p.name}</td><td>{d.p.clientName}</td>
                 <td><span className={`bdg ${d.p.status==="active"?"bac":d.p.status==="closed"?"bcl":"br"}`}>{d.p.status}</span></td>
-                <td className="fw6">{d.totalH}h</td><td>{d.billH}h</td>
+                <td className="fw6">{fmtHrs(d.totalH)}h</td><td>{fmtHrs(d.billH)}h</td>
                 <td>{pct!=null?<><span className={pct>=100?"tdn":pct>=80?"tam":"tsc"}>{pct}%</span><span className="tx tsl"> of {d.p.budgetHours}h</span></>:"—"}</td>
                 <td className="fw6 tgo">{fmtCurrency(d.val)}</td>
               </tr>;
@@ -1919,7 +1921,7 @@ function Reports({ user, users=[], projects=[], tss=[], locked:lockedMonths=[], 
             <tbody>{staffData.map(d=><tr key={d.u.id}>
               <td className="fw6">{d.u.name}</td>
               <td><span className={`bdg ${d.u.role==="partner"?"rpa":d.u.role==="manager"?"rma":"ria"}`}>{d.u.role}</span></td>
-              <td>{fmtCurrency(d.u.billingRate)}</td><td>{d.totalH}h</td><td>{d.billH}h</td><td className="fw6 tgo">{fmtCurrency(d.val)}</td>
+              <td>{fmtCurrency(d.u.billingRate)}</td><td>{fmtHrs(d.totalH)}h</td><td>{fmtHrs(d.billH)}h</td><td className="fw6 tgo">{fmtCurrency(d.val)}</td>
             </tr>)}</tbody>
           </table></div>
         ))}
@@ -2637,7 +2639,7 @@ function Profitability({ users=[], projects=[], tss=[] }) {
                   <div style={{marginTop:20,paddingTop:16,borderTop:"1px solid var(--border)"}}>
                     <div className="fxb mb8">
                       <span className="ts fw6">Hours Budget</span>
-                      <span className="ts tsl">{totalHrs}h / {p.budgetHours}h</span>
+                      <span className="ts tsl">{fmtHrs(totalHrs)}h / {p.budgetHours}h</span>
                     </div>
                     <div className="pbw" style={{height:10}}><div className={`pbf ${budgetPct>=100?"pbov":budgetPct>=80?"pbwn":"pbok"}`} style={{width:budgetPct+"%"}}/></div>
                     <div className="tx tsl mt4">{budgetPct}% of budget consumed</div>
@@ -2703,7 +2705,7 @@ function Profitability({ users=[], projects=[], tss=[] }) {
                     <div className="cost-bar-wrap">
                       <div className="cost-bar-fill" style={{width:Math.round(cost/maxStaffCost*100)+"%"}}/>
                     </div>
-                    <div style={{width:60,textAlign:"right"}} className="ts">{hrs}h</div>
+                    <div style={{width:60,textAlign:"right"}} className="ts">{fmtHrs(hrs)}h</div>
                     <div style={{width:90,textAlign:"right"}} className="fw6">{fmtCurrency(cost)}</div>
                     <div style={{width:60,textAlign:"right"}} className="tx tsl">{totalFee>0?Math.round(cost/totalFee*100)+"% of fee":"—"}</div>
                   </div>
@@ -2720,7 +2722,7 @@ function Profitability({ users=[], projects=[], tss=[] }) {
                     const mMargin = p.feeType==="retainer"?(p.monthlyFee||0)-d.cost:null;
                     return <tr key={mk}>
                       <td className="fw6">{monthLabel(mk)}</td>
-                      <td>{d.hrs}h</td>
+                      <td>{fmtHrs(d.hrs)}h</td>
                       <td>{fmtCurrency(d.cost)}</td>
                       {p.feeType==="retainer"&&<td className="fw6 tgo">{fmtCurrency(p.monthlyFee||0)}</td>}
                       {p.feeType==="retainer"&&<td className={`fw6 ${mMargin>=0?"tsc":"tdn"}`}>{fmtCurrency(mMargin)}</td>}
