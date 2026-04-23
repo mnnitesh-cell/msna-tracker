@@ -2556,7 +2556,6 @@ function Profitability({ users=[], projects=[], tss=[] }) {
       {selData && (() => {
         const {p, totalHrs, totalFee, staffCostActual, staffCostBilling, marginActual, marginBilling,
                marginPctActual, marginPctBilling, signalActual, signalBilling, staffBreakdown, byMonth, hasActual} = selData; // eslint-disable-line no-unused-vars
-        const maxStaffCost = staffBreakdown[0]?.cost || 1;
         const activeSignal = profView==="actual" ? signalActual : signalBilling; // eslint-disable-line no-unused-vars
         const activeCost   = profView==="actual" ? staffCostActual : staffCostBilling;
         const activeMargin = profView==="actual" ? marginActual : marginBilling;
