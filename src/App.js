@@ -840,11 +840,11 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
       <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",marginBottom:12}}>
         {isP&&<select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={filterStaff} onChange={e=>{setFStaff(e.target.value);setTsPage(1);}}>
           <option value="">All Staff</option>
-          {users.filter(u=>u.active).map(u=><option key={u.id} value={u.id}>{u.name}</option>)}
+          {users.filter(u=>u.active).slice().sort((a,b)=>a.name.localeCompare(b.name)).map(u=><option key={u.id} value={u.id}>{u.name}</option>)}
         </select>}
         <select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={filterProj} onChange={e=>{setFProj(e.target.value);setTsPage(1);}}>
           <option value="">All Projects</option>
-          {projects.map(p=><option key={p.id} value={p.id}>{p.code} — {p.clientName}</option>)}
+          {projects.slice().sort((a,b)=>a.code.localeCompare(b.code)).map(p=><option key={p.id} value={p.id}>{p.code} — {p.clientName}</option>)}
         </select>
         <select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={filterCat} onChange={e=>{setFCat(e.target.value);setTsPage(1);}}>
           <option value="">All Categories</option>
@@ -968,7 +968,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
                       <div className="fg" style={{marginBottom:10}}>
                         <label className="fl">Manager(s)</label>
                         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
-                          {users.filter(u=>u.role==="manager"&&u.active).map(m=>(
+                          {users.filter(u=>u.role==="manager"&&u.active).slice().sort((a,b)=>a.name.localeCompare(b.name)).map(m=>(
                             <label key={m.id} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",borderRadius:7,border:"1.5px solid",borderColor:(form.internalApprovers||[]).includes(m.id)?"var(--navy)":"var(--border)",background:(form.internalApprovers||[]).includes(m.id)?"var(--cream)":"#fff",cursor:"pointer"}}>
                               <input type="checkbox" checked={(form.internalApprovers||[]).includes(m.id)} onChange={()=>setF(f=>({...f,internalApprovers:(f.internalApprovers||[]).includes(m.id)?(f.internalApprovers||[]).filter(x=>x!==m.id):[...(f.internalApprovers||[]),m.id]}))} style={{accentColor:"var(--navy)"}}/>
                               <span style={{fontSize:13}}>{m.name}</span>
@@ -980,7 +980,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
                     <div className="fg">
                       <label className="fl">Partner(s)</label>
                       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
-                        {users.filter(u=>u.role==="partner"&&u.active).map(p=>(
+                        {users.filter(u=>u.role==="partner"&&u.active).slice().sort((a,b)=>a.name.localeCompare(b.name)).map(p=>(
                           <label key={p.id} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",borderRadius:7,border:"1.5px solid",borderColor:(form.internalPartnerApprovers||[]).includes(p.id)?"var(--navy)":"var(--border)",background:(form.internalPartnerApprovers||[]).includes(p.id)?"var(--cream)":"#fff",cursor:"pointer"}}>
                             <input type="checkbox" checked={(form.internalPartnerApprovers||[]).includes(p.id)} onChange={()=>setF(f=>({...f,internalPartnerApprovers:(f.internalPartnerApprovers||[]).includes(p.id)?(f.internalPartnerApprovers||[]).filter(x=>x!==p.id):[...(f.internalPartnerApprovers||[]),p.id]}))} style={{accentColor:"var(--navy)"}}/>
                             <span style={{fontSize:13}}>{p.name}</span>
@@ -1002,7 +1002,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
                       billable:selProj?.billable!==undefined?selProj.billable:f.billable}));
                   }}>
                     <option value="">-- Select Project --</option>
-                    {(onBehalf?onBehalfProjects:bookable).map(p=><option key={p.id} value={p.id}>{p.code} · {p.clientName} — {p.name}</option>)}
+                    {(onBehalf?onBehalfProjects:bookable).slice().sort((a,b)=>a.code.localeCompare(b.code)).map(p=><option key={p.id} value={p.id}>{p.code} · {p.clientName} — {p.name}</option>)}
                   </select>
                   {(onBehalf?onBehalfProjects:bookable).length===0&&<div className="tx tdn mt4">Not assigned to any active engagement. Contact your Partner.</div>}
                   {form.projectId&&(()=>{
@@ -1052,7 +1052,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
                       return (
                         <select className="fs" value={form.onBehalfOfId} onChange={e=>setF(f=>({...f,onBehalfOfId:e.target.value}))}>
                           <option value="">-- Select Partner --</option>
-                          {allPartners.map(p=><option key={p.id} value={p.id}>{p.name}{p.id===projects.find(x=>x.id===form.projectId)?.assignedPartnerId?" (Assigned Partner)":""}</option>)}
+                          {allPartners.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(p=><option key={p.id} value={p.id}>{p.name}{p.id===projects.find(x=>x.id===form.projectId)?.assignedPartnerId?" (Assigned Partner)":""}</option>)}
                         </select>
                       );
                     })()}
@@ -1129,7 +1129,7 @@ function AssignModal({ project, users:propUsers=[], onSave, onClose }) {
           <div className="mb16">
             <div className="fl" style={{marginBottom:10}}>Additional Partners</div>
             <div className="al al-i" style={{marginBottom:10,padding:"8px 12px"}}><I n="info" s={13}/><div className="tx">The Assigned Partner is already included. Add other partners who will also work on this engagement.</div></div>
-            {users.filter(u=>u.role==="partner"&&u.active&&u.id!==assignedPartnerId).map(u=>{
+            {users.filter(u=>u.role==="partner"&&u.active&&u.id!==assignedPartnerId).slice().sort((a,b)=>a.name.localeCompare(b.name)).map(u=>{
               const checked=partners.includes(u.id);
               return <label key={u.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",cursor:"pointer",borderBottom:"1px solid var(--border)"}}>
                 <input type="checkbox" checked={checked} onChange={()=>toggle(u.id,"partner")} style={{width:15,height:15}}/>
@@ -1141,7 +1141,7 @@ function AssignModal({ project, users:propUsers=[], onSave, onClose }) {
           {["manager","intern"].map(role=>(
             <div key={role} className="mb16">
               <div className="fl" style={{marginBottom:10}}>{role.charAt(0).toUpperCase()+role.slice(1)}s</div>
-              {users.filter(u=>u.role===role&&u.active).map(u=>{
+              {users.filter(u=>u.role===role&&u.active).slice().sort((a,b)=>a.name.localeCompare(b.name)).map(u=>{
                 const checked=role==="manager"?managers.includes(u.id):staff.includes(u.id);
                 return <label key={u.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",cursor:"pointer",borderBottom:"1px solid var(--border)"}}>
                   <input type="checkbox" checked={checked} onChange={()=>toggle(u.id,role)} style={{width:15,height:15}}/>
@@ -1179,7 +1179,7 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
   const [ferr,setFerr]        =useState("");
   const isP=user.role==="partner";
   const isMgr=user.role==="manager";
-  const partners=users.filter(u=>u.role==="partner"&&u.active);
+  const partners=users.filter(u=>u.role==="partner"&&u.active).slice().sort((a,b)=>a.name.localeCompare(b.name));
 
   const openAdd=()=>{setEditP(null);setF({code:"",name:"",clientName:"",description:"",assignedPartnerId:isP?user.id:"",budgetHours:"",monthlyBudgetHours:"",engagementFee:"",feeType:"fixed",retainerMonths:"",category:"Assurance",billable:true,assignedStaff:[],assignedManagers:[],assignedPartners:[]});setFerr("");setSM(true);};
   const openEdit=(p)=>{setEditP(p);setF({code:p.code,name:p.name,clientName:p.clientName,description:p.description||"",assignedPartnerId:p.assignedPartnerId,budgetHours:p.budgetHours||"",monthlyBudgetHours:p.monthlyBudgetHours||"",engagementFee:p.monthlyFee||p.engagementFee||"",feeType:p.feeType||"fixed",retainerMonths:p.retainerMonths||"",category:p.category||"Assurance",billable:p.billable!==false,assignedStaff:p.assignedStaff||[],assignedManagers:p.assignedManagers||[],assignedPartners:p.assignedPartners||[]});setFerr("");setSM(true);};
@@ -1476,7 +1476,7 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
                   </div>
                   {role==="partner"&&<div className="tx tsl" style={{marginBottom:8,fontSize:12}}>The Assigned Partner above is already included. Add other partners working on this engagement.</div>}
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
-                    {users.filter(u=>u.role===role&&u.active&&(role!=="partner"||u.id!==form.assignedPartnerId)).map(u=>{
+                    {users.filter(u=>u.role===role&&u.active&&(role!=="partner"||u.id!==form.assignedPartnerId)).slice().sort((a,b)=>a.name.localeCompare(b.name)).map(u=>{
                       const isAssigned = role==="manager"
                         ? (form.assignedManagers||[]).includes(u.id)
                         : role==="partner"
@@ -1622,21 +1622,21 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
         <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",marginBottom:12}}>
           <select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={fStaff} onChange={e=>{setFStaff(e.target.value);setPendPage(1);}}>
             <option value="">All Staff</option>
-            {[...new Set(allPending.map(t=>t.userId))].map(uid=>{
-              const u2=users.find(u=>u.id===uid);
-              return u2?<option key={uid} value={uid}>{u2.name}</option>:null;
-            })}
+            {[...new Set(allPending.map(t=>t.userId))]
+              .map(uid=>users.find(u=>u.id===uid)).filter(Boolean)
+              .sort((a,b)=>a.name.localeCompare(b.name))
+              .map(u2=><option key={u2.id} value={u2.id}>{u2.name}</option>)}
           </select>
           <select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={fProj} onChange={e=>{setFProj(e.target.value);setPendPage(1);}}>
             <option value="">All Projects</option>
-            {[...new Set(allPending.map(t=>t.projectId).filter(Boolean))].map(pid=>{
-              const p=projects.find(x=>x.id===pid);
-              return p?<option key={pid} value={pid}>{p.code} — {p.clientName}</option>:null;
-            })}
+            {[...new Set(allPending.map(t=>t.projectId).filter(Boolean))]
+              .map(pid=>projects.find(p=>p.id===pid)).filter(Boolean)
+              .sort((a,b)=>a.code.localeCompare(b.code))
+              .map(p=><option key={p.id} value={p.id}>{p.code} — {p.clientName}</option>)}
           </select>
           <select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={fCat} onChange={e=>{setFCat(e.target.value);setPendPage(1);}}>
             <option value="">All Categories</option>
-            {[...new Set(allPending.map(t=>t.category).filter(Boolean))].map(c=><option key={c}>{c}</option>)}
+            {[...new Set(allPending.map(t=>t.category).filter(Boolean))].sort().map(c=><option key={c}>{c}</option>)}
           </select>
           <select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={fBill} onChange={e=>{setFBill(e.target.value);setPendPage(1);}}>
             <option value="">Billable: All</option>
@@ -1973,7 +1973,7 @@ function Reports({ user, users=[], projects=[], tss=[], locked:lockedMonths=[], 
                   <div style={{marginTop:10}}>
                     <select className="fs" style={{fontSize:12}} value={selEngId} onChange={e=>{e.stopPropagation();setSelEngId(e.target.value);}}>
                       <option value="">All Engagements</option>
-                      {projects.filter(p=>approved.some(t=>t.projectId===p.id)).map(p=><option key={p.id} value={p.id}>{p.code} — {p.clientName}</option>)}
+                      {projects.filter(p=>approved.some(t=>t.projectId===p.id)).slice().sort((a,b)=>a.code.localeCompare(b.code)).map(p=><option key={p.id} value={p.id}>{p.code} — {p.clientName}</option>)}
                     </select>
                   </div>
                   <button className="btn bp" style={{width:"100%",marginTop:10,justifyContent:"center"}} onClick={()=>downloadLog("engagement")}><I n="download" s={14}/>Download</button>
@@ -1984,7 +1984,7 @@ function Reports({ user, users=[], projects=[], tss=[], locked:lockedMonths=[], 
                   <div style={{marginTop:10}}>
                     <select className="fs" style={{fontSize:12}} value={selUserId} onChange={e=>{e.stopPropagation();setSelUserId(e.target.value);}}>
                       <option value="">All Staff</option>
-                      {users.filter(u=>approved.some(t=>t.userId===u.id)).map(u=><option key={u.id} value={u.id}>{u.name} ({u.role})</option>)}
+                      {users.filter(u=>approved.some(t=>t.userId===u.id)).slice().sort((a,b)=>a.name.localeCompare(b.name)).map(u=><option key={u.id} value={u.id}>{u.name} ({u.role})</option>)}
                     </select>
                   </div>
                   <button className="btn bp" style={{width:"100%",marginTop:10,justifyContent:"center"}} onClick={()=>downloadLog("staff")}><I n="download" s={14}/>Download</button>
@@ -2089,8 +2089,8 @@ function UserManagement({ user, users=[], setUsers, isPartner=false }) {
     addAudit(user.id,user.name,"DELETE_USER",`Deleted user ${target.email}`);
   };
 
-  // Filter + search
-  const filtered = users.filter(u=>{
+  // Filter + search (default sort: by name)
+  const filtered = users.slice().sort((a,b)=>a.name.localeCompare(b.name)).filter(u=>{
     if(filterRole&&u.role!==filterRole) return false;
     if(filterStatus==="active"&&!u.active) return false;
     if(filterStatus==="inactive"&&u.active) return false;
@@ -3083,8 +3083,8 @@ function Leave({ user, users=[], leaves=[], setLeaves, tss=[] }) {
   const canSeeCalendar = isPartner || isManager;
 
   // All managers and partners for approver selection
-  const allManagers = users.filter(u=>u.role==="manager"&&u.active);
-  const allPartners = users.filter(u=>u.role==="partner"&&u.active);
+  const allManagers = users.filter(u=>u.role==="manager"&&u.active).slice().sort((a,b)=>a.name.localeCompare(b.name));
+  const allPartners = users.filter(u=>u.role==="partner"&&u.active).slice().sort((a,b)=>a.name.localeCompare(b.name));
 
   const getDatesInRange = (start, end) => {
     const dates=[]; const cur=new Date(start); const last=new Date(end);
@@ -3592,10 +3592,10 @@ function Leave({ user, users=[], leaves=[], setLeaves, tss=[] }) {
             <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",marginBottom:14}}>
               <select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={filtStaff} onChange={e=>setFiltStaff(e.target.value)}>
                 <option value="">All Staff</option>
-                {[...new Set(allRequests.map(l=>l.userId))].map(uid=>{
-                  const u2=users.find(u=>u.id===uid);
-                  return u2?<option key={uid} value={uid}>{u2.name}</option>:null;
-                })}
+                {[...new Set(allRequests.map(l=>l.userId))]
+                  .map(uid=>users.find(u=>u.id===uid)).filter(Boolean)
+                  .sort((a,b)=>a.name.localeCompare(b.name))
+                  .map(u2=><option key={u2.id} value={u2.id}>{u2.name}</option>)}
               </select>
               <select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={filtStatus} onChange={e=>setFiltStatus(e.target.value)}>
                 <option value="">All Statuses</option>
