@@ -2694,21 +2694,27 @@ function Profitability({ users=[], projects=[], tss=[] }) {
             <div className="card mb22">
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
                 <div className="card-title">Staff Cost Breakdown</div>
-                <div style={{fontSize:11,color:"var(--slate)"}}>Bar shows {profView==="actual"?"actual":"billing"} cost (active method)</div>
+                <div style={{fontSize:11,color:"var(--slate)"}}>Both methods shown side by side</div>
               </div>
               {staffBreakdown.length===0
                 ?<div className="es" style={{padding:"24px 0"}}>No approved hours yet.</div>
                 :<div className="tw"><table>
-                  <thead><tr>
-                    <th>Staff</th>
-                    <th style={{textAlign:"right"}}>Hours</th>
-                    <th style={{textAlign:"right",color:"var(--red)"}}>Actual Cost</th>
-                    <th style={{textAlign:"right",color:"var(--slate)"}}>Billing Rate Cost</th>
-                    <th style={{textAlign:"right"}} className="tx tsl">% of Fee ({profView==="actual"?"Act":"Bill"})</th>
-                  </tr></thead>
+                  <thead>
+                    <tr style={{background:"var(--cream)"}}>
+                      <th rowSpan="2">Staff</th>
+                      <th rowSpan="2" style={{textAlign:"right"}}>Hours</th>
+                      <th colSpan="2" style={{textAlign:"center",borderBottom:"1px solid var(--border)"}}>Staff Cost</th>
+                      <th colSpan="2" style={{textAlign:"center",borderBottom:"1px solid var(--border)"}}>% of Fee</th>
+                    </tr>
+                    <tr style={{background:"var(--cream)"}}>
+                      <th style={{textAlign:"right",color:"var(--red)",fontSize:11}}>Actual</th>
+                      <th style={{textAlign:"right",color:"var(--slate)",fontSize:11}}>Billing</th>
+                      <th style={{textAlign:"right",color:"var(--red)",fontSize:11}}>Actual</th>
+                      <th style={{textAlign:"right",color:"var(--slate)",fontSize:11}}>Billing</th>
+                    </tr>
+                  </thead>
                   <tbody>
                   {staffBreakdown.map(({u,hrs,cost,costBilling})=>{
-                    const activeCost = profView==="actual" ? cost : costBilling;
                     const actualRate = u.actualRate || u.billingRate || 0;
                     return (
                       <tr key={u.id}>
@@ -2721,7 +2727,8 @@ function Profitability({ users=[], projects=[], tss=[] }) {
                         <td style={{textAlign:"right"}} className="ts">{fmtHrs(hrs)}h</td>
                         <td style={{textAlign:"right"}} className="fw6">{fmtCurrency(cost)}</td>
                         <td style={{textAlign:"right"}} className="tx tsl">{fmtCurrency(costBilling)}</td>
-                        <td style={{textAlign:"right"}} className="tx tsl">{totalFee>0?Math.round(activeCost/totalFee*100)+"%":"—"}</td>
+                        <td style={{textAlign:"right"}} className="fw6">{totalFee>0?Math.round(cost/totalFee*100)+"%":"—"}</td>
+                        <td style={{textAlign:"right"}} className="tx tsl">{totalFee>0?Math.round(costBilling/totalFee*100)+"%":"—"}</td>
                       </tr>
                     );
                   })}
@@ -2731,42 +2738,76 @@ function Profitability({ users=[], projects=[], tss=[] }) {
 
             {/* Monthly trend — both methods */}
             {Object.keys(byMonth).length>0&&(
-              <div className="card">
-                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+              <div className="card" style={{padding:0,overflow:"hidden"}}>
+                {/* Card header */}
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"18px 24px",borderBottom:"1px solid var(--border)"}}>
                   <div className="card-title">Monthly Cost Trend</div>
-                  <div style={{fontSize:11,color:"var(--slate)"}}>Showing both methods side by side</div>
+                  <div style={{fontSize:12,color:"var(--slate-light)",letterSpacing:"0.3px"}}>Showing both methods side by side</div>
                 </div>
-                <div className="tw"><table>
-                  <thead>
-                    <tr style={{background:"var(--cream)"}}>
-                      <th rowSpan="2">Month</th>
-                      <th rowSpan="2" style={{textAlign:"right"}}>Hours</th>
-                      <th colSpan="2" style={{textAlign:"center",borderBottom:"1px solid var(--border)"}}>Staff Cost</th>
-                      {p.feeType==="retainer"&&<th rowSpan="2" style={{textAlign:"right"}}>Monthly Fee</th>}
-                      {p.feeType==="retainer"&&<th colSpan="2" style={{textAlign:"center",borderBottom:"1px solid var(--border)"}}>Monthly Margin</th>}
-                    </tr>
-                    <tr style={{background:"var(--cream)"}}>
-                      <th style={{textAlign:"right",color:"var(--red)",fontSize:11}}>Actual</th>
-                      <th style={{textAlign:"right",color:"var(--slate)",fontSize:11}}>Billing</th>
-                      {p.feeType==="retainer"&&<th style={{textAlign:"right",color:"var(--green)",fontSize:11}}>Actual</th>}
-                      {p.feeType==="retainer"&&<th style={{textAlign:"right",color:"var(--slate)",fontSize:11}}>Billing</th>}
-                    </tr>
-                  </thead>
-                  <tbody>{Object.entries(byMonth).sort(([a],[b])=>a>b?1:-1).map(([mk,d])=>{
-                    const mFee = p.monthlyFee||0;
-                    const mMarginActual  = p.feeType==="retainer" ? mFee - d.cost : null;
-                    const mMarginBilling = p.feeType==="retainer" ? mFee - d.costBilling : null;
-                    return <tr key={mk}>
-                      <td className="fw6">{monthLabel(mk)}</td>
-                      <td style={{textAlign:"right"}}>{fmtHrs(d.hrs)}h</td>
-                      <td style={{textAlign:"right"}} className="fw6">{fmtCurrency(d.cost)}</td>
-                      <td style={{textAlign:"right"}} className="tx tsl">{fmtCurrency(d.costBilling)}</td>
-                      {p.feeType==="retainer"&&<td style={{textAlign:"right"}} className="fw6 tgo">{fmtCurrency(mFee)}</td>}
-                      {p.feeType==="retainer"&&<td style={{textAlign:"right"}} className={`fw6 ${mMarginActual>=0?"tsc":"tdn"}`}>{fmtCurrency(mMarginActual)}</td>}
-                      {p.feeType==="retainer"&&<td style={{textAlign:"right"}} className={mMarginBilling>=0?"tsc":"tdn"}>{fmtCurrency(mMarginBilling)}</td>}
-                    </tr>;
-                  })}</tbody>
-                </table></div>
+                <div style={{overflowX:"auto"}}>
+                  <table style={{width:"100%",borderCollapse:"collapse"}}>
+                    <thead>
+                      {/* Group header row */}
+                      <tr style={{background:"var(--cream)"}}>
+                        <th style={{padding:"10px 24px",textAlign:"left",fontSize:11,fontWeight:600,letterSpacing:"0.8px",textTransform:"uppercase",color:"var(--slate)",borderBottom:"none",width:"22%"}}>Month</th>
+                        <th style={{padding:"10px 16px",textAlign:"right",fontSize:11,fontWeight:600,letterSpacing:"0.8px",textTransform:"uppercase",color:"var(--slate)",borderBottom:"none",width:"10%"}}>Hours</th>
+                        {/* Staff Cost group */}
+                        <th colSpan="2" style={{padding:"10px 16px",textAlign:"center",fontSize:10,fontWeight:700,letterSpacing:"1px",textTransform:"uppercase",color:"var(--slate)",borderBottom:"2px solid var(--border)",borderLeft:"1px solid var(--border)"}}>Staff Cost</th>
+                        {p.feeType==="retainer"&&<th style={{padding:"10px 16px",textAlign:"right",fontSize:11,fontWeight:600,letterSpacing:"0.8px",textTransform:"uppercase",color:"var(--slate)",borderBottom:"none",borderLeft:"1px solid var(--border)",width:"14%"}}>Monthly Fee</th>}
+                        {p.feeType==="retainer"&&<th colSpan="2" style={{padding:"10px 16px",textAlign:"center",fontSize:10,fontWeight:700,letterSpacing:"1px",textTransform:"uppercase",color:"var(--slate)",borderBottom:"2px solid var(--border)",borderLeft:"1px solid var(--border)"}}>Monthly Margin</th>}
+                      </tr>
+                      {/* Sub-header row */}
+                      <tr style={{background:"var(--cream)"}}>
+                        <th style={{padding:"6px 24px 10px",borderBottom:"1px solid var(--border)"}}></th>
+                        <th style={{padding:"6px 16px 10px",borderBottom:"1px solid var(--border)"}}></th>
+                        <th style={{padding:"6px 16px 10px",textAlign:"right",fontSize:10,fontWeight:700,letterSpacing:"0.8px",textTransform:"uppercase",color:"var(--red)",borderBottom:"1px solid var(--border)",borderLeft:"1px solid var(--border)"}}>Actual</th>
+                        <th style={{padding:"6px 16px 10px",textAlign:"right",fontSize:10,fontWeight:700,letterSpacing:"0.8px",textTransform:"uppercase",color:"var(--slate-light)",borderBottom:"1px solid var(--border)"}}>Billing</th>
+                        {p.feeType==="retainer"&&<th style={{padding:"6px 16px 10px",borderBottom:"1px solid var(--border)",borderLeft:"1px solid var(--border)"}}></th>}
+                        {p.feeType==="retainer"&&<th style={{padding:"6px 16px 10px",textAlign:"right",fontSize:10,fontWeight:700,letterSpacing:"0.8px",textTransform:"uppercase",color:"var(--green)",borderBottom:"1px solid var(--border)",borderLeft:"1px solid var(--border)"}}>Actual</th>}
+                        {p.feeType==="retainer"&&<th style={{padding:"6px 16px 10px",textAlign:"right",fontSize:10,fontWeight:700,letterSpacing:"0.8px",textTransform:"uppercase",color:"var(--slate-light)",borderBottom:"1px solid var(--border)"}}>Billing</th>}
+                      </tr>
+                    </thead>
+                    <tbody>{Object.entries(byMonth).sort(([a],[b])=>a>b?1:-1).map(([mk,d],i,arr)=>{
+                      const mFee = p.monthlyFee||0;
+                      const mMarginActual  = p.feeType==="retainer" ? mFee - d.cost : null;
+                      const mMarginBilling = p.feeType==="retainer" ? mFee - d.costBilling : null;
+                      const isLast = i===arr.length-1;
+                      const tdBase = {padding:"14px 16px",borderBottom:isLast?"none":"1px solid var(--border)",verticalAlign:"middle"};
+                      return <tr key={mk} style={{transition:"background .12s"}}
+                        onMouseEnter={e=>e.currentTarget.style.background="#fcfcfc"}
+                        onMouseLeave={e=>e.currentTarget.style.background=""}>
+                        {/* Month */}
+                        <td style={{...tdBase,padding:"14px 24px"}}>
+                          <span style={{fontWeight:600,fontSize:14,color:"var(--navy)"}}>{monthLabel(mk)}</span>
+                        </td>
+                        {/* Hours */}
+                        <td style={{...tdBase,textAlign:"right"}}>
+                          <span style={{fontWeight:500,color:"var(--slate)"}}>{fmtHrs(d.hrs)}h</span>
+                        </td>
+                        {/* Staff Cost Actual */}
+                        <td style={{...tdBase,textAlign:"right",borderLeft:"1px solid var(--border)"}}>
+                          <span style={{fontWeight:700,fontSize:14,color:"var(--navy)"}}>{fmtCurrency(d.cost)}</span>
+                        </td>
+                        {/* Staff Cost Billing */}
+                        <td style={{...tdBase,textAlign:"right"}}>
+                          <span style={{fontSize:13,color:"var(--slate-light)"}}>{fmtCurrency(d.costBilling)}</span>
+                        </td>
+                        {/* Monthly Fee */}
+                        {p.feeType==="retainer"&&<td style={{...tdBase,textAlign:"right",borderLeft:"1px solid var(--border)"}}>
+                          <span style={{fontWeight:600,fontSize:14,color:"var(--gold)"}}>{fmtCurrency(mFee)}</span>
+                        </td>}
+                        {/* Margin Actual */}
+                        {p.feeType==="retainer"&&<td style={{...tdBase,textAlign:"right",borderLeft:"1px solid var(--border)"}}>
+                          <span style={{fontWeight:700,fontSize:14,color:mMarginActual>=0?"var(--green)":"var(--red)"}}>{fmtCurrency(mMarginActual)}</span>
+                        </td>}
+                        {/* Margin Billing */}
+                        {p.feeType==="retainer"&&<td style={{...tdBase,textAlign:"right"}}>
+                          <span style={{fontSize:13,color:mMarginBilling>=0?"var(--green)":"var(--red)",opacity:0.7}}>{fmtCurrency(mMarginBilling)}</span>
+                        </td>}
+                      </tr>;
+                    })}</tbody>
+                  </table>
+                </div>
               </div>
             )}
           </div>
