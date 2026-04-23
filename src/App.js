@@ -757,18 +757,27 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
     if(editE){
       let newStatus;
       if(onBehalf) newStatus = "pending_partner"; // re-filed, back to partner review
+      else if(editE.status==="approved") newStatus = "approved"; // partner editing approved entry — stays approved
       else if(user.role==="partner") newStatus = "approved";
       else newStatus = editE.status==="rejected"?"resubmitted":"pending";
 
+      // When a partner edits an already-approved entry, preserve original approval but record the edit
+      const isPartnerEditOfApproved = user.role==="partner" && editE.status==="approved" && !onBehalf;
       const editedEntry = {
         ...form, hours:h, status:newStatus,
         userId: ownerId,
         updatedAt:new Date().toISOString(), updatedBy:user.id,
         ...(onBehalf?{filedById:user.id,filedByName:user.name}:{}),
-        ...(user.role==="partner"&&!onBehalf?{approvedBy:user.id,approvedAt:new Date().toISOString()}:{}),
+        // New approval stamp only if this is a fresh approval (not a re-edit of already-approved)
+        ...(user.role==="partner"&&!onBehalf&&!isPartnerEditOfApproved?{approvedBy:user.id,approvedAt:new Date().toISOString()}:{}),
+        // Track partner edits on approved entries separately for audit clarity
+        ...(isPartnerEditOfApproved?{partnerEditedBy:user.id,partnerEditedByName:user.name,partnerEditedAt:new Date().toISOString()}:{}),
       };
       setTss(prev=>prev.map(t=>t.id===editE.id?{...t,...editedEntry}:t));
-      addAudit(user.id,user.name,"EDIT_TIMESHEET",onBehalf?`Re-filed on behalf of ${users.find(u=>u.id===ownerId)?.name} on ${form.date}`:`Edited entry on ${form.date} (${h}h)`);
+      addAudit(user.id,user.name,"EDIT_TIMESHEET",
+        isPartnerEditOfApproved
+          ? `Partner revised approved entry for ${users.find(u=>u.id===ownerId)?.name} on ${form.date} (${h}h)`
+          : onBehalf?`Re-filed on behalf of ${users.find(u=>u.id===ownerId)?.name} on ${form.date}`:`Edited entry on ${form.date} (${h}h)`);
     } else {
       const autoApprove = user.role==="partner" && !onBehalf && !isInternal;
       const newEntry = {
@@ -888,10 +897,13 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
               const u2=users.find(u=>u.id===ts.userId); const p=projects.find(p=>p.id===ts.projectId);
               const locked=lockedMonths.includes(monthKey(ts.date));
               const isOnBehalf = !!ts.filedById;
+              // After approval, ONLY partners may edit — at all levels (own, manager, intern entries)
               const canEdit = isOnBehalf
                 ? (user.id===ts.userId&&["pending_partner","rejected_partner"].includes(ts.status))
                   || (user.id===ts.filedById&&ts.status==="rejected_partner")
-                : isP||(ts.userId===user.id&&["pending","rejected","resubmitted"].includes(ts.status)&&!locked);
+                : ts.status==="approved"
+                  ? isP&&!locked
+                  : isP||(ts.userId===user.id&&["pending","rejected","resubmitted"].includes(ts.status)&&!locked);
               // Can delete: partner (assigned), or own entry not yet approved
               // eslint-disable-next-line no-mixed-operators
               const canDelete = (isP&&!locked&&(user.email===ADMIN_EMAIL||projects.find(p=>p.id===ts.projectId)?.assignedPartnerId===user.id))
@@ -932,8 +944,9 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
         <div className="mo" onClick={()=>setSM(false)}>
           <div className="md" onClick={e=>e.stopPropagation()}>
             <div className="md-title">
-              {isInternal?"Log Internal Time":onBehalf?"File for Partner":editE?"Edit Entry":"Log Engagement Time"}
+              {isInternal?"Log Internal Time":onBehalf?"File for Partner":editE?(editE.status==="approved"&&isP&&editE.userId!==user.id?"Edit Entry (Partner Revision)":"Edit Entry"):"Log Engagement Time"}
             </div>
+            {editE?.status==="approved"&&isP&&<div className="al al-w mb16"><I n="alert" s={15}/><div>You are revising an <strong>approved</strong> entry. The revised hours will be reflected immediately across all reports and profitability calculations.</div></div>}
             {onBehalf&&<div className="al al-i mb16"><I n="info" s={15}/><div>Filing on behalf of a Partner. They will review and approve before it counts.</div></div>}
             {isInternal&&<div className="al al-w mb16"><I n="info" s={15}/><div>Internal time is not linked to any client engagement. Goes to your manager for approval.</div></div>}
             {editE?.status==="rejected_partner"&&<div className="al al-d"><I n="alert" s={15}/><div>Rejected by Partner: <em>{editE.rejectReason}</em></div></div>}
@@ -2751,7 +2764,6 @@ function Profitability({ users=[], projects=[], tss=[] }) {
                       <tr style={{background:"var(--cream)"}}>
                         <th style={{padding:"10px 24px",textAlign:"left",fontSize:11,fontWeight:600,letterSpacing:"0.8px",textTransform:"uppercase",color:"var(--slate)",borderBottom:"none",width:"22%"}}>Month</th>
                         <th style={{padding:"10px 16px",textAlign:"right",fontSize:11,fontWeight:600,letterSpacing:"0.8px",textTransform:"uppercase",color:"var(--slate)",borderBottom:"none",width:"10%"}}>Hours</th>
-                        {/* Staff Cost group */}
                         <th colSpan="2" style={{padding:"10px 16px",textAlign:"center",fontSize:10,fontWeight:700,letterSpacing:"1px",textTransform:"uppercase",color:"var(--slate)",borderBottom:"2px solid var(--border)",borderLeft:"1px solid var(--border)"}}>Staff Cost</th>
                         {p.feeType==="retainer"&&<th style={{padding:"10px 16px",textAlign:"right",fontSize:11,fontWeight:600,letterSpacing:"0.8px",textTransform:"uppercase",color:"var(--slate)",borderBottom:"none",borderLeft:"1px solid var(--border)",width:"14%"}}>Monthly Fee</th>}
                         {p.feeType==="retainer"&&<th colSpan="2" style={{padding:"10px 16px",textAlign:"center",fontSize:10,fontWeight:700,letterSpacing:"1px",textTransform:"uppercase",color:"var(--slate)",borderBottom:"2px solid var(--border)",borderLeft:"1px solid var(--border)"}}>Monthly Margin</th>}
@@ -2776,31 +2788,24 @@ function Profitability({ users=[], projects=[], tss=[] }) {
                       return <tr key={mk} style={{transition:"background .12s"}}
                         onMouseEnter={e=>e.currentTarget.style.background="#fcfcfc"}
                         onMouseLeave={e=>e.currentTarget.style.background=""}>
-                        {/* Month */}
                         <td style={{...tdBase,padding:"14px 24px"}}>
                           <span style={{fontWeight:600,fontSize:14,color:"var(--navy)"}}>{monthLabel(mk)}</span>
                         </td>
-                        {/* Hours */}
                         <td style={{...tdBase,textAlign:"right"}}>
                           <span style={{fontWeight:500,color:"var(--slate)"}}>{fmtHrs(d.hrs)}h</span>
                         </td>
-                        {/* Staff Cost Actual */}
                         <td style={{...tdBase,textAlign:"right",borderLeft:"1px solid var(--border)"}}>
                           <span style={{fontWeight:700,fontSize:14,color:"var(--navy)"}}>{fmtCurrency(d.cost)}</span>
                         </td>
-                        {/* Staff Cost Billing */}
                         <td style={{...tdBase,textAlign:"right"}}>
                           <span style={{fontSize:13,color:"var(--slate-light)"}}>{fmtCurrency(d.costBilling)}</span>
                         </td>
-                        {/* Monthly Fee */}
                         {p.feeType==="retainer"&&<td style={{...tdBase,textAlign:"right",borderLeft:"1px solid var(--border)"}}>
                           <span style={{fontWeight:600,fontSize:14,color:"var(--gold)"}}>{fmtCurrency(mFee)}</span>
                         </td>}
-                        {/* Margin Actual */}
                         {p.feeType==="retainer"&&<td style={{...tdBase,textAlign:"right",borderLeft:"1px solid var(--border)"}}>
                           <span style={{fontWeight:700,fontSize:14,color:mMarginActual>=0?"var(--green)":"var(--red)"}}>{fmtCurrency(mMarginActual)}</span>
                         </td>}
-                        {/* Margin Billing */}
                         {p.feeType==="retainer"&&<td style={{...tdBase,textAlign:"right"}}>
                           <span style={{fontSize:13,color:mMarginBilling>=0?"var(--green)":"var(--red)",opacity:0.7}}>{fmtCurrency(mMarginBilling)}</span>
                         </td>}
