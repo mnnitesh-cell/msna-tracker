@@ -1969,22 +1969,22 @@ function Reports({ user, users=[], projects=[], tss=[], locked:lockedMonths=[], 
             <div className="fg">
               <label className="fl">Report Type</label>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
-                <div style={{padding:"14px 16px",borderRadius:10,border:"1.5px solid var(--border)",cursor:"pointer",background:"var(--cream)"}} onClick={()=>downloadLog("engagement")}>
+                <div style={{padding:"14px 16px",borderRadius:10,border:"1.5px solid var(--border)",background:"var(--cream)"}}>
                   <div style={{fontWeight:600,fontSize:13,color:"var(--navy)",marginBottom:4}}>By Engagement</div>
                   <div style={{fontSize:12,color:"var(--slate)"}}>Filter by one engagement or download all. Date-wise entries with description.</div>
                   <div style={{marginTop:10}}>
-                    <select className="fs" style={{fontSize:12}} value={selEngId} onChange={e=>{e.stopPropagation();setSelEngId(e.target.value);}}>
+                    <select className="fs" style={{fontSize:12}} value={selEngId} onChange={e=>setSelEngId(e.target.value)}>
                       <option value="">All Engagements</option>
                       {projects.filter(p=>approved.some(t=>t.projectId===p.id)).slice().sort((a,b)=>a.code.localeCompare(b.code)).map(p=><option key={p.id} value={p.id}>{p.code} — {p.clientName}</option>)}
                     </select>
                   </div>
                   <button className="btn bp" style={{width:"100%",marginTop:10,justifyContent:"center"}} onClick={()=>downloadLog("engagement")}><I n="download" s={14}/>Download</button>
                 </div>
-                <div style={{padding:"14px 16px",borderRadius:10,border:"1.5px solid var(--border)",cursor:"pointer",background:"var(--cream)"}} onClick={()=>downloadLog("staff")}>
+                <div style={{padding:"14px 16px",borderRadius:10,border:"1.5px solid var(--border)",background:"var(--cream)"}}>
                   <div style={{fontWeight:600,fontSize:13,color:"var(--navy)",marginBottom:4}}>By Staff</div>
                   <div style={{fontSize:12,color:"var(--slate)"}}>Filter by one person or download all. Date-wise entries with description.</div>
                   <div style={{marginTop:10}}>
-                    <select className="fs" style={{fontSize:12}} value={selUserId} onChange={e=>{e.stopPropagation();setSelUserId(e.target.value);}}>
+                    <select className="fs" style={{fontSize:12}} value={selUserId} onChange={e=>setSelUserId(e.target.value)}>
                       <option value="">All Staff</option>
                       {users.filter(u=>approved.some(t=>t.userId===u.id)).slice().sort((a,b)=>a.name.localeCompare(b.name)).map(u=><option key={u.id} value={u.id}>{u.name} ({u.role})</option>)}
                     </select>
