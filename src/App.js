@@ -2693,39 +2693,78 @@ function Profitability({ users=[], projects=[], tss=[] }) {
 
             {/* Staff cost breakdown */}
             <div className="card mb22">
-              <div className="card-title mb16">Staff Cost Breakdown</div>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+                <div className="card-title">Staff Cost Breakdown</div>
+                <div style={{fontSize:11,color:"var(--slate)"}}>Bar shows {profView==="actual"?"actual":"billing"} cost (active method)</div>
+              </div>
               {staffBreakdown.length===0
                 ?<div className="es" style={{padding:"24px 0"}}>No approved hours yet.</div>
-                :staffBreakdown.map(({u,hrs,cost})=>(
-                  <div key={u.id} className="staff-cost-row">
-                    <div style={{width:160}}>
-                      <div className="fw6 ts">{u.name}</div>
-                      <div className="tx tsl">{u.role} · {fmtCurrency(u.billingRate)}/hr</div>
-                    </div>
-                    <div className="cost-bar-wrap">
-                      <div className="cost-bar-fill" style={{width:Math.round(cost/maxStaffCost*100)+"%"}}/>
-                    </div>
-                    <div style={{width:60,textAlign:"right"}} className="ts">{fmtHrs(hrs)}h</div>
-                    <div style={{width:90,textAlign:"right"}} className="fw6">{fmtCurrency(cost)}</div>
-                    <div style={{width:60,textAlign:"right"}} className="tx tsl">{totalFee>0?Math.round(cost/totalFee*100)+"% of fee":"—"}</div>
-                  </div>
-                ))}
+                :<div className="tw"><table>
+                  <thead><tr>
+                    <th>Staff</th>
+                    <th style={{textAlign:"right"}}>Hours</th>
+                    <th style={{textAlign:"right",color:"var(--red)"}}>Actual Cost</th>
+                    <th style={{textAlign:"right",color:"var(--slate)"}}>Billing Rate Cost</th>
+                    <th style={{textAlign:"right"}} className="tx tsl">% of Fee ({profView==="actual"?"Act":"Bill"})</th>
+                  </tr></thead>
+                  <tbody>
+                  {staffBreakdown.map(({u,hrs,cost,costBilling})=>{
+                    const activeCost = profView==="actual" ? cost : costBilling;
+                    const actualRate = u.actualRate || u.billingRate || 0;
+                    return (
+                      <tr key={u.id}>
+                        <td>
+                          <div className="fw6 ts">{u.name}</div>
+                          <div className="tx tsl" style={{fontSize:11}}>
+                            {u.role} · Actual {fmtCurrency(actualRate)}/hr · Billing {fmtCurrency(u.billingRate||0)}/hr
+                          </div>
+                        </td>
+                        <td style={{textAlign:"right"}} className="ts">{fmtHrs(hrs)}h</td>
+                        <td style={{textAlign:"right"}} className="fw6">{fmtCurrency(cost)}</td>
+                        <td style={{textAlign:"right"}} className="tx tsl">{fmtCurrency(costBilling)}</td>
+                        <td style={{textAlign:"right"}} className="tx tsl">{totalFee>0?Math.round(activeCost/totalFee*100)+"%":"—"}</td>
+                      </tr>
+                    );
+                  })}
+                  </tbody>
+                </table></div>}
             </div>
 
-            {/* Monthly trend */}
+            {/* Monthly trend — both methods */}
             {Object.keys(byMonth).length>0&&(
               <div className="card">
-                <div className="card-title mb16">Monthly Cost Trend</div>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+                  <div className="card-title">Monthly Cost Trend</div>
+                  <div style={{fontSize:11,color:"var(--slate)"}}>Showing both methods side by side</div>
+                </div>
                 <div className="tw"><table>
-                  <thead><tr><th>Month</th><th>Hours</th><th>Staff Cost</th>{p.feeType==="retainer"&&<th>Monthly Fee</th>}{p.feeType==="retainer"&&<th>Monthly Margin</th>}</tr></thead>
+                  <thead>
+                    <tr style={{background:"var(--cream)"}}>
+                      <th rowSpan="2">Month</th>
+                      <th rowSpan="2" style={{textAlign:"right"}}>Hours</th>
+                      <th colSpan="2" style={{textAlign:"center",borderBottom:"1px solid var(--border)"}}>Staff Cost</th>
+                      {p.feeType==="retainer"&&<th rowSpan="2" style={{textAlign:"right"}}>Monthly Fee</th>}
+                      {p.feeType==="retainer"&&<th colSpan="2" style={{textAlign:"center",borderBottom:"1px solid var(--border)"}}>Monthly Margin</th>}
+                    </tr>
+                    <tr style={{background:"var(--cream)"}}>
+                      <th style={{textAlign:"right",color:"var(--red)",fontSize:11}}>Actual</th>
+                      <th style={{textAlign:"right",color:"var(--slate)",fontSize:11}}>Billing</th>
+                      {p.feeType==="retainer"&&<th style={{textAlign:"right",color:"var(--green)",fontSize:11}}>Actual</th>}
+                      {p.feeType==="retainer"&&<th style={{textAlign:"right",color:"var(--slate)",fontSize:11}}>Billing</th>}
+                    </tr>
+                  </thead>
                   <tbody>{Object.entries(byMonth).sort(([a],[b])=>a>b?1:-1).map(([mk,d])=>{
-                    const mMargin = p.feeType==="retainer"?(p.monthlyFee||0)-d.cost:null;
+                    const mFee = p.monthlyFee||0;
+                    const mMarginActual  = p.feeType==="retainer" ? mFee - d.cost : null;
+                    const mMarginBilling = p.feeType==="retainer" ? mFee - d.costBilling : null;
                     return <tr key={mk}>
                       <td className="fw6">{monthLabel(mk)}</td>
-                      <td>{fmtHrs(d.hrs)}h</td>
-                      <td>{fmtCurrency(d.cost)}</td>
-                      {p.feeType==="retainer"&&<td className="fw6 tgo">{fmtCurrency(p.monthlyFee||0)}</td>}
-                      {p.feeType==="retainer"&&<td className={`fw6 ${mMargin>=0?"tsc":"tdn"}`}>{fmtCurrency(mMargin)}</td>}
+                      <td style={{textAlign:"right"}}>{fmtHrs(d.hrs)}h</td>
+                      <td style={{textAlign:"right"}} className="fw6">{fmtCurrency(d.cost)}</td>
+                      <td style={{textAlign:"right"}} className="tx tsl">{fmtCurrency(d.costBilling)}</td>
+                      {p.feeType==="retainer"&&<td style={{textAlign:"right"}} className="fw6 tgo">{fmtCurrency(mFee)}</td>}
+                      {p.feeType==="retainer"&&<td style={{textAlign:"right"}} className={`fw6 ${mMarginActual>=0?"tsc":"tdn"}`}>{fmtCurrency(mMarginActual)}</td>}
+                      {p.feeType==="retainer"&&<td style={{textAlign:"right"}} className={mMarginBilling>=0?"tsc":"tdn"}>{fmtCurrency(mMarginBilling)}</td>}
                     </tr>;
                   })}</tbody>
                 </table></div>
