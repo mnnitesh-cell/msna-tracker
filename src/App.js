@@ -5,7 +5,7 @@ import { getAuth, signInWithEmailAndPassword, signOut, updatePassword, reauthent
 
 // ── FIREBASE CONFIG ──
 const firebaseConfig = {
-  apiKey: "AIzaSyDJCeqOJl1EGFj7NcGCGn470L51ipo2GeE",
+  apiKey: "AIzaSyDJCeqOJl1EGFj7NcGCGn47OL51ipo2GeE",
   authDomain: "msna-time-tracker.firebaseapp.com",
   projectId: "msna-time-tracker",
   storageBucket: "msna-time-tracker.firebasestorage.app",
