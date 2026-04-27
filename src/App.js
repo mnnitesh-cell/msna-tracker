@@ -2071,7 +2071,7 @@ function UserManagement({ user, users=[], setUsers, isPartner=false }) {
   const openAdd=()=>{setEU(null);setF({name:"",email:"",role:"intern",billingRate:"",billingRateEffectiveDate:todayStr(),actualRate:"",actualRateEffectiveDate:todayStr(),password:""});setFerr("");setSM(true);};
   const openEdit=u=>{setEU(u);setF({name:u.name,email:u.email,role:u.role,billingRate:u.billingRate,billingRateEffectiveDate:u.billingRateEffectiveDate||todayStr(),actualRate:u.actualRate||"",actualRateEffectiveDate:u.actualRateEffectiveDate||todayStr(),password:""});setFerr("");setSM(true);};
 
-  const save=()=>{
+  const save= async ()=>{
     if(!form.name||!form.email||!form.billingRate){setFerr("Name, email and billing rate are required.");return;}
     if(!form.email.endsWith("@msna.co.in")){setFerr("Must be an @msna.co.in address.");return;}
     if(editU){
@@ -2106,8 +2106,6 @@ function UserManagement({ user, users=[], setUsers, isPartner=false }) {
       // Create Firebase Auth account for new user
       try {
         await createUserWithEmailAndPassword(auth, form.email, form.password);
-        // Re-sign in as current user since createUser signs in as new user
-        await signInWithEmailAndPassword(auth, user.email, "");
       } catch(e){
         if(e.code!=="auth/email-already-in-use") console.error("Auth create error",e);
       }
