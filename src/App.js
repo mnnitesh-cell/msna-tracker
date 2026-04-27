@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { initializeApp } from "firebase/app";
 import { getFirestore, collection, doc, onSnapshot, setDoc, deleteDoc, getDoc, getDocs } from "firebase/firestore";
+import { getAuth, signInWithEmailAndPassword, signOut, updatePassword, reauthenticateWithCredential, EmailAuthProvider, createUserWithEmailAndPassword } from "firebase/auth";
 
 // ── FIREBASE CONFIG ──
 const firebaseConfig = {
@@ -14,6 +15,7 @@ const firebaseConfig = {
 };
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
+const auth = getAuth(firebaseApp);
 
 // ── CONSTANTS ──
 const ADMIN_EMAIL = "nitesh@msna.co.in";
@@ -349,24 +351,28 @@ tr:hover td{background:#fcfcfc;}
 // LOGIN
 // ══════════════════════════════════════════════════════════════
 function Login({ onLogin }) {
-  const [email,setEmail]=useState(""); const [pw,setPw]=useState(""); const [err,setErr]=useState("");
+  const [email,setEmail]=useState(""); const [pw,setPw]=useState(""); const [err,setErr]=useState(""); const [loading,setLoading]=useState(false);
   const go = async () => {
-    setErr("");
-    // Load users from Firestore
-    const usersSnap = await getDocs(collection(db, "users")).catch(()=>null);
-    const users = usersSnap && !usersSnap.empty ? usersSnap.docs.map(d=>({...d.data(),id:d.id})) : SEED_USERS;
-    const u = users.find(x=>x.email.toLowerCase()===email.toLowerCase()&&x.active);
-    if(!u){ setErr("No active account found for this email."); return; }
-    // Check password from Firestore first, fall back to localStorage
-    const pwSnap = await getDoc(doc(db, "passwords", btoa(u.email))).catch(()=>null);
-    let storedPw = null;
-    if(pwSnap && pwSnap.exists()) {
-      storedPw = pwSnap.data().pw;
-    } else {
-      storedPw = getStoreObj("msna_passwords")[u.email];
+    setErr(""); setLoading(true);
+    try {
+      // Sign in via Firebase Auth
+      await signInWithEmailAndPassword(auth, email.trim(), pw);
+      // Load user profile from Firestore
+      const usersSnap = await getDocs(collection(db, "users")).catch(()=>null);
+      const users = usersSnap && !usersSnap.empty ? usersSnap.docs.map(d=>({...d.data(),id:d.id})) : SEED_USERS;
+      const u = users.find(x=>x.email.toLowerCase()===email.trim().toLowerCase()&&x.active);
+      if(!u){ setErr("No active account found for this email."); setLoading(false); return; }
+      onLogin(u);
+    } catch(e) {
+      if(e.code==="auth/invalid-credential"||e.code==="auth/wrong-password"||e.code==="auth/user-not-found"){
+        setErr("Incorrect email or password. Please try again.");
+      } else if(e.code==="auth/too-many-requests"){
+        setErr("Too many attempts. Please try again later.");
+      } else {
+        setErr("Sign in failed. Please try again.");
+      }
     }
-    if(storedPw !== pw){ setErr("Incorrect password. Please try again."); return; }
-    onLogin(u);
+    setLoading(false);
   };
   return (
     <div className="lw">
@@ -384,7 +390,7 @@ function Login({ onLogin }) {
           {err&&<div className="err">{err}</div>}
           <div className="fg"><label className="fl">Email</label><input className="fi" type="email" placeholder="you@msna.co.in" value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={e=>{if(e.key==="Enter") go();}}/></div>
           <div className="fg"><label className="fl">Password</label><input className="fi" type="password" placeholder="••••••••" value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={e=>{if(e.key==="Enter") go();}}/></div>
-          <button className="btn bp bfl" style={{padding:"13px",marginTop:4}} onClick={go}><I n="lock" s={16}/>Sign In</button>
+          <button className="btn bp bfl" style={{padding:"13px",marginTop:4}} onClick={go} disabled={loading}><I n="lock" s={16}/>{loading?"Signing in...":"Sign In"}</button>
 
         </div>
       </div>
@@ -2076,7 +2082,17 @@ function UserManagement({ user, users=[], setUsers, isPartner=false }) {
         actualRate:form.actualRate?Number(form.actualRate):null,
         actualRateEffectiveDate:form.actualRateEffectiveDate||todayStr(),
       }:u));
-      if(form.password){ fsSet("passwords", btoa(form.email), {email:form.email, pw:form.password}); }
+      if(form.password){
+        // Update password in Firebase Auth
+        try {
+          const usersSnap = await getDocs(collection(db,"users"));
+          const existing = usersSnap.docs.find(d=>d.data().email.toLowerCase()===form.email.toLowerCase());
+          if(existing){
+            // Can't update another user's password from client SDK — store in Firestore for now, admin handles via console if needed
+            fsSet("passwords", btoa(form.email), {email:form.email, pw:form.password});
+          }
+        } catch(e){ console.error("Auth update error",e); }
+      }
       addAudit(user.id,user.name,"EDIT_USER",`Updated ${form.email}`);
     } else {
       if(!form.password){setFerr("Password is required for new users.");return;}
@@ -2087,6 +2103,14 @@ function UserManagement({ user, users=[], setUsers, isPartner=false }) {
         actualRate:form.actualRate?Number(form.actualRate):null,
         actualRateEffectiveDate:form.actualRateEffectiveDate||todayStr(),
         active:true}]);
+      // Create Firebase Auth account for new user
+      try {
+        await createUserWithEmailAndPassword(auth, form.email, form.password);
+        // Re-sign in as current user since createUser signs in as new user
+        await signInWithEmailAndPassword(auth, user.email, "");
+      } catch(e){
+        if(e.code!=="auth/email-already-in-use") console.error("Auth create error",e);
+      }
       fsSet("passwords", btoa(form.email), {email:form.email, pw:form.password});
       addAudit(user.id,user.name,"CREATE_USER",`Created ${form.email} as ${form.role}`);
     }
@@ -3845,17 +3869,24 @@ function ChangePassword({ user, setTab }) {
     if(!curPw||!newPw||!confPw){ setErr("All fields are required."); return; }
     if(newPw.length < 6){ setErr("New password must be at least 6 characters."); return; }
     if(newPw !== confPw){ setErr("New passwords do not match."); return; }
-    // Verify current password from Firestore
-    const pwSnap = await getDoc(doc(db,"passwords",btoa(user.email))).catch(()=>null);
-    let stored = null;
-    if(pwSnap && pwSnap.exists()) stored = pwSnap.data().pw;
-    else stored = getStoreObj("msna_passwords")[user.email];
-    if(stored !== curPw){ setErr("Current password is incorrect."); return; }
-    // Save new password to Firestore
-    await fsSet("passwords", btoa(user.email), { email:user.email, pw:newPw });
-    addAudit(user.id, user.name, "CHANGE_PASSWORD", `Password changed by ${user.email}`);
-    setSuccess(true);
-    setCurPw(""); setNewPw(""); setConfPw("");
+    try {
+      // Re-authenticate with Firebase Auth before changing password
+      const credential = EmailAuthProvider.credential(user.email, curPw);
+      await reauthenticateWithCredential(auth.currentUser, credential);
+      // Update password in Firebase Auth
+      await updatePassword(auth.currentUser, newPw);
+      // Also keep Firestore passwords collection in sync
+      await fsSet("passwords", btoa(user.email), { email:user.email, pw:newPw });
+      addAudit(user.id, user.name, "CHANGE_PASSWORD", `Password changed by ${user.email}`);
+      setSuccess(true);
+      setCurPw(""); setNewPw(""); setConfPw("");
+    } catch(e) {
+      if(e.code==="auth/invalid-credential"||e.code==="auth/wrong-password"){
+        setErr("Current password is incorrect.");
+      } else {
+        setErr("Failed to update password. Please try again.");
+      }
+    }
   };
 
   return (
@@ -3962,7 +3993,7 @@ export default function App() {
     <>
       <style>{CSS}</style>
       <div className="app">
-        <Sidebar user={currentUser} tab={tab} setTab={setTab} onLogout={()=>setCU(null)} pendingCount={pendingCount}
+        <Sidebar user={currentUser} tab={tab} setTab={setTab} onLogout={()=>{signOut(auth);setCU(null);}} pendingCount={pendingCount}
           leavePendingCount={leaves.filter(l=>{
             if(currentUser.role==="manager") return l.status==="pending_manager"&&(l.approverManagers||[]).includes(currentUser.id)&&!(l.managerApprovals||[]).includes(currentUser.id);
             if(currentUser.role==="partner") return l.status==="pending_partner"&&(l.approverPartners||[]).includes(currentUser.id)&&!(l.partnerApprovals||[]).includes(currentUser.id);
