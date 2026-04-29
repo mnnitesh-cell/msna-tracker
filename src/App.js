@@ -53,6 +53,9 @@ const fsDel = async (col, id) => {
 };
 
 // ── INIT: Seed Firestore with default users/passwords on first run ──
+const SEED_PLACEHOLDER_IDS = ["u6","u7","u8","u9"]; // Ravi Kumar, Priya Sharma, Arjun Reddy, Sneha Patel
+const SEED_PLACEHOLDER_EMAILS = ["ravi@msna.co.in","priya@msna.co.in","arjun@msna.co.in","sneha@msna.co.in"];
+
 const initStorage = async () => {
   try {
     const snap = await getDoc(doc(db, "meta", "seeded"));
@@ -65,6 +68,25 @@ const initStorage = async () => {
       await fsSet("meta", "seeded", { at: new Date().toISOString() });
     }
   } catch(e) { console.error("initStorage error", e); }
+
+  // ── One-time cleanup: remove seed placeholder staff (not real MSNA employees) ──
+  try {
+    const cleanedSnap = await getDoc(doc(db, "meta", "seed_cleaned_v1"));
+    if (!cleanedSnap.exists()) {
+      for (const id of SEED_PLACEHOLDER_IDS) {
+        const userDoc = await getDoc(doc(db, "users", id));
+        if (userDoc.exists()) {
+          const u = userDoc.data();
+          // Only delete if it's still the original seed placeholder (email matches)
+          if (SEED_PLACEHOLDER_EMAILS.includes(u.email)) {
+            await fsDel("users", id);
+            await fsDel("passwords", btoa(u.email));
+          }
+        }
+      }
+      await fsSet("meta", "seed_cleaned_v1", { at: new Date().toISOString() });
+    }
+  } catch(e) { console.error("seed cleanup error", e); }
   // Migrate any localStorage passwords to Firestore (handles passwords set before this fix)
   try {
     const localPws = getStoreObj("msna_passwords");
