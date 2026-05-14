@@ -53,9 +53,6 @@ const fsDel = async (col, id) => {
 };
 
 // ── INIT: Seed Firestore with default users/passwords on first run ──
-const SEED_PLACEHOLDER_IDS = ["u6","u7","u8","u9"]; // Ravi Kumar, Priya Sharma, Arjun Reddy, Sneha Patel
-const SEED_PLACEHOLDER_EMAILS = ["ravi@msna.co.in","priya@msna.co.in","arjun@msna.co.in","sneha@msna.co.in"];
-
 const initStorage = async () => {
   try {
     const snap = await getDoc(doc(db, "meta", "seeded"));
@@ -68,25 +65,6 @@ const initStorage = async () => {
       await fsSet("meta", "seeded", { at: new Date().toISOString() });
     }
   } catch(e) { console.error("initStorage error", e); }
-
-  // ── One-time cleanup: remove seed placeholder staff (not real MSNA employees) ──
-  try {
-    const cleanedSnap = await getDoc(doc(db, "meta", "seed_cleaned_v1"));
-    if (!cleanedSnap.exists()) {
-      for (const id of SEED_PLACEHOLDER_IDS) {
-        const userDoc = await getDoc(doc(db, "users", id));
-        if (userDoc.exists()) {
-          const u = userDoc.data();
-          // Only delete if it's still the original seed placeholder (email matches)
-          if (SEED_PLACEHOLDER_EMAILS.includes(u.email)) {
-            await fsDel("users", id);
-            await fsDel("passwords", btoa(u.email));
-          }
-        }
-      }
-      await fsSet("meta", "seed_cleaned_v1", { at: new Date().toISOString() });
-    }
-  } catch(e) { console.error("seed cleanup error", e); }
   // Migrate any localStorage passwords to Firestore (handles passwords set before this fix)
   try {
     const localPws = getStoreObj("msna_passwords");
@@ -914,7 +892,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
               <th style={{width:32}}>#</th>
               {isP&&<th style={{cursor:"pointer"}} onClick={()=>toggleSort("staff")}>Staff{sortIcon("staff")}</th>}
               <th style={{cursor:"pointer"}} onClick={()=>toggleSort("date")}>Date{sortIcon("date")}</th>
-              <th style={{cursor:"pointer"}} onClick={()=>toggleSort("project")}>Project{sortIcon("project")}</th>
+              <th style={{cursor:"pointer"}} onClick={()=>toggleSort("project")}>Client / Project{sortIcon("project")}</th>
               <th style={{cursor:"pointer"}} onClick={()=>toggleSort("category")}>Category{sortIcon("category")}</th>
               <th style={{cursor:"pointer"}} onClick={()=>toggleSort("hours")}>Hrs{sortIcon("hours")}</th>
               <th>Billable</th><th>Description</th>
@@ -940,7 +918,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
                 <td className="tx tsl" style={{fontSize:12}}>{(tsPage-1)*TS_PAGE+idx+1}</td>
                 {isP&&<td className="fw6">{u2?.name}<div className="tx tsl">{u2?.role}{isOnBehalf&&<span className="tx tsl"> · filed by {ts.filedByName}</span>}</div></td>}
                 <td>{fmtDate(ts.date)}{locked&&<div><span className="bdg blk tx" style={{marginTop:3}}><I n="lock" s={10}/>locked</span></div>}</td>
-                <td>{p?<><div className="fw6 mono">{p.code}</div><div className="tx tsl">{p.name}</div></>:"—"}</td>
+                <td>{p?<><div className="fw6 mono" style={{fontSize:12}}>{p.code}</div><div style={{fontWeight:600,fontSize:13,color:"var(--navy)",lineHeight:1.3,marginTop:2}}>{p.clientName}</div><div className="tx tsl" style={{fontSize:11,marginTop:1}}>{p.name}</div></>:(ts.isInternal?<span className="tx tsl">—</span>:"—")}</td>
                 <td className="ts">{ts.category}</td>
                 <td className="fw6">{fmtHrs(ts.hours)}h</td>
                 <td>{ts.billable?<span className="tsc fw6">✓</span>:<span className="tsl">—</span>}</td>
