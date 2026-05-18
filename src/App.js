@@ -892,7 +892,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
               <th style={{width:32}}>#</th>
               {isP&&<th style={{cursor:"pointer"}} onClick={()=>toggleSort("staff")}>Staff{sortIcon("staff")}</th>}
               <th style={{cursor:"pointer"}} onClick={()=>toggleSort("date")}>Date{sortIcon("date")}</th>
-              <th style={{cursor:"pointer"}} onClick={()=>toggleSort("project")}>Client / Project{sortIcon("project")}</th>
+              <th style={{cursor:"pointer"}} onClick={()=>toggleSort("project")}>Project{sortIcon("project")}</th>
               <th style={{cursor:"pointer"}} onClick={()=>toggleSort("category")}>Category{sortIcon("category")}</th>
               <th style={{cursor:"pointer"}} onClick={()=>toggleSort("hours")}>Hrs{sortIcon("hours")}</th>
               <th>Billable</th><th>Description</th>
@@ -918,7 +918,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
                 <td className="tx tsl" style={{fontSize:12}}>{(tsPage-1)*TS_PAGE+idx+1}</td>
                 {isP&&<td className="fw6">{u2?.name}<div className="tx tsl">{u2?.role}{isOnBehalf&&<span className="tx tsl"> · filed by {ts.filedByName}</span>}</div></td>}
                 <td>{fmtDate(ts.date)}{locked&&<div><span className="bdg blk tx" style={{marginTop:3}}><I n="lock" s={10}/>locked</span></div>}</td>
-                <td>{p?<><div className="fw6 mono" style={{fontSize:12}}>{p.code}</div><div style={{fontWeight:600,fontSize:13,color:"var(--navy)",lineHeight:1.3,marginTop:2}}>{p.clientName}</div><div className="tx tsl" style={{fontSize:11,marginTop:1}}>{p.name}</div></>:(ts.isInternal?<span className="tx tsl">—</span>:"—")}</td>
+                <td>{p?<><div className="fw6 mono">{p.code}</div><div className="tx tsl">{p.name}</div></>:"—"}</td>
                 <td className="ts">{ts.category}</td>
                 <td className="fw6">{fmtHrs(ts.hours)}h</td>
                 <td>{ts.billable?<span className="tsc fw6">✓</span>:<span className="tsl">—</span>}</td>
@@ -1550,6 +1550,7 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
   const [fProj,setFProj]=useState("");
   const [fCat,setFCat]=useState("");
   const [fBill,setFBill]=useState("");
+  const [fPartner,setFPartner]=useState("");
   // Sort
   const [sortCol,setSortCol]=useState("date");
   const [sortDir,setSortDir]=useState("desc");
@@ -1634,6 +1635,24 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
 
   const sc=s=>s==="approved"?"ba":s==="rejected"?"br":s==="resubmitted"?"brs":"bp2";
 
+  // Resolve the approving partner for any timesheet entry
+  const getEntryPartner = ts => {
+    if(ts.status==="pending_partner"||ts.filedById){
+      // On-behalf entries: partner is the attributed user
+      const attrUser = users.find(u=>u.id===ts.userId);
+      if(attrUser?.role==="partner") return attrUser;
+    }
+    const proj = projects.find(p=>p.id===ts.projectId);
+    if(!proj) return null;
+    const partnerId = proj.assignedPartnerId || (proj.assignedPartners||[])[0];
+    return users.find(u=>u.id===partnerId) || null;
+  };
+
+  // Unique partners present in allPending (for filter dropdown — only relevant for partners viewing all)
+  const partnerOptions = [...new Map(
+    allPending.map(ts=>getEntryPartner(ts)).filter(Boolean).map(p=>[p.id,p])
+  ).values()].sort((a,b)=>a.name.localeCompare(b.name));
+
   return (
     <div>
       <div className="sh"><div><div className="card-title">Approvals</div><div className="card-sub mt4 ts">Review pending timesheets</div></div></div>
@@ -1664,7 +1683,13 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
             <option value="yes">Billable only</option>
             <option value="no">Non-billable only</option>
           </select>
-          {(fStaff||fProj||fCat||fBill)&&<button className="btn bgh bsm" onClick={()=>{setFStaff("");setFProj("");setFCat("");setFBill("");setPendPage(1);}}>✕ Clear</button>}
+          {isP&&partnerOptions.length>1&&(
+            <select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={fPartner} onChange={e=>{setFPartner(e.target.value);setPendPage(1);}}>
+              <option value="">All Partners</option>
+              {partnerOptions.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          )}
+          {(fStaff||fProj||fCat||fBill||fPartner)&&<button className="btn bgh bsm" onClick={()=>{setFStaff("");setFProj("");setFCat("");setFBill("");setFPartner("");setPendPage(1);}}>✕ Clear</button>}
         </div>
       )}
 
@@ -1676,6 +1701,7 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
           if(fCat&&t.category!==fCat) return false;
           if(fBill==="yes"&&!t.billable) return false;
           if(fBill==="no"&&t.billable) return false;
+          if(fPartner){ const ep=getEntryPartner(t); if(ep?.id!==fPartner) return false; }
           return true;
         }).slice().sort((a,b)=>{
           let va,vb;
@@ -1710,10 +1736,13 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
                   <th style={{cursor:"pointer"}} onClick={()=>toggleSort("project")}>Project{sortIcon("project")}</th>
                   <th style={{cursor:"pointer"}} onClick={()=>toggleSort("category")}>Category{sortIcon("category")}</th>
                   <th style={{cursor:"pointer"}} onClick={()=>toggleSort("hours")}>Hrs{sortIcon("hours")}</th>
-                  <th>Billable</th><th>Description</th><th>Status</th><th>Actions</th>
+                  <th>Billable</th><th>Description</th>
+                  <th>Partner</th>
+                  <th>Status</th><th>Actions</th>
                 </tr></thead>
                 <tbody>{paginatedPending.map((ts,idx)=>{
                   const u2=users.find(u=>u.id===ts.userId); const p=projects.find(p=>p.id===ts.projectId); const rate=u2?.billingRate||0;
+                  const entryPartner=getEntryPartner(ts);
                   return <tr key={ts.id}>
                     <td className="tx tsl" style={{fontSize:12}}>{(pendPage-1)*PEND_PAGE+idx+1}</td>
                     <td className="fw6">{u2?.name}
@@ -1726,6 +1755,11 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
                     <td className="fw6">{fmtHrs(ts.hours)}h{ts.billable&&<div className="tx tgo">{fmtCurrency(ts.hours*rate)}</div>}</td>
                     <td>{ts.billable?<span className="tsc fw6">✓</span>:<span className="tsl">—</span>}</td>
                     <td className="ts tsl" style={{maxWidth:170}}>{ts.description}</td>
+                    <td className="fw6" style={{whiteSpace:"nowrap"}}>
+                      {entryPartner
+                        ? <><div style={{fontSize:13}}>{entryPartner.name}</div><div className="tx tsl" style={{fontSize:11}}>Partner</div></>
+                        : <span className="tsl">—</span>}
+                    </td>
                     <td><span className={`bdg ${sc(ts.status)}`}>{ts.status}</span></td>
                     <td><div className="fx g8">
                       <button className="btn bsc bsm" onClick={()=>ts.status==="pending_partner"?approveOnBehalf(ts.id):approve(ts.id)}><I n="check" s={13}/>Approve</button>
