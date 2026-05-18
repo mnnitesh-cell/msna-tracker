@@ -1635,20 +1635,21 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
 
   const sc=s=>s==="approved"?"ba":s==="rejected"?"br":s==="resubmitted"?"brs":"bp2";
 
-  // Resolve the approving partner for any timesheet entry
+  // Resolve the responsible partner for a timesheet entry
   const getEntryPartner = ts => {
-    if(ts.status==="pending_partner"||ts.filedById){
-      // On-behalf entries: partner is the attributed user
-      const attrUser = users.find(u=>u.id===ts.userId);
-      if(attrUser?.role==="partner") return attrUser;
+    // On-behalf: the attributed user IS the partner
+    if(ts.filedById || ts.status==="pending_partner"){
+      const attr = users.find(u=>u.id===ts.userId);
+      if(attr?.role==="partner") return attr;
     }
+    // Regular entry: look at project's assigned partner
     const proj = projects.find(p=>p.id===ts.projectId);
     if(!proj) return null;
-    const partnerId = proj.assignedPartnerId || (proj.assignedPartners||[])[0];
-    return users.find(u=>u.id===partnerId) || null;
+    const pid = proj.assignedPartnerId || (proj.assignedPartners||[])[0];
+    return users.find(u=>u.id===pid) || null;
   };
 
-  // Unique partners present in allPending (for filter dropdown — only relevant for partners viewing all)
+  // Build unique sorted partner list from all pending entries (regardless of role)
   const partnerOptions = [...new Map(
     allPending.map(ts=>getEntryPartner(ts)).filter(Boolean).map(p=>[p.id,p])
   ).values()].sort((a,b)=>a.name.localeCompare(b.name));
@@ -1683,7 +1684,7 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
             <option value="yes">Billable only</option>
             <option value="no">Non-billable only</option>
           </select>
-          {isP&&partnerOptions.length>1&&(
+          {isP&&partnerOptions.length>0&&(
             <select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={fPartner} onChange={e=>{setFPartner(e.target.value);setPendPage(1);}}>
               <option value="">All Partners</option>
               {partnerOptions.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
@@ -1701,7 +1702,7 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
           if(fCat&&t.category!==fCat) return false;
           if(fBill==="yes"&&!t.billable) return false;
           if(fBill==="no"&&t.billable) return false;
-          if(fPartner){ const ep=getEntryPartner(t); if(ep?.id!==fPartner) return false; }
+          if(fPartner){ const ep=getEntryPartner(t); if(!ep||ep.id!==fPartner) return false; }
           return true;
         }).slice().sort((a,b)=>{
           let va,vb;
@@ -1755,10 +1756,10 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
                     <td className="fw6">{fmtHrs(ts.hours)}h{ts.billable&&<div className="tx tgo">{fmtCurrency(ts.hours*rate)}</div>}</td>
                     <td>{ts.billable?<span className="tsc fw6">✓</span>:<span className="tsl">—</span>}</td>
                     <td className="ts tsl" style={{maxWidth:170}}>{ts.description}</td>
-                    <td className="fw6" style={{whiteSpace:"nowrap"}}>
+                    <td style={{whiteSpace:"nowrap"}}>
                       {entryPartner
-                        ? <><div style={{fontSize:13}}>{entryPartner.name}</div><div className="tx tsl" style={{fontSize:11}}>Partner</div></>
-                        : <span className="tsl">—</span>}
+                        ?<><div className="fw6" style={{fontSize:13}}>{entryPartner.name}</div><div className="tx tsl" style={{fontSize:11}}>Partner</div></>
+                        :<span className="tsl">—</span>}
                     </td>
                     <td><span className={`bdg ${sc(ts.status)}`}>{ts.status}</span></td>
                     <td><div className="fx g8">
