@@ -2328,6 +2328,7 @@ function Profitability({ users=[], projects=[], tss=[] }) {
   const [profFilterSignal, setProfFilterSignal] = useState("");
   const [profSortCol, setProfSortCol] = useState("margin_pct");
   const [profSortDir, setProfSortDir] = useState("desc");
+  const [staffBreakdownMonth, setStaffBreakdownMonth] = useState("all"); // "all" or "YYYY-MM"
   const toggleProfSort = col => { if(profSortCol===col){setProfSortDir(d=>d==="asc"?"desc":"asc");}else{setProfSortCol(col);setProfSortDir("desc");} setProfPage(1); };
   const profSortIcon = col => profSortCol===col?(profSortDir==="asc"?" ↑":" ↓"):"";
 
@@ -2450,7 +2451,7 @@ function Profitability({ users=[], projects=[], tss=[] }) {
       <style>{PROF_CSS}</style>
       <div className="sh">
         <div><div className="card-title">Profitability</div><div className="card-sub mt4 ts">Fee vs staff cost analysis — approved hours only</div></div>
-        {selected && <button className="btn bgh bsm" onClick={()=>setSelected(null)}>← All Engagements</button>}
+        {selected && <button className="btn bgh bsm" onClick={()=>{setSelected(null);setStaffBreakdownMonth("all");}}>← All Engagements</button>}
       </div>
 
       {/* ── FIRM-WIDE VIEW ── */}
@@ -2593,7 +2594,7 @@ function Profitability({ users=[], projects=[], tss=[] }) {
                   const margin=profView==="actual"?marginActual:marginBilling;
                   const mp=profView==="actual"?marginPctActual:marginPctBilling;
                   return (
-                    <tr key={p.id} style={{cursor:"pointer"}} onClick={()=>setSelected(p.id)}>
+                    <tr key={p.id} style={{cursor:"pointer"}} onClick={()=>{setSelected(p.id);setStaffBreakdownMonth("all");}}>
                       <td className="tx tsl" style={{fontSize:12}}>{(profPage-1)*PROF_PAGE+idx+1}</td>
                       <td className="tx tsl" style={{fontSize:12,whiteSpace:"nowrap"}}>{p.createdAt?fmtDate(p.createdAt.slice(0,10)):"—"}</td>
                       <td><span className="fw6 mono">{p.code}</span></td>
@@ -2607,7 +2608,7 @@ function Profitability({ users=[], projects=[], tss=[] }) {
                       <td>{mp!=null?<span className={margin<0?"tdn":mp<20?"tam":"tsc"}>{mp}%</span>:<span className="tsl tx">—</span>}</td>
                       <td><span className={`bdg ${p.status==="active"?"bac":"bcl"}`}>{p.status}</span></td>
                       <td><span className={sigClass(profView==="actual"?signalActual:signalBilling)}>{sigLabel(profView==="actual"?signalActual:signalBilling)}</span></td>
-                      <td><button className="btn bgh bxs" onClick={e=>{e.stopPropagation();setSelected(p.id);}}>Detail →</button></td>
+                      <td><button className="btn bgh bxs" onClick={e=>{e.stopPropagation();setSelected(p.id);setStaffBreakdownMonth("all");}}>Detail →</button></td>
                     </tr>
                   );
                 })}</tbody>
@@ -2761,50 +2762,116 @@ function Profitability({ users=[], projects=[], tss=[] }) {
             </div>
 
             {/* Staff cost breakdown */}
-            <div className="card mb22">
-              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
-                <div className="card-title">Staff Cost Breakdown</div>
-                <div style={{fontSize:11,color:"var(--slate)"}}>Both methods shown side by side</div>
-              </div>
-              {staffBreakdown.length===0
-                ?<div className="es" style={{padding:"24px 0"}}>No approved hours yet.</div>
-                :<div className="tw"><table>
-                  <thead>
-                    <tr style={{background:"var(--cream)"}}>
-                      <th rowSpan="2">Staff</th>
-                      <th rowSpan="2" style={{textAlign:"right"}}>Hours</th>
-                      <th colSpan="2" style={{textAlign:"center",borderBottom:"1px solid var(--border)"}}>Staff Cost</th>
-                      <th colSpan="2" style={{textAlign:"center",borderBottom:"1px solid var(--border)"}}>% of Fee</th>
-                    </tr>
-                    <tr style={{background:"var(--cream)"}}>
-                      <th style={{textAlign:"right",color:"var(--red)",fontSize:11}}>Actual</th>
-                      <th style={{textAlign:"right",color:"var(--slate)",fontSize:11}}>Billing</th>
-                      <th style={{textAlign:"right",color:"var(--red)",fontSize:11}}>Actual</th>
-                      <th style={{textAlign:"right",color:"var(--slate)",fontSize:11}}>Billing</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                  {staffBreakdown.map(({u,hrs,cost,costBilling})=>{
-                    const actualRate = u.actualRate || u.billingRate || 0;
-                    return (
-                      <tr key={u.id}>
-                        <td>
-                          <div className="fw6 ts">{u.name}</div>
-                          <div className="tx tsl" style={{fontSize:11}}>
-                            {u.role} · Actual {fmtCurrency(actualRate)}/hr · Billing {fmtCurrency(u.billingRate||0)}/hr
-                          </div>
-                        </td>
-                        <td style={{textAlign:"right"}} className="ts">{fmtHrs(hrs)}h</td>
-                        <td style={{textAlign:"right"}} className="fw6">{fmtCurrency(cost)}</td>
-                        <td style={{textAlign:"right"}} className="tx tsl">{fmtCurrency(costBilling)}</td>
-                        <td style={{textAlign:"right"}} className="fw6">{totalFee>0?Math.round(cost/totalFee*100)+"%":"—"}</td>
-                        <td style={{textAlign:"right"}} className="tx tsl">{totalFee>0?Math.round(costBilling/totalFee*100)+"%":"—"}</td>
-                      </tr>
-                    );
-                  })}
-                  </tbody>
-                </table></div>}
-            </div>
+            {(()=>{
+              // Available months from approved sheets for this project (for retainer filter)
+              const projSheets = approved.filter(t=>t.projectId===p.id);
+              const availMonths = [...new Set(projSheets.map(t=>monthKey(t.date)).filter(Boolean))].sort();
+              const isRetainerProj = p.feeType==="retainer";
+
+              // Filter staffBreakdown by selected month (retainer only)
+              const getCostRate2 = (u, date) => {
+                if(u.actualRate && u.actualRateEffectiveDate && date >= u.actualRateEffectiveDate) return u.actualRate;
+                return u.billingRate||0;
+              };
+              let filteredBreakdown = staffBreakdown;
+              let filteredTotalFee = totalFee;
+              if(isRetainerProj && staffBreakdownMonth !== "all") {
+                // Recompute breakdown for just the selected month's sheets
+                const mSheets = projSheets.filter(t=>monthKey(t.date)===staffBreakdownMonth);
+                filteredBreakdown = users.map(u=>{
+                  const uSheets = mSheets.filter(t=>t.userId===u.id);
+                  const hrs = uSheets.reduce((s,t)=>s+t.hours,0);
+                  const costActual = uSheets.reduce((s,t)=>s+t.hours*getCostRate2(u,t.date),0);
+                  const costBilling = hrs*(u.billingRate||0);
+                  return {u,hrs,cost:costActual,costBilling};
+                }).filter(d=>d.hrs>0).sort((a,b)=>b.cost-a.cost);
+                filteredTotalFee = p.monthlyFee||0; // use monthly fee for % of fee column
+              }
+
+              return (
+                <div className="card mb22">
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:isRetainerProj&&availMonths.length>0?12:16,flexWrap:"wrap",gap:10}}>
+                    <div className="card-title">Staff Cost Breakdown</div>
+                    <div style={{fontSize:11,color:"var(--slate)"}}>Both methods shown side by side</div>
+                  </div>
+
+                  {/* Month filter — retainer projects only */}
+                  {isRetainerProj && availMonths.length > 0 && (
+                    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16,flexWrap:"wrap"}}>
+                      <span style={{fontSize:11,fontWeight:600,letterSpacing:"0.8px",textTransform:"uppercase",color:"var(--slate)",marginRight:4}}>Period:</span>
+                      <button
+                        onClick={()=>setStaffBreakdownMonth("all")}
+                        style={{
+                          padding:"4px 13px",borderRadius:20,fontSize:12,fontWeight:500,cursor:"pointer",border:"1.5px solid",transition:"all .15s",
+                          background:staffBreakdownMonth==="all"?"var(--navy)":"transparent",
+                          color:staffBreakdownMonth==="all"?"#fff":"var(--slate)",
+                          borderColor:staffBreakdownMonth==="all"?"var(--navy)":"var(--border)",
+                        }}
+                      >Till Date</button>
+                      {availMonths.map(mk=>(
+                        <button
+                          key={mk}
+                          onClick={()=>setStaffBreakdownMonth(mk)}
+                          style={{
+                            padding:"4px 13px",borderRadius:20,fontSize:12,fontWeight:500,cursor:"pointer",border:"1.5px solid",transition:"all .15s",
+                            background:staffBreakdownMonth===mk?"var(--navy)":"transparent",
+                            color:staffBreakdownMonth===mk?"#fff":"var(--slate)",
+                            borderColor:staffBreakdownMonth===mk?"var(--navy)":"var(--border)",
+                          }}
+                        >{monthLabel(mk)}</button>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Active period label */}
+                  {isRetainerProj && staffBreakdownMonth !== "all" && (
+                    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:14,padding:"7px 12px",background:"var(--gold-pale)",borderRadius:8,fontSize:12,color:"#92400e",border:"1px solid #fde68a"}}>
+                      <I n="calendar" s={13}/>
+                      <span>Showing <strong>{monthLabel(staffBreakdownMonth)}</strong> — monthly fee used for % of fee calculation</span>
+                    </div>
+                  )}
+
+                  {filteredBreakdown.length===0
+                    ?<div className="es" style={{padding:"24px 0"}}>{staffBreakdownMonth!=="all"?"No approved hours for this month.":"No approved hours yet."}</div>
+                    :<div className="tw"><table>
+                      <thead>
+                        <tr style={{background:"var(--cream)"}}>
+                          <th rowSpan="2">Staff</th>
+                          <th rowSpan="2" style={{textAlign:"right"}}>Hours</th>
+                          <th colSpan="2" style={{textAlign:"center",borderBottom:"1px solid var(--border)"}}>Staff Cost</th>
+                          <th colSpan="2" style={{textAlign:"center",borderBottom:"1px solid var(--border)"}}>% of Fee</th>
+                        </tr>
+                        <tr style={{background:"var(--cream)"}}>
+                          <th style={{textAlign:"right",color:"var(--red)",fontSize:11}}>Actual</th>
+                          <th style={{textAlign:"right",color:"var(--slate)",fontSize:11}}>Billing</th>
+                          <th style={{textAlign:"right",color:"var(--red)",fontSize:11}}>Actual</th>
+                          <th style={{textAlign:"right",color:"var(--slate)",fontSize:11}}>Billing</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                      {filteredBreakdown.map(({u,hrs,cost,costBilling})=>{
+                        const actualRate = u.actualRate || u.billingRate || 0;
+                        return (
+                          <tr key={u.id}>
+                            <td>
+                              <div className="fw6 ts">{u.name}</div>
+                              <div className="tx tsl" style={{fontSize:11}}>
+                                {u.role} · Actual {fmtCurrency(actualRate)}/hr · Billing {fmtCurrency(u.billingRate||0)}/hr
+                              </div>
+                            </td>
+                            <td style={{textAlign:"right"}} className="ts">{fmtHrs(hrs)}h</td>
+                            <td style={{textAlign:"right"}} className="fw6">{fmtCurrency(cost)}</td>
+                            <td style={{textAlign:"right"}} className="tx tsl">{fmtCurrency(costBilling)}</td>
+                            <td style={{textAlign:"right"}} className="fw6">{filteredTotalFee>0?Math.round(cost/filteredTotalFee*100)+"%":"—"}</td>
+                            <td style={{textAlign:"right"}} className="tx tsl">{filteredTotalFee>0?Math.round(costBilling/filteredTotalFee*100)+"%":"—"}</td>
+                          </tr>
+                        );
+                      })}
+                      </tbody>
+                    </table></div>}
+                </div>
+              );
+            })()}
 
             {/* Monthly trend — retainer only (not useful for fixed fee) */}
             {p.feeType==="retainer"&&Object.keys(byMonth).length>0&&(
