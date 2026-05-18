@@ -1375,7 +1375,7 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
                     {/* Partners always see Assign; Managers see it if assigned to the project */}
                     {(isP||(isMgr&&(p.assignedManagers||[]).includes(user.id)))&&
                       <button className="btn bp bsm" onClick={()=>setAM(p)}><I n="users" s={12}/>Assign</button>}
-                    {isP&&(user.email===ADMIN_EMAIL||p.assignedPartnerId===user.id)&&<button className="btn bgh bsm" onClick={()=>close(p.id)}><I n="archive" s={12}/>Close</button>}
+                    {((isP&&(user.email===ADMIN_EMAIL||p.assignedPartnerId===user.id))||(isMgr&&(p.assignedManagers||[]).includes(user.id)))&&<button className="btn bgh bsm" onClick={()=>close(p.id)}><I n="archive" s={12}/>Close</button>}
                   </>}
                   {/* Edit: partner always, manager only if pending */}
                   {canEditProj&&<button className="btn bgh bic bsm" title="Edit project" onClick={()=>openEdit(p)}><I n="edit" s={13}/></button>}
