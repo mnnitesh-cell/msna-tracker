@@ -4113,7 +4113,6 @@ function ProductivityDashboard({ users=[], projects=[], tss=[] }) {
 
   // ── pct color helper ──
   const pctColor = v => v>=90?"var(--green)":v>=70?"var(--amber)":"var(--red)";
-  const pctClass2 = v => v>=90?"tsc":v>=70?"tam":"tdn";
 
   const CAT_COLORS = {
     "Assurance":"#0f6e56","Virtual CFO":"#185fa5","Compliance":"#534ab7",
