@@ -248,12 +248,14 @@ body{font-family:'DM Sans',sans-serif;background:var(--cream);color:var(--navy);
 .sb-name{color:#fff;font-size:14px;font-weight:500;}
 .sb-role{font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-top:3px;}
 .rp{color:var(--gold);} .rm{color:#60a5fa;} .ri{color:#86efac;}
-.sb-nav{flex:1;padding:12px 10px;}
+.sb-nav{flex:1;padding:10px 10px;}
 .ni{display:flex;align-items:center;gap:10px;padding:9px 12px;color:rgba(255,255,255,.5);font-size:13px;cursor:pointer;transition:all .15s;position:relative;border-radius:8px;margin-bottom:1px;}
 .ni:hover{background:rgba(255,255,255,.07);color:rgba(255,255,255,.85);}
 .ni.active{background:rgba(201,168,76,.14);color:var(--gold-light);}
 .nb{position:absolute;right:10px;background:var(--gold);color:var(--navy);font-size:11px;font-weight:700;border-radius:20px;padding:1px 8px;min-width:20px;text-align:center;}
 .sb-ft{padding:14px 10px;border-top:1px solid rgba(255,255,255,.08);}
+.sb-section-label{font-size:10px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:rgba(255,255,255,.22);padding:10px 12px 3px;margin-top:2px;}
+.sb-divider{height:1px;background:rgba(255,255,255,.07);margin:8px 12px;}
 
 /* ── LAYOUT ── */
 .main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;}
@@ -403,20 +405,60 @@ function Login({ onLogin }) {
 // ══════════════════════════════════════════════════════════════
 function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=0, projPendingCount=0 }) {
   const isAdmin = user.email===ADMIN_EMAIL;
-  const nav = [
-    { id:"dashboard",  icon:"chart",    label:"Dashboard",      roles:["partner","manager","intern"] },
-    { id:"week",       icon:"calendar", label:"My Week",        roles:["partner","manager","intern"] },
-    { id:"timesheets", icon:"clock",    label:"Timesheets",     roles:["partner","manager","intern"] },
-    { id:"projects",   icon:"folder",   label:"Projects",       roles:["partner","manager","intern"], projBadge:true },
-    { id:"approvals",  icon:"shield",   label:"Approvals",      roles:["partner","manager"], badge:true },
-    { id:"reports",    icon:"chart",    label:"Reports",        roles:["partner"] },
-    { id:"profitability", icon:"target", label:"Profitability",  roles:["partner"] },
-    { id:"productivity",  icon:"chart",  label:"Productivity",   roles:["partner"] },
-    { id:"leave",      icon:"calendar", label:"Leave",                roles:["intern","manager","partner"], leaveBadge:true },
-    { id:"compliance", icon:"shield",   label:"Timesheet Compliance", roles:["partner","manager"] },
-    { id:"audit",      icon:"history",  label:"Audit Trail",    roles:["partner"] },
-    { id:"users",      icon:"users",    label:"User Management",roles:["partner"] },
-  ].filter(n=>n.roles.includes(user.role)&&(!n.adminOnly||isAdmin));
+  const role = user.role; // "partner" | "manager" | "intern"
+
+  // ── Nav groups with role gates ──────────────────────────────
+  // Each group: { label, items[] } — label null = no section header (top-level)
+  // Item roles: which roles can see this item
+  const groups = [
+    {
+      label: null,
+      items: [
+        { id:"dashboard", icon:"chart",    label:"Dashboard" },
+      ]
+    },
+    {
+      label: "My Work",
+      roles: ["partner","manager","intern"], // group visible to all
+      items: [
+        { id:"week",       icon:"calendar", label:"My Week" },
+        { id:"timesheets", icon:"clock",    label:"Timesheets" },
+        { id:"leave",      icon:"calendar", label:"Leave",       leaveBadge:true },
+      ]
+    },
+    {
+      label: "Engagements",
+      roles: ["partner","manager","intern"], // all roles see Projects; Approvals filtered per-item below
+      items: [
+        { id:"projects",  icon:"folder",  label:"Projects",  projBadge:true, roles:["partner","manager","intern"] },
+        { id:"approvals", icon:"shield",  label:"Approvals", badge:true,     roles:["partner","manager"] },
+      ]
+    },
+    {
+      label: "Insights",
+      roles: ["partner"], // partner-only analytics
+      items: [
+        { id:"reports",       icon:"chart",  label:"Reports" },
+        { id:"profitability", icon:"target", label:"Profitability" },
+        { id:"productivity",  icon:"chart",  label:"Productivity" },
+      ]
+    },
+    {
+      label: "Admin",
+      roles: ["partner"], // partner-only governance
+      items: [
+        { id:"compliance", icon:"shield",  label:"Compliance" },
+        { id:"audit",      icon:"history", label:"Audit Trail" },
+        { id:"users",      icon:"users",   label:"User Management" },
+      ]
+    },
+  ];
+
+  // Filter groups and items by role
+  const visibleGroups = groups
+    .filter(g => !g.roles || g.roles.includes(role))
+    .map(g => ({ ...g, items: g.items.filter(item => !item.roles || item.roles.includes(role)) }))
+    .filter(g => g.items.length > 0);
 
   return (
     <div className="sb">
@@ -424,7 +466,6 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=
       <div className="sb-user">
         <div className="sb-name">{user.name}</div>
         <div className={`sb-role r${user.role[0]}`}>{user.role.charAt(0).toUpperCase()+user.role.slice(1)}{isAdmin?" · Admin":""}</div>
-        {/* Quick actions right under the name */}
         <div style={{display:"flex",gap:6,marginTop:12}}>
           <button onClick={()=>setTab("changepassword")}
             title="Change Password"
@@ -433,8 +474,7 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=
               color:tab==="changepassword"?"var(--gold)":"rgba(255,255,255,0.7)",
               border:"1px solid",
               borderColor:tab==="changepassword"?"rgba(201,168,76,0.3)":"rgba(255,255,255,0.08)",
-              fontSize:11,fontWeight:500,cursor:"pointer",transition:"all .15s",
-              letterSpacing:"0.3px"}}>
+              fontSize:11,fontWeight:500,cursor:"pointer",transition:"all .15s",letterSpacing:"0.3px"}}>
             <I n="lock" s={12}/>Password
           </button>
           <button onClick={onLogout}
@@ -442,21 +482,30 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=
             style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:6,padding:"7px 10px",borderRadius:7,
               background:"rgba(255,255,255,0.05)",color:"rgba(255,255,255,0.7)",
               border:"1px solid rgba(255,255,255,0.08)",
-              fontSize:11,fontWeight:500,cursor:"pointer",transition:"all .15s",
-              letterSpacing:"0.3px"}}
+              fontSize:11,fontWeight:500,cursor:"pointer",transition:"all .15s",letterSpacing:"0.3px"}}
             onMouseEnter={e=>{e.currentTarget.style.background="rgba(220,38,38,0.15)";e.currentTarget.style.color="#fca5a5";e.currentTarget.style.borderColor="rgba(220,38,38,0.3)";}}
             onMouseLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,0.05)";e.currentTarget.style.color="rgba(255,255,255,0.7)";e.currentTarget.style.borderColor="rgba(255,255,255,0.08)";}}>
             <I n="logout" s={12}/>Sign Out
           </button>
         </div>
       </div>
+
       <div className="sb-nav">
-        {nav.map(n=>(
-          <div key={n.id} className={`ni ${tab===n.id?"active":""}`} onClick={()=>setTab(n.id)}>
-            <I n={n.icon} s={16}/>{n.label}
-            {n.badge&&pendingCount>0&&<span className="nb">{pendingCount}</span>}
-            {n.leaveBadge&&leavePendingCount>0&&<span className="nb">{leavePendingCount}</span>}
-            {n.projBadge&&projPendingCount>0&&<span className="nb">{projPendingCount}</span>}
+        {visibleGroups.map((g, gi) => (
+          <div key={gi}>
+            {/* Divider between groups (not before the very first) */}
+            {gi > 0 && <div className="sb-divider"/>}
+            {/* Section label (skip for the unlabelled top group) */}
+            {g.label && <div className="sb-section-label">{g.label}</div>}
+            {/* Nav items */}
+            {g.items.map(n => (
+              <div key={n.id} className={`ni ${tab===n.id?"active":""}`} onClick={()=>setTab(n.id)}>
+                <I n={n.icon} s={16}/>{n.label}
+                {n.badge     && pendingCount>0     && <span className="nb">{pendingCount}</span>}
+                {n.leaveBadge && leavePendingCount>0 && <span className="nb">{leavePendingCount}</span>}
+                {n.projBadge  && projPendingCount>0  && <span className="nb">{projPendingCount}</span>}
+              </div>
+            ))}
           </div>
         ))}
       </div>
@@ -4520,7 +4569,7 @@ export default function App() {
   };
   const pendingCount = calcPendingCount(currentUser);
 
-  const titles={dashboard:"Dashboard",week:"My Week",timesheets:"Timesheets",projects:"Projects",approvals:"Approvals",reports:"Reports",profitability:"Profitability",productivity:"Productivity Dashboard",compliance:"Timesheet Compliance",leave:"Leave",audit:"Audit Trail",users:"User Management",changepassword:"Change Password"};
+  const titles={dashboard:"Dashboard",week:"My Week",timesheets:"Timesheets",projects:"Projects",approvals:"Approvals",reports:"Reports",profitability:"Profitability",productivity:"Productivity Dashboard",compliance:"Compliance",leave:"Leave",audit:"Audit Trail",users:"User Management",changepassword:"Change Password"};
 
   if(!currentUser) return <><style>{CSS}</style><Login onLogin={u=>{setCU(u);setTab("dashboard");}}/></>;
 
