@@ -4019,8 +4019,10 @@ function ChangePassword({ user, setTab }) {
 // PRODUCTIVITY DASHBOARD (Partner only)
 // ══════════════════════════════════════════════════════════════
 function ProductivityDashboard({ users=[], projects=[], tss=[] }) {
-  const PRODUCTIVE_CATS = ["Assurance","Virtual CFO","Compliance","Consulting"];
-  const NON_BILLABLE_CATS = ["Leave","Holiday","Idle","Reading"];
+  // Productive = engagement work + Reading (self-development counts)
+  // Non-productive = Leave, Holiday, Idle only
+  const PRODUCTIVE_CATS = ["Assurance","Virtual CFO","Compliance","Consulting","Reading"];
+  const NON_BILLABLE_CATS = ["Leave","Holiday","Idle","Reading"]; // Reading: productive but never billable
 
   // ── Period filter ──
   const allMonths = [...new Set(tss.map(t=>monthKey(t.date)).filter(Boolean))].sort().reverse();
@@ -4434,7 +4436,7 @@ function ProductivityDashboard({ users=[], projects=[], tss=[] }) {
       {/* ── Legend: productivity definition ── */}
       <div className="al al-i" style={{marginTop:16}}>
         <I n="info" s={16}/>
-        <div><strong>Productivity definition:</strong> Productive hours = Assurance + Virtual CFO + Compliance + Consulting. Leave, Holiday, Idle and Reading are excluded. Only approved timesheet entries are counted.</div>
+        <div><strong>Productivity definition:</strong> Productive hours = Assurance + Virtual CFO + Compliance + Consulting + Reading. Leave, Holiday and Idle are excluded. Billable hours = productive/engagement hours explicitly marked billable (Reading is always non-billable). Only approved timesheet entries are counted.</div>
       </div>
 
       </>)}
