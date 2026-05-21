@@ -411,6 +411,7 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=
     { id:"approvals",  icon:"shield",   label:"Approvals",      roles:["partner","manager"], badge:true },
     { id:"reports",    icon:"chart",    label:"Reports",        roles:["partner"] },
     { id:"profitability", icon:"target", label:"Profitability",  roles:["partner"] },
+    { id:"productivity",  icon:"chart",  label:"Productivity",   roles:["partner"] },
     { id:"leave",      icon:"calendar", label:"Leave",                roles:["intern","manager","partner"], leaveBadge:true },
     { id:"compliance", icon:"shield",   label:"Timesheet Compliance", roles:["partner","manager"] },
     { id:"audit",      icon:"history",  label:"Audit Trail",    roles:["partner"] },
@@ -4010,6 +4011,425 @@ function ChangePassword({ user, setTab }) {
 }
 
 // ══════════════════════════════════════════════════════════════
+// PRODUCTIVITY DASHBOARD (Partner only)
+// ══════════════════════════════════════════════════════════════
+function ProductivityDashboard({ users=[], projects=[], tss=[] }) {
+  const PRODUCTIVE_CATS = ["Assurance","Virtual CFO","Compliance","Consulting"];
+  const NON_BILLABLE_CATS = ["Leave","Holiday","Idle","Reading"];
+
+  // ── Period filter ──
+  const allMonths = [...new Set(tss.map(t=>monthKey(t.date)).filter(Boolean))].sort().reverse();
+  const [selMonths, setSelMonths] = useState(allMonths.slice(0,1));
+  const [roleFilter, setRoleFilter] = useState("all");
+  const [search, setSearch] = useState("");
+  const [staffTab, setStaffTab] = useState("table"); // table | billable | productive
+  const [sortCol, setSortCol] = useState("total");
+  const [sortDir, setSortDir] = useState(-1);
+
+  const toggleMonth = mk => {
+    setSelMonths(prev => prev.includes(mk) ? (prev.length>1?prev.filter(m=>m!==mk):prev) : [...prev, mk]);
+  };
+
+  // ── Filtered timesheets ──
+  const filtered = tss.filter(t => {
+    if(!selMonths.includes(monthKey(t.date))) return false;
+    if(t.status!=="approved") return false;
+    return true;
+  });
+
+  // ── Summary metrics ──
+  const totalHrs     = filtered.reduce((s,t)=>s+t.hours,0);
+  const billableHrs  = filtered.filter(t=>t.billable).reduce((s,t)=>s+t.hours,0);
+  const productiveHrs= filtered.filter(t=>PRODUCTIVE_CATS.includes(t.category||t.type)).reduce((s,t)=>s+t.hours,0);
+  const billPct      = totalHrs>0?Math.round(billableHrs/totalHrs*1000)/10:0;
+  const prodPct      = totalHrs>0?Math.round(productiveHrs/totalHrs*1000)/10:0;
+  const idleLeaveHrs = filtered.filter(t=>NON_BILLABLE_CATS.includes(t.category||t.type)).reduce((s,t)=>s+t.hours,0);
+  const activeClients= [...new Set(filtered.map(t=>{const p=projects.find(px=>px.id===t.projectId); return p?.clientName;}).filter(Boolean))].length;
+
+  // ── By category ──
+  const byCategory = {};
+  filtered.forEach(t=>{
+    const cat = t.category||t.type||"Other";
+    byCategory[cat]=(byCategory[cat]||0)+t.hours;
+  });
+
+  // ── By role ──
+  const byRole = { partner:0, manager:0, intern:0 };
+  const byRoleBillable = { partner:0, manager:0, intern:0 };
+  filtered.forEach(t=>{
+    const u=users.find(u=>u.id===t.userId);
+    if(!u) return;
+    byRole[u.role]=(byRole[u.role]||0)+t.hours;
+    if(t.billable) byRoleBillable[u.role]=(byRoleBillable[u.role]||0)+t.hours;
+  });
+
+  // ── Top clients ──
+  const clientHrs = {};
+  filtered.forEach(t=>{
+    if(!t.billable) return;
+    const p=projects.find(px=>px.id===t.projectId);
+    if(!p?.clientName) return;
+    clientHrs[p.clientName]=(clientHrs[p.clientName]||0)+t.hours;
+  });
+  const topClients = Object.entries(clientHrs).sort((a,b)=>b[1]-a[1]).slice(0,10);
+
+  // ── Daily trend ──
+  const dailyHrs = {};
+  filtered.forEach(t=>{ dailyHrs[t.date]=(dailyHrs[t.date]||0)+t.hours; });
+  const dailyEntries = Object.entries(dailyHrs).sort((a,b)=>a[0].localeCompare(b[0]));
+
+  // ── Staff performance ──
+  const staffMap = {};
+  filtered.forEach(t=>{
+    const u=users.find(u=>u.id===t.userId);
+    if(!u) return;
+    if(!staffMap[u.id]) staffMap[u.id]={ id:u.id, name:u.name, role:u.role, total:0, billable:0, productive:0 };
+    staffMap[u.id].total+=t.hours;
+    if(t.billable) staffMap[u.id].billable+=t.hours;
+    const cat=t.category||t.type||"";
+    if(PRODUCTIVE_CATS.includes(cat)) staffMap[u.id].productive+=t.hours;
+  });
+  const allStaff = Object.values(staffMap).map(s=>({
+    ...s,
+    billable_pct: s.total>0?Math.round(s.billable/s.total*1000)/10:0,
+    productive_pct: s.total>0?Math.round(s.productive/s.total*1000)/10:0,
+  }));
+
+  // Apply role + search filter for table
+  const visibleStaff = allStaff.filter(s=>{
+    if(roleFilter!=="all"&&s.role!==roleFilter) return false;
+    if(search&&!s.name.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  }).sort((a,b)=>{
+    const va=a[sortCol], vb=b[sortCol];
+    if(typeof va==="string") return sortDir*va.localeCompare(vb);
+    return sortDir*(va-vb);
+  });
+
+  const handleSort = col => {
+    if(sortCol===col) setSortDir(d=>d*-1);
+    else { setSortCol(col); setSortDir(-1); }
+  };
+
+  // ── pct color helper ──
+  const pctColor = v => v>=90?"var(--green)":v>=70?"var(--amber)":"var(--red)";
+  const pctClass2 = v => v>=90?"tsc":v>=70?"tam":"tdn";
+
+  const CAT_COLORS = {
+    "Assurance":"#0f6e56","Virtual CFO":"#185fa5","Compliance":"#534ab7",
+    "Consulting":"#ba7517","Reading":"#888780","Leave":"#d85a30","Idle":"#b4b2a9","Holiday":"#d4537e"
+  };
+
+  // ── Canvas chart refs ──
+  const refDaily  = useRef(null);
+  const refCat    = useRef(null);
+  const refClients= useRef(null);
+  const refRole   = useRef(null);
+  const refBillR  = useRef(null);
+  const refProdR  = useRef(null);
+  const chartInst = useRef({});
+
+  // Destroy and redraw charts when data changes
+  useEffect(()=>{
+    const Script = document.getElementById("chartjs-cdn");
+    const draw = () => {
+      if(!window.Chart) return;
+      Object.values(chartInst.current).forEach(c=>{ try{c.destroy();}catch(e){} });
+      chartInst.current={};
+      if(refDaily.current && dailyEntries.length>0){
+        chartInst.current.daily = new window.Chart(refDaily.current,{
+          type:"line",
+          data:{ labels:dailyEntries.map(([d])=>d.slice(5)),
+            datasets:[{label:"Hours",data:dailyEntries.map(([,v])=>v),
+              borderColor:"var(--gold)",backgroundColor:"rgba(201,168,76,.12)",fill:true,tension:0.35,
+              pointRadius:3,pointBackgroundColor:"var(--gold)",borderWidth:2}]},
+          options:{ responsive:true,maintainAspectRatio:false,
+            plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>ctx.parsed.y+"h"}}},
+            scales:{x:{grid:{display:false},ticks:{font:{size:11},maxRotation:45,color:"#64748b"}},
+              y:{grid:{color:"#e2e8f0"},ticks:{font:{size:11},color:"#64748b"}}}}
+        });
+      }
+      if(refCat.current && Object.keys(byCategory).length>0){
+        const cats=Object.keys(byCategory), vals=Object.values(byCategory);
+        chartInst.current.cat = new window.Chart(refCat.current,{
+          type:"doughnut",
+          data:{ labels:cats,
+            datasets:[{data:vals,backgroundColor:cats.map(c=>CAT_COLORS[c]||"#888"),borderWidth:2,borderColor:"#fff"}]},
+          options:{ responsive:true,maintainAspectRatio:false,cutout:"62%",
+            plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>ctx.label+": "+ctx.parsed+"h"}}}}
+        });
+      }
+      if(refClients.current && topClients.length>0){
+        chartInst.current.clients = new window.Chart(refClients.current,{
+          type:"bar",
+          data:{ labels:topClients.map(([c])=>c.length>30?c.slice(0,28)+"…":c),
+            datasets:[{label:"Hrs",data:topClients.map(([,v])=>v),backgroundColor:"#185fa5",borderRadius:4}]},
+          options:{ indexAxis:"y",responsive:true,maintainAspectRatio:false,
+            plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>ctx.parsed.x+"h"}}},
+            scales:{x:{grid:{color:"#e2e8f0"},ticks:{font:{size:11},color:"#64748b"}},
+              y:{grid:{display:false},ticks:{font:{size:11},color:"#0f2044"}}}}
+        });
+      }
+      if(refRole.current){
+        const roles=["intern","manager","partner"];
+        chartInst.current.role = new window.Chart(refRole.current,{
+          type:"bar",
+          data:{ labels:roles.map(r=>r.charAt(0).toUpperCase()+r.slice(1)),
+            datasets:[
+              {label:"Billable",data:roles.map(r=>Math.round((byRoleBillable[r]||0)*10)/10),backgroundColor:"#10b981",borderRadius:4},
+              {label:"Non-billable",data:roles.map(r=>Math.round(((byRole[r]||0)-(byRoleBillable[r]||0))*10)/10),backgroundColor:"#ef4444",borderRadius:4}
+            ]},
+          options:{ responsive:true,maintainAspectRatio:false,
+            plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>ctx.dataset.label+": "+ctx.parsed.y+"h"}}},
+            scales:{x:{stacked:true,grid:{display:false},ticks:{font:{size:12},color:"#0f2044"}},
+              y:{stacked:true,grid:{color:"#e2e8f0"},ticks:{font:{size:11},color:"#64748b"}}}}
+        });
+      }
+    };
+    if(!window.Chart){
+      if(!Script){
+        const s=document.createElement("script");
+        s.id="chartjs-cdn"; s.src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js";
+        s.onload=draw; document.head.appendChild(s);
+      } else { Script.addEventListener("load",draw); }
+    } else { draw(); }
+    return ()=>{ Object.values(chartInst.current).forEach(c=>{ try{c.destroy();}catch(e){} }); chartInst.current={}; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selMonths, tss.length, projects.length, users.length]);
+
+  // Ranking charts drawn separately
+  useEffect(()=>{
+    if(!window.Chart) return;
+    if(staffTab==="billable"&&refBillR.current){
+      if(chartInst.current.billR){ try{chartInst.current.billR.destroy();}catch(e){} }
+      const sorted=[...allStaff].sort((a,b)=>b.billable_pct-a.billable_pct);
+      chartInst.current.billR = new window.Chart(refBillR.current,{
+        type:"bar",
+        data:{ labels:sorted.map(s=>s.name),
+          datasets:[{label:"Billable %",data:sorted.map(s=>s.billable_pct),
+            backgroundColor:sorted.map(s=>s.billable_pct>=90?"#10b981":s.billable_pct>=70?"#f59e0b":"#ef4444"),borderRadius:4}]},
+        options:{ indexAxis:"y",responsive:true,maintainAspectRatio:false,
+          plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>ctx.parsed.x+"%"}}},
+          scales:{x:{min:0,max:100,grid:{color:"#e2e8f0"},ticks:{font:{size:11},color:"#64748b",callback:v=>v+"%"}},
+            y:{grid:{display:false},ticks:{font:{size:11},color:"#0f2044"}}}}
+      });
+    }
+    if(staffTab==="productive"&&refProdR.current){
+      if(chartInst.current.prodR){ try{chartInst.current.prodR.destroy();}catch(e){} }
+      const sorted=[...allStaff].sort((a,b)=>b.productive_pct-a.productive_pct);
+      chartInst.current.prodR = new window.Chart(refProdR.current,{
+        type:"bar",
+        data:{ labels:sorted.map(s=>s.name),
+          datasets:[{label:"Productive %",data:sorted.map(s=>s.productive_pct),
+            backgroundColor:sorted.map(s=>s.productive_pct>=90?"#10b981":s.productive_pct>=70?"#f59e0b":"#ef4444"),borderRadius:4}]},
+        options:{ indexAxis:"y",responsive:true,maintainAspectRatio:false,
+          plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>ctx.parsed.x+"%"}}},
+          scales:{x:{min:0,max:100,grid:{color:"#e2e8f0"},ticks:{font:{size:11},color:"#64748b",callback:v=>v+"%"}},
+            y:{grid:{display:false},ticks:{font:{size:11},color:"#0f2044"}}}}
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[staffTab, allStaff.length]);
+
+  const periodLabel = selMonths.length===1 ? monthLabel(selMonths[0]) : selMonths.length+" months selected";
+
+  return (
+    <div>
+      {/* ── Period Selector ── */}
+      <div className="card mb22">
+        <div className="fxb mb16">
+          <div>
+            <div className="card-title">Period</div>
+            <div className="card-sub mt4 ts">{periodLabel} · approved timesheets only</div>
+          </div>
+          {selMonths.length>1&&<button className="btn bgh bsm" onClick={()=>setSelMonths(allMonths.slice(0,1))}>Reset</button>}
+        </div>
+        {allMonths.length===0
+          ? <div className="tsl ts">No approved timesheet data found. Log and approve timesheets first.</div>
+          : <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+              {allMonths.map(mk=>(
+                <div key={mk} onClick={()=>toggleMonth(mk)}
+                  style={{padding:"6px 16px",borderRadius:20,cursor:"pointer",fontSize:13,fontWeight:500,transition:"all .15s",
+                    background:selMonths.includes(mk)?"var(--navy)":"var(--cream)",
+                    color:selMonths.includes(mk)?"#fff":"var(--slate)",
+                    border:`1.5px solid ${selMonths.includes(mk)?"var(--navy)":"var(--border)"}`}}>
+                  {monthLabel(mk)}
+                </div>
+              ))}
+            </div>
+        }
+      </div>
+
+      {filtered.length===0 ? (
+        <div className="es"><div className="es-icon"><I n="chart" s={44}/></div><div>No approved data for selected period. Try selecting a different month.</div></div>
+      ) : (<>
+
+      {/* ── KPI Row ── */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(6,1fr)",gap:14,marginBottom:22}}>
+        {[
+          {label:"Total Hours",      value:Math.round(totalHrs*10)/10,     sub:`${allStaff.length} contributors`, color:"var(--navy)"},
+          {label:"Billable Hours",   value:Math.round(billableHrs*10)/10,  sub:`${billPct}% of total`,             color:"var(--gold)"},
+          {label:"Billable %",       value:billPct+"%",                    sub:billPct>=90?"Excellent":billPct>=70?"Good":"Needs attention", color:pctColor(billPct)},
+          {label:"Productive Hours", value:Math.round(productiveHrs*10)/10,sub:`${prodPct}% utilisation`,          color:"var(--purple)"},
+          {label:"Active Clients",   value:activeClients,                  sub:"billed this period",               color:"#185fa5"},
+          {label:"Idle / Leave",     value:Math.round(idleLeaveHrs*10)/10, sub:"hrs non-productive",               color:"var(--slate)"},
+        ].map(k=>(
+          <div key={k.label} className="sc">
+            <div style={{fontSize:11,fontWeight:600,letterSpacing:"0.8px",textTransform:"uppercase",color:"var(--slate)",marginBottom:6}}>{k.label}</div>
+            <div style={{fontFamily:"'Playfair Display',serif",fontSize:28,fontWeight:700,color:k.color,lineHeight:1}}>{k.value}</div>
+            <div style={{fontSize:12,color:"var(--slate-light)",marginTop:5}}>{k.sub}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* ── Daily trend + Category donut ── */}
+      <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:16,marginBottom:16}}>
+        <div className="card">
+          <div className="card-title mb8">Daily hours logged</div>
+          <div className="card-sub">Team-wide hours per working day · approved only</div>
+          <div style={{position:"relative",height:220,marginTop:12}}>
+            <canvas ref={refDaily}/>
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-title mb8">Hours by category</div>
+          <div className="card-sub">Service line split</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:"6px 12px",marginBottom:10,marginTop:8}}>
+            {Object.entries(byCategory).sort((a,b)=>b[1]-a[1]).map(([cat,hrs])=>(
+              <span key={cat} style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:"var(--slate)"}}>
+                <span style={{width:9,height:9,borderRadius:2,background:CAT_COLORS[cat]||"#888",flexShrink:0,display:"inline-block"}}/>
+                {cat} ({fmtHrs(hrs)}h)
+              </span>
+            ))}
+          </div>
+          <div style={{position:"relative",height:180}}>
+            <canvas ref={refCat}/>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Top Clients + Role breakdown ── */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:16}}>
+        <div className="card">
+          <div className="card-title mb8">Top 10 clients by billable hours</div>
+          <div className="card-sub">Total engagement hours this period</div>
+          <div style={{position:"relative",height:Math.max(topClients.length,5)*38+60,marginTop:12}}>
+            <canvas ref={refClients}/>
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-title mb8">Billable vs Non-billable by role</div>
+          <div className="card-sub">Partner · Manager · Intern breakdown</div>
+          <div style={{display:"flex",gap:16,marginBottom:10,marginTop:8}}>
+            <span style={{display:"flex",alignItems:"center",gap:5,fontSize:12,color:"var(--slate)"}}>
+              <span style={{width:10,height:10,borderRadius:2,background:"var(--green)",display:"inline-block"}}/>Billable
+            </span>
+            <span style={{display:"flex",alignItems:"center",gap:5,fontSize:12,color:"var(--slate)"}}>
+              <span style={{width:10,height:10,borderRadius:2,background:"var(--red)",display:"inline-block"}}/>Non-billable
+            </span>
+          </div>
+          <div style={{position:"relative",height:240}}>
+            <canvas ref={refRole}/>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Staff Performance ── */}
+      <div className="card">
+        <div className="fxb mb16">
+          <div>
+            <div className="card-title">Staff Performance</div>
+            <div className="card-sub mt4 ts">{allStaff.length} contributors · approved entries</div>
+          </div>
+        </div>
+
+        {/* Sub-tabs */}
+        <div className="tabs" style={{marginBottom:16}}>
+          {[["table","Full Table"],["billable","Billable % Ranking"],["productive","Productive % Ranking"]].map(([id,lbl])=>(
+            <div key={id} className={`tab ${staffTab===id?"active":""}`} onClick={()=>setStaffTab(id)}>{lbl}</div>
+          ))}
+        </div>
+
+        {staffTab==="table" && (<>
+          <div style={{display:"flex",gap:10,marginBottom:14,flexWrap:"wrap",alignItems:"center"}}>
+            <span style={{fontSize:12,color:"var(--slate)"}}>Filter:</span>
+            <input className="fi" placeholder="Search name…" value={search} onChange={e=>setSearch(e.target.value)}
+              style={{width:180,padding:"6px 12px",fontSize:13}}/>
+            <select className="fs" value={roleFilter} onChange={e=>setRoleFilter(e.target.value)} style={{padding:"6px 12px",fontSize:13}}>
+              <option value="all">All roles</option>
+              <option value="partner">Partners</option>
+              <option value="manager">Managers</option>
+              <option value="intern">Interns</option>
+            </select>
+          </div>
+          <div className="tw">
+            <table>
+              <thead>
+                <tr>
+                  {[["name","Name"],["role","Role"],["total","Total hrs"],["billable","Billable hrs"],["billable_pct","Billable %"],["productive_pct","Productive %"]].map(([col,lbl])=>(
+                    <th key={col} onClick={()=>handleSort(col)} style={{cursor:"pointer",userSelect:"none"}}>
+                      {lbl} {sortCol===col?(sortDir===-1?"↓":"↑"):"↕"}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {visibleStaff.map(s=>(
+                  <tr key={s.id}>
+                    <td className="fw6">{s.name}</td>
+                    <td>
+                      <span className={`bdg ${s.role==="partner"?"rpa":s.role==="manager"?"rma":"ria"}`}>{s.role}</span>
+                    </td>
+                    <td>{fmtHrs(s.total)}h</td>
+                    <td>{fmtHrs(s.billable)}h</td>
+                    <td>
+                      <div style={{display:"flex",alignItems:"center",gap:8}}>
+                        <div style={{flex:1,height:6,background:"var(--cream)",borderRadius:3,overflow:"hidden",minWidth:60}}>
+                          <div style={{height:"100%",borderRadius:3,background:pctColor(s.billable_pct),width:Math.min(s.billable_pct,100)+"%"}}/>
+                        </div>
+                        <span style={{fontSize:12,fontWeight:600,color:pctColor(s.billable_pct),minWidth:40,textAlign:"right"}}>{s.billable_pct}%</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div style={{display:"flex",alignItems:"center",gap:8}}>
+                        <div style={{flex:1,height:6,background:"var(--cream)",borderRadius:3,overflow:"hidden",minWidth:60}}>
+                          <div style={{height:"100%",borderRadius:3,background:pctColor(s.productive_pct),width:Math.min(s.productive_pct,100)+"%"}}/>
+                        </div>
+                        <span style={{fontSize:12,fontWeight:600,color:pctColor(s.productive_pct),minWidth:40,textAlign:"right"}}>{s.productive_pct}%</span>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {visibleStaff.length===0&&<tr><td colSpan={6} style={{textAlign:"center",padding:"32px 0",color:"var(--slate)"}}>No staff match your filter.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </>)}
+
+        {staffTab==="billable" && (
+          <div style={{position:"relative",height:Math.max(allStaff.length,4)*38+60}}>
+            <canvas ref={refBillR}/>
+          </div>
+        )}
+        {staffTab==="productive" && (
+          <div style={{position:"relative",height:Math.max(allStaff.length,4)*38+60}}>
+            <canvas ref={refProdR}/>
+          </div>
+        )}
+      </div>
+
+      {/* ── Legend: productivity definition ── */}
+      <div className="al al-i" style={{marginTop:16}}>
+        <I n="info" s={16}/>
+        <div><strong>Productivity definition:</strong> Productive hours = Assurance + Virtual CFO + Compliance + Consulting. Leave, Holiday, Idle and Reading are excluded. Only approved timesheet entries are counted.</div>
+      </div>
+
+      </>)}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
 // ROOT
 // ══════════════════════════════════════════════════════════════
 export default function App() {
@@ -4085,7 +4505,7 @@ export default function App() {
   };
   const pendingCount = calcPendingCount(currentUser);
 
-  const titles={dashboard:"Dashboard",week:"My Week",timesheets:"Timesheets",projects:"Projects",approvals:"Approvals",reports:"Reports",profitability:"Profitability",compliance:"Timesheet Compliance",leave:"Leave",audit:"Audit Trail",users:"User Management",changepassword:"Change Password"};
+  const titles={dashboard:"Dashboard",week:"My Week",timesheets:"Timesheets",projects:"Projects",approvals:"Approvals",reports:"Reports",profitability:"Profitability",productivity:"Productivity Dashboard",compliance:"Timesheet Compliance",leave:"Leave",audit:"Audit Trail",users:"User Management",changepassword:"Change Password"};
 
   if(!currentUser) return <><style>{CSS}</style><Login onLogin={u=>{setCU(u);setTab("dashboard");}}/></>;
 
@@ -4116,6 +4536,7 @@ export default function App() {
             {tab==="approvals"  &&["partner","manager"].includes(currentUser.role)&&<Approvals user={currentUser} {...db_props}/>}
             {tab==="reports"    &&currentUser.role==="partner"&&<Reports  user={currentUser} {...db_props} setLocked={setLocked}/>}
             {tab==="profitability"&&currentUser.role==="partner"&&<Profitability {...db_props}/>}
+            {tab==="productivity" &&currentUser.role==="partner"&&<ProductivityDashboard user={currentUser} {...db_props}/>}
             {tab==="compliance" &&["partner","manager"].includes(currentUser.role)&&<Compliance user={currentUser} {...db_props}/>}
             {tab==="leave"       &&<Leave user={currentUser} {...db_props} tss={tss}/>}
             {tab==="audit"      &&currentUser.role==="partner"&&<AuditTrail audit={audit}/>}
