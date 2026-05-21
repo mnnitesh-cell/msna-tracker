@@ -720,7 +720,8 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
     setEE(null);
     setF({date:todayStr(),projectId:"",hours:"",
       category:internal?"Leave":"Assurance",  // default category matches mode
-      description:"",billable:true,onBehalfOfId:"",
+      description:"",billable:!internal,  // internal entries are never billable
+      onBehalfOfId:"",
       isInternal:internal,internalType:"Leave",
       internalApprovers:[],internalPartnerApprovers:[]});
     setFerr("");
@@ -772,6 +773,8 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
       const isPartnerEditOfApproved = user.role==="partner" && editE.status==="approved" && !onBehalf;
       const editedEntry = {
         ...form, hours:h, status:newStatus,
+        // Internal entries are NEVER billable
+        billable: (editE.isInternal || isInternal) ? false : form.billable,
         userId: ownerId,
         updatedAt:new Date().toISOString(), updatedBy:user.id,
         ...(onBehalf?{filedById:user.id,filedByName:user.name}:{}),
@@ -791,6 +794,8 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
         id:genId(),
         userId: ownerId,
         ...form, hours:h,
+        // Internal entries are NEVER billable regardless of form state
+        billable: isInternal ? false : form.billable,
         // Internal entries: auto-approve if partner, otherwise pending
         status: isInternal
           ? (user.role==="partner" ? "approved" : "pending")
@@ -4037,9 +4042,18 @@ function ProductivityDashboard({ users=[], projects=[], tss=[] }) {
     return true;
   });
 
+  // Helper: internal categories are NEVER billable regardless of stored flag
+  // (fixes legacy data where internal entries were incorrectly saved as billable:true)
+  const isActuallyBillable = t => {
+    if(t.isInternal) return false;
+    const cat = t.category || "";
+    if(NON_BILLABLE_CATS.includes(cat)) return false;
+    return t.billable;
+  };
+
   // ── Summary metrics ──
   const totalHrs     = filtered.reduce((s,t)=>s+t.hours,0);
-  const billableHrs  = filtered.filter(t=>t.billable).reduce((s,t)=>s+t.hours,0);
+  const billableHrs  = filtered.filter(t=>isActuallyBillable(t)).reduce((s,t)=>s+t.hours,0);
   const productiveHrs= filtered.filter(t=>PRODUCTIVE_CATS.includes(t.category||t.type)).reduce((s,t)=>s+t.hours,0);
   const billPct      = totalHrs>0?Math.round(billableHrs/totalHrs*1000)/10:0;
   const prodPct      = totalHrs>0?Math.round(productiveHrs/totalHrs*1000)/10:0;
@@ -4060,13 +4074,13 @@ function ProductivityDashboard({ users=[], projects=[], tss=[] }) {
     const u=users.find(u=>u.id===t.userId);
     if(!u) return;
     byRole[u.role]=(byRole[u.role]||0)+t.hours;
-    if(t.billable) byRoleBillable[u.role]=(byRoleBillable[u.role]||0)+t.hours;
+    if(isActuallyBillable(t)) byRoleBillable[u.role]=(byRoleBillable[u.role]||0)+t.hours;
   });
 
   // ── Top clients ──
   const clientHrs = {};
   filtered.forEach(t=>{
-    if(!t.billable) return;
+    if(!isActuallyBillable(t)) return;
     const p=projects.find(px=>px.id===t.projectId);
     if(!p?.clientName) return;
     clientHrs[p.clientName]=(clientHrs[p.clientName]||0)+t.hours;
@@ -4085,7 +4099,7 @@ function ProductivityDashboard({ users=[], projects=[], tss=[] }) {
     if(!u) return;
     if(!staffMap[u.id]) staffMap[u.id]={ id:u.id, name:u.name, role:u.role, total:0, billable:0, productive:0 };
     staffMap[u.id].total+=t.hours;
-    if(t.billable) staffMap[u.id].billable+=t.hours;
+    if(isActuallyBillable(t)) staffMap[u.id].billable+=t.hours;
     const cat=t.category||t.type||"";
     if(PRODUCTIVE_CATS.includes(cat)) staffMap[u.id].productive+=t.hours;
   });
