@@ -444,12 +444,18 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=
       ]
     },
     {
+      label: "Compliance",
+      roles: ["partner","manager"], // managers need this to track intern non-compliance
+      items: [
+        { id:"compliance", icon:"shield", label:"Compliance" },
+      ]
+    },
+    {
       label: "Admin",
       roles: ["partner"], // partner-only governance
       items: [
-        { id:"compliance", icon:"shield",  label:"Compliance", roles:["partner","manager"] },
-        { id:"audit",      icon:"history", label:"Audit Trail",     roles:["partner"] },
-        { id:"users",      icon:"users",   label:"User Management", roles:["partner"] },
+        { id:"audit",      icon:"history", label:"Audit Trail" },
+        { id:"users",      icon:"users",   label:"User Management" },
       ]
     },
   ];
