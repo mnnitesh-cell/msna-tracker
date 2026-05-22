@@ -447,9 +447,9 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=
       label: "Admin",
       roles: ["partner"], // partner-only governance
       items: [
-        { id:"compliance", icon:"shield",  label:"Compliance" },
-        { id:"audit",      icon:"history", label:"Audit Trail" },
-        { id:"users",      icon:"users",   label:"User Management" },
+        { id:"compliance", icon:"shield",  label:"Compliance", roles:["partner","manager"] },
+        { id:"audit",      icon:"history", label:"Audit Trail",     roles:["partner"] },
+        { id:"users",      icon:"users",   label:"User Management", roles:["partner"] },
       ]
     },
   ];
