@@ -252,6 +252,36 @@ function findAppraisalFor(appraisals, req) {
   });
 }
 
+// ── GOAL SETTING ──
+// Scheme starts Q2 of FY 2026-27 — no retroactive Q1.
+const GOAL_SCHEME_START_FY = "2026-27";
+const GOAL_SCHEME_START_QUARTER = "Q2";
+const GOAL_QUARTER_ORDER = ["Q1","Q2","Q3","Q4"];
+function quarterDateRange(fy, quarter) {
+  const y = Number(fy.split("-")[0]);
+  const ranges = { Q1:[`${y}-04-01`,`${y}-06-30`], Q2:[`${y}-07-01`,`${y}-09-30`], Q3:[`${y}-10-01`,`${y}-12-31`], Q4:[`${y+1}-01-01`,`${y+1}-03-31`] };
+  return ranges[quarter];
+}
+function quarterLabel(fy, quarter) {
+  const y = Number(fy.split("-")[0]);
+  const labels = { Q1:`Apr–Jun ${y}`, Q2:`Jul–Sep ${y}`, Q3:`Oct–Dec ${y}`, Q4:`Jan–Mar ${y+1}` };
+  return labels[quarter];
+}
+function isQuarterInGoalScheme(fy, quarter) {
+  const fyYear = Number(fy.split("-")[0]);
+  const qIdx = GOAL_QUARTER_ORDER.indexOf(quarter);
+  const startFyYear = Number(GOAL_SCHEME_START_FY.split("-")[0]);
+  const startQIdx = GOAL_QUARTER_ORDER.indexOf(GOAL_SCHEME_START_QUARTER);
+  return fyYear>startFyYear || (fyYear===startFyYear && qIdx>=startQIdx);
+}
+function blankGoalRecord(fy, quarter, staffId) {
+  return {
+    id:`goal-${staffId}-${fy}-${quarter}`, fy, quarter, staffId,
+    goals:[1,2,3].map(sl=>({sl,desc:"",steps:""})), goalStatus:null,
+    assess:[1,2,3].map(sl=>({sl,status:"",remark:""})), assessStatus:null,
+  };
+}
+
 function addAudit(userId, userName, action, detail) {
   const id = genId();
   fsSet("audit", id, { id, userId, userName, action, detail, ts: new Date().toISOString() });
@@ -504,7 +534,7 @@ function Login({ onLogin }) {
 // ══════════════════════════════════════════════════════════════
 // SIDEBAR
 // ══════════════════════════════════════════════════════════════
-function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=0, projPendingCount=0, appraisalPendingCount=0 }) {
+function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=0, projPendingCount=0, appraisalPendingCount=0, goalPendingCount=0 }) {
   const isAdmin = user.email===ADMIN_EMAIL;
   const role = user.role; // "partner" | "manager" | "intern"
 
@@ -556,6 +586,7 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=
       roles: ["partner","manager","intern"], // everyone sees their own appraisals; scope enforced inside the module
       items: [
         { id:"appraisal", icon:"star", label:"Performance Appraisal", appraisalBadge:true },
+        { id:"goals",     icon:"target", label:"Goal Setting", goalBadge:true },
       ]
     },
     {
@@ -619,6 +650,7 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=
                 {n.leaveBadge && leavePendingCount>0 && <span className="nb">{leavePendingCount}</span>}
                 {n.projBadge  && projPendingCount>0  && <span className="nb">{projPendingCount}</span>}
                 {n.appraisalBadge && appraisalPendingCount>0 && <span className="nb">{appraisalPendingCount}</span>}
+                {n.goalBadge && goalPendingCount>0 && <span className="nb">{goalPendingCount}</span>}
               </div>
             ))}
           </div>
@@ -4900,6 +4932,233 @@ function PerformanceAppraisal({ user, users=[], projects=[], tss=[], appraisals=
   );
 }
 
+// ══════════════════════════════════════════════════════════════
+// GOAL SETTING
+// ══════════════════════════════════════════════════════════════
+function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }) {
+  const [qStart, qEnd] = quarterDateRange(fy, quarter);
+  const today = todayStr();
+  const started = today >= qStart;
+  const ended = today > qEnd;
+  const isPartnerViewer = viewer.role==="partner";
+  const isSelf = viewer.id===staffId;
+
+  const rec = record || blankGoalRecord(fy, quarter, staffId);
+  const goalLocked = rec.goalStatus==="submitted";
+  const goalEditable = isPartnerViewer || (isSelf && (!goalLocked || rec.goalEditRequestStatus==="approved"));
+  const assessLocked = rec.assessStatus==="submitted";
+  const assessEditable = isPartnerViewer || (isSelf && (!assessLocked || rec.assessEditRequestStatus==="approved"));
+
+  const [goals, setGoals] = useState(rec.goals);
+  const [assess, setAssess] = useState(rec.assess);
+  const [goalEditNote, setGoalEditNote] = useState("");
+  const [assessEditNote, setAssessEditNote] = useState("");
+
+  useEffect(()=>{ setGoals(rec.goals); }, [rec.id, rec.goalStatus, rec.goalFinalizedAt]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(()=>{ setAssess(rec.assess); }, [rec.id, rec.assessStatus, rec.assessFinalizedAt]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if(!started) {
+    return (
+      <div className="card" style={{opacity:.55}}>
+        <div className="fxb"><span className="fw6">{quarter} · {quarterLabel(fy,quarter)}</span><span className="tx tsl">Opens {fmtDate(qStart)}</span></div>
+      </div>
+    );
+  }
+
+  const saveGoals = (status) => {
+    if(status==="submitted") {
+      if(goals.some(g=>!g.desc.trim()||!g.steps.trim())) { alert("All 3 goals need a description and steps before submitting."); return; }
+    }
+    let next = { ...rec, goals, goalStatus: status };
+    if(status==="submitted" && rec.goalStatus!=="submitted") next.goalSubmittedAt = new Date().toISOString();
+    if(isPartnerViewer && goalLocked) {
+      next.goalHistory = [...(rec.goalHistory||[]), { goals:rec.goals, replacedAt:new Date().toISOString() }];
+      next.goalFinalizedBy = viewer.id; next.goalFinalizedAt = new Date().toISOString(); next.goalStatus = "submitted";
+    }
+    if(isSelf && rec.goalEditRequestStatus==="approved") {
+      next.goalHistory = [...(rec.goalHistory||[]), { goals:rec.goals, replacedAt:new Date().toISOString() }];
+      next.goalEditRequestStatus = "used";
+    }
+    onSave(next);
+  };
+  const requestGoalEdit  = () => onSave({ ...rec, goalEditRequestStatus:"requested", goalEditRequestedAt:new Date().toISOString(), goalEditRequestNote:goalEditNote });
+  const approveGoalEdit  = () => onSave({ ...rec, goalEditRequestStatus:"approved", goalEditApprovedBy:viewer.id, goalEditApprovedAt:new Date().toISOString() });
+  const denyGoalEdit     = () => onSave({ ...rec, goalEditRequestStatus:"denied" });
+
+  const saveAssess = (status) => {
+    let next = { ...rec, assess, assessStatus: status };
+    if(status==="submitted" && rec.assessStatus!=="submitted") next.assessSubmittedAt = new Date().toISOString();
+    if(isPartnerViewer && assessLocked) {
+      next.assessHistory = [...(rec.assessHistory||[]), { assess:rec.assess, replacedAt:new Date().toISOString() }];
+      next.assessFinalizedBy = viewer.id; next.assessFinalizedAt = new Date().toISOString(); next.assessStatus = "submitted";
+    }
+    if(isSelf && rec.assessEditRequestStatus==="approved") {
+      next.assessHistory = [...(rec.assessHistory||[]), { assess:rec.assess, replacedAt:new Date().toISOString() }];
+      next.assessEditRequestStatus = "used";
+    }
+    onSave(next);
+  };
+  const requestAssessEdit = () => onSave({ ...rec, assessEditRequestStatus:"requested", assessEditRequestedAt:new Date().toISOString(), assessEditRequestNote:assessEditNote });
+  const approveAssessEdit = () => onSave({ ...rec, assessEditRequestStatus:"approved", assessEditApprovedBy:viewer.id, assessEditApprovedAt:new Date().toISOString() });
+  const denyAssessEdit    = () => onSave({ ...rec, assessEditRequestStatus:"denied" });
+
+  return (
+    <div className="card">
+      <div className="fxb mb16">
+        <span className="fw6">{quarter} · {quarterLabel(fy,quarter)}</span>
+        <span className={`bdg ${goalLocked?"bac":"brs"}`}>{goalLocked?"Goals locked":"Goals in draft"}</span>
+      </div>
+
+      {rec.goalEditRequestStatus==="requested" && isPartnerViewer && (
+        <div className="al al-w"><I n="alert" s={16}/><div>{users.find(u=>u.id===rec.staffId)?.name} requested to edit locked goals{rec.goalEditRequestNote?`: "${rec.goalEditRequestNote}"`:"."}
+          <div style={{marginTop:8,display:"flex",gap:8}}><button className="btn bsc bxs" onClick={approveGoalEdit}>Approve</button><button className="btn bgh bxs" onClick={denyGoalEdit}>Deny</button></div>
+        </div></div>
+      )}
+      {rec.goalEditRequestStatus==="requested" && isSelf && <div className="al al-w"><I n="alert" s={16}/><div>Edit request sent — waiting for a partner to approve.</div></div>}
+      {rec.goalFinalizedBy && <div className="al al-i"><I n="info" s={16}/><div>Finalized by {users.find(u=>u.id===rec.goalFinalizedBy)?.name}. {isPartnerViewer?"Earlier version kept in history (partner-visible only).":""}</div></div>}
+
+      <div className="tw">
+        <table>
+          <thead><tr><th style={{width:30}}>#</th><th>Goal</th><th>Steps to achieve it</th></tr></thead>
+          <tbody>
+            {goals.map(g=>(
+              <tr key={g.sl}>
+                <td style={{verticalAlign:"top"}}>{g.sl}</td>
+                <td>{goalEditable
+                  ? <textarea className="fta" style={{minHeight:44}} value={g.desc} onChange={e=>setGoals(prev=>prev.map(x=>x.sl===g.sl?{...x,desc:e.target.value}:x))}/>
+                  : <div style={{padding:"6px 0"}}>{g.desc||"—"}</div>}</td>
+                <td>{goalEditable
+                  ? <textarea className="fta" style={{minHeight:44}} value={g.steps} onChange={e=>setGoals(prev=>prev.map(x=>x.sl===g.sl?{...x,steps:e.target.value}:x))}/>
+                  : <div style={{padding:"6px 0"}}>{g.steps||"—"}</div>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {goalEditable && (
+        <div className="md-actions" style={{justifyContent:"flex-start",marginTop:12}}>
+          <button className="btn bgh bsm" onClick={()=>saveGoals("draft")}>Save draft</button>
+          <button className="btn bp bsm" onClick={()=>saveGoals("submitted")}>{isPartnerViewer&&goalLocked?"Save & finalize":"Submit & lock"}</button>
+        </div>
+      )}
+      {!goalEditable && isSelf && goalLocked && !rec.goalEditRequestStatus && (
+        <div style={{marginTop:12}}>
+          <textarea className="fta" style={{minHeight:40}} placeholder="Reason for the edit request (optional)" value={goalEditNote} onChange={e=>setGoalEditNote(e.target.value)}/>
+          <button className="btn bgh bxs" style={{marginTop:6}} onClick={requestGoalEdit}><I n="edit" s={12}/>Request edit</button>
+        </div>
+      )}
+
+      {!ended && <p className="tx tsl mt16">Self-assessment opens once this quarter ends ({fmtDate(qEnd)}).</p>}
+      {ended && (
+        <div style={{marginTop:18,paddingTop:14,borderTop:"1px solid var(--border)"}}>
+          <div className="fxb mb8">
+            <span className="fw6" style={{fontSize:13}}>Self-assessment</span>
+            <span className={`bdg ${assessLocked?"bac":"brs"}`}>{assessLocked?"Locked":"Not submitted"}</span>
+          </div>
+          {rec.assessEditRequestStatus==="requested" && isPartnerViewer && (
+            <div className="al al-w"><I n="alert" s={16}/><div>{users.find(u=>u.id===rec.staffId)?.name} requested to edit the self-assessment{rec.assessEditRequestNote?`: "${rec.assessEditRequestNote}"`:"."}
+              <div style={{marginTop:8,display:"flex",gap:8}}><button className="btn bsc bxs" onClick={approveAssessEdit}>Approve</button><button className="btn bgh bxs" onClick={denyAssessEdit}>Deny</button></div>
+            </div></div>
+          )}
+          {rec.assessEditRequestStatus==="requested" && isSelf && <div className="al al-w"><I n="alert" s={16}/><div>Edit request sent — waiting for a partner to approve.</div></div>}
+
+          {goals.map(g=>{
+            const a = assess.find(x=>x.sl===g.sl) || {sl:g.sl,status:"",remark:""};
+            return (
+              <div key={g.sl} style={{padding:"10px 0",borderBottom:"1px solid var(--border)"}}>
+                <div className="ts fw6">{g.sl}. {g.desc||"—"}</div>
+                <div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
+                  {["Completed","WIP","Zero progress"].map(s=>(
+                    <button key={s} type="button" disabled={!assessEditable} className={`btn bxs ${a.status===s?"bp":"bgh"}`}
+                      onClick={()=>setAssess(prev=>{
+                        const exists = prev.find(x=>x.sl===g.sl);
+                        return exists ? prev.map(x=>x.sl===g.sl?{...x,status:s}:x) : [...prev,{sl:g.sl,status:s,remark:""}];
+                      })}>{s}</button>
+                  ))}
+                </div>
+                <textarea className="fta" style={{marginTop:8,minHeight:36}} disabled={!assessEditable} placeholder="Remark (optional)"
+                  value={a.remark||""} onChange={e=>setAssess(prev=>{
+                    const exists = prev.find(x=>x.sl===g.sl);
+                    return exists ? prev.map(x=>x.sl===g.sl?{...x,remark:e.target.value}:x) : [...prev,{sl:g.sl,status:"",remark:e.target.value}];
+                  })}/>
+              </div>
+            );
+          })}
+
+          {assessEditable && (
+            <div className="md-actions" style={{justifyContent:"flex-start",marginTop:12}}>
+              <button className="btn bp bsm" onClick={()=>saveAssess("submitted")}>{isPartnerViewer&&assessLocked?"Save & finalize":"Submit self-assessment"}</button>
+            </div>
+          )}
+          {!assessEditable && isSelf && assessLocked && !rec.assessEditRequestStatus && (
+            <div style={{marginTop:12}}>
+              <textarea className="fta" style={{minHeight:40}} placeholder="Reason for the edit request (optional)" value={assessEditNote} onChange={e=>setAssessEditNote(e.target.value)}/>
+              <button className="btn bgh bxs" style={{marginTop:6}} onClick={requestAssessEdit}><I n="edit" s={12}/>Request edit</button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GoalSetting({ user, users=[], goals=[], setGoals }) {
+  const isP = user.role==="partner";
+  const fyList = [...new Set([currentFY(), ...goals.map(g=>g.fy)])].sort().reverse();
+  const [fy, setFy] = useState(currentFY());
+  const [selStaff, setSelStaff] = useState(null);
+
+  const quartersForFY = GOAL_QUARTER_ORDER.filter(q=>isQuarterInGoalScheme(fy,q));
+  const onSave = (rec) => setGoals(prev => prev.some(g=>g.id===rec.id) ? prev.map(g=>g.id===rec.id?rec:g) : [...prev, rec]);
+
+  const renderStaffPage = (staffId) => (
+    <div style={{display:"flex",flexDirection:"column",gap:14}}>
+      {quartersForFY.map(q => {
+        const rec = goals.find(g=>g.fy===fy&&g.quarter===q&&g.staffId===staffId);
+        return <GoalQuarterCard key={q} fy={fy} quarter={q} staffId={staffId} viewer={user} users={users} record={rec} onSave={onSave}/>;
+      })}
+    </div>
+  );
+
+  if(isP) {
+    const staffList = users.filter(u=>u.role!=="partner" && u.active!==false);
+    if(!selStaff) {
+      return (
+        <div>
+          <FYSelector fy={fy} setFy={setFy} options={fyList}/>
+          <p className="ts tsl mb8">Staff</p>
+          <div className="g3">
+            {staffList.map(u=>(
+              <div key={u.id} className="card" style={{cursor:"pointer"}} onClick={()=>setSelStaff(u.id)}>
+                <div className="fw6">{u.name}</div>
+                <div className="tx tsl mt4">{u.role}</div>
+              </div>
+            ))}
+            {staffList.length===0 && <div className="es">No staff yet.</div>}
+          </div>
+        </div>
+      );
+    }
+    const u = users.find(x=>x.id===selStaff);
+    return (
+      <div>
+        <button className="btn bgh bsm mb16" onClick={()=>setSelStaff(null)}><I n="arrowleft" s={13}/>All staff</button>
+        <FYSelector fy={fy} setFy={setFy} options={fyList}/>
+        <p className="card-title mb16">{u?.name}</p>
+        {renderStaffPage(selStaff)}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <FYSelector fy={fy} setFy={setFy} options={fyList}/>
+      {renderStaffPage(user.id)}
+    </div>
+  );
+}
+
 // ROOT
 // ══════════════════════════════════════════════════════════════
 export default function App() {
@@ -4915,8 +5174,9 @@ export default function App() {
   const [audit]                = useLS("audit",    []);
   const [leaves,  setLeaves]   = useLS("leaves",   []);
   const [appraisals, setAppraisals] = useLS("appraisals", []);
+  const [goals, setGoals] = useLS("goals", []);
 
-  const db_props = { users, setUsers, projects, setProjects, tss, setTss, locked, setLocked, audit, leaves, setLeaves, appraisals, setAppraisals };
+  const db_props = { users, setUsers, projects, setProjects, tss, setTss, locked, setLocked, audit, leaves, setLeaves, appraisals, setAppraisals, goals, setGoals };
 
   // ── Migration: fix existing pending intern entries on projects with no managers ──
   // These entries were stuck — no manager to approve them, not visible to partner either
@@ -4982,7 +5242,20 @@ export default function App() {
     return required.filter(r => r.fy===currentFY() && r.eligibleAppraisers.includes(currentUser.id) && findAppraisalFor(appraisals,r)?.status!=="submitted").length;
   })() : 0;
 
-  const titles={dashboard:"Dashboard",week:"My Week",timesheets:"Timesheets",projects:"Projects",approvals:"Approvals",reports:"Reports",profitability:"Profitability",productivity:"Productivity Dashboard",compliance:"Compliance",leave:"Leave",appraisal:"Performance Appraisal",audit:"Audit Trail",users:"User Management",changepassword:"Change Password"};
+  // Goals/self-assessment this user still needs to act on, current FY (partners have no badge — firm-wide would be noisy)
+  const goalPendingCount = (currentUser && currentUser.role!=="partner") ? (() => {
+    const fy = currentFY(); const today = todayStr(); let cnt = 0;
+    GOAL_QUARTER_ORDER.filter(q=>isQuarterInGoalScheme(fy,q)).forEach(q => {
+      const [s,e] = quarterDateRange(fy,q);
+      if(today<s) return;
+      const rec = goals.find(g=>g.fy===fy&&g.quarter===q&&g.staffId===currentUser.id);
+      if(!rec || rec.goalStatus!=="submitted") { cnt++; return; }
+      if(today>e && rec.assessStatus!=="submitted") cnt++;
+    });
+    return cnt;
+  })() : 0;
+
+  const titles={dashboard:"Dashboard",week:"My Week",timesheets:"Timesheets",projects:"Projects",approvals:"Approvals",reports:"Reports",profitability:"Profitability",productivity:"Productivity Dashboard",compliance:"Compliance",leave:"Leave",appraisal:"Performance Appraisal",goals:"Goal Setting",audit:"Audit Trail",users:"User Management",changepassword:"Change Password"};
 
   if(!currentUser) return <><style>{CSS}</style><Login onLogin={u=>{setCU(u);setTab("dashboard");}}/></>;
 
@@ -4997,7 +5270,8 @@ export default function App() {
             return false;
           }).length}
           projPendingCount={currentUser.role==="partner" ? projects.filter(p=>p.status==="pending_approval").length : 0}
-          appraisalPendingCount={appraisalPendingCount}/>
+          appraisalPendingCount={appraisalPendingCount}
+          goalPendingCount={goalPendingCount}/>
         <div className="main">
           <div className="topbar">
             <div className="tb-title">{titles[tab]}</div>
@@ -5012,6 +5286,7 @@ export default function App() {
             {tab==="timesheets" &&<Timesheets   user={currentUser} {...db_props}/>}
             {tab==="projects"   &&<Projects     user={currentUser} {...db_props}/>}
             {tab==="appraisal" &&<PerformanceAppraisal user={currentUser} {...db_props}/>}
+            {tab==="goals"     &&<GoalSetting user={currentUser} {...db_props}/>}
             {tab==="approvals"  &&["partner","manager"].includes(currentUser.role)&&<Approvals user={currentUser} {...db_props}/>}
             {tab==="reports"    &&currentUser.role==="partner"&&<Reports  user={currentUser} {...db_props} setLocked={setLocked}/>}
             {tab==="profitability"&&currentUser.role==="partner"&&<Profitability {...db_props}/>}
