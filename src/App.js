@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { initializeApp } from "firebase/app";
 import { getFirestore, collection, doc, onSnapshot, setDoc, deleteDoc, getDoc, getDocs } from "firebase/firestore";
 import { getAuth, signInWithEmailAndPassword, signOut, updatePassword, reauthenticateWithCredential, EmailAuthProvider, createUserWithEmailAndPassword } from "firebase/auth";
@@ -24,6 +24,17 @@ const ENGAGEMENT_CATEGORIES = ["Assurance","Virtual CFO","Compliance","Consultin
 const INTERNAL_CATEGORIES = ["Leave","Holiday","Idle","Reading"];
 // eslint-disable-next-line no-unused-vars
 const TASK_CATEGORIES = [...ENGAGEMENT_CATEGORIES,...INTERNAL_CATEGORIES];
+
+// ── PERFORMANCE APPRAISAL ──
+// Prospective only: only engagement hours booked on/after this date create an appraisal requirement.
+const APPRAISAL_START_DATE = "2026-07-01"; // Q2 of FY 2026-27
+const APPRAISAL_METRICS = [
+  { key:"communication",      label:"Client communication skills",   traits:"Listening, questioning, fluency, telephonic conversation, email conversation" },
+  { key:"engagementMgmt",     label:"Engagement management skills",  traits:"Time management, efficiency, persuasion skills, rapport with client" },
+  { key:"execution",          label:"Execution skills",              traits:"Planning, reading, research work, usage of AI, business understanding" },
+  { key:"personality",        label:"Overall personality",           traits:"Confidence, go-getter ability, accountability, willingness to learn, persistent" },
+  { key:"clientSatisfaction", label:"Client satisfaction",           traits:"Based on client feedback on the overall engagement" },
+];
 
 const SEED_USERS = [
   { id:"u1", name:"Naveen S N",     email:"naveen@msna.co.in",   role:"partner", billingRate:5000, active:true },
@@ -153,6 +164,94 @@ function getWeekDates(offsetWeeks=0) {
 }
 function minDate() { const d=new Date(); d.setDate(d.getDate()-MAX_BACKDATE_DAYS); const computed=d.toISOString().slice(0,10); return computed>"2026-04-01"?computed:"2026-04-01"; }
 
+// ── APPRAISAL: FY / quarter helpers (Indian FY: Apr–Mar; Q1 Apr-Jun … Q4 Jan-Mar) ──
+function fyOfDate(dateStr) {
+  const d = new Date(dateStr); const y = d.getFullYear(); const m = d.getMonth();
+  const startY = m>=3 ? y : y-1;
+  return `${startY}-${String((startY+1)%100).padStart(2,"0")}`;
+}
+function fyQuarterOfDate(dateStr) {
+  const m = new Date(dateStr).getMonth();
+  if(m>=3&&m<=5) return "Q1";
+  if(m>=6&&m<=8) return "Q2";
+  if(m>=9&&m<=11) return "Q3";
+  return "Q4";
+}
+const currentFY = () => fyOfDate(todayStr());
+function calcAppraisalScore(metrics={}) {
+  let sum=0, max=0;
+  APPRAISAL_METRICS.forEach(m=>{
+    const v = metrics[m.key];
+    if(!v || v.na) return;
+    max += 5; sum += Number(v.score)||0;
+  });
+  const pct = max ? Math.round((sum/max)*1000)/10 : null;
+  return { sum, max, pct };
+}
+
+// ── APPRAISAL: eligibility engine ──
+// Trigger = staff allotted to a project code AND has at least one approved hour booked on it (on/after APPRAISAL_START_DATE).
+// Returns a flat list of "required appraisal slots" — deduped/merged so a resource under one manager
+// across several retainer clients in the same quarter gets ONE slot, not one per client.
+function getRequiredAppraisals(users, projects, tss) {
+  const approvedTs = tss.filter(t => t.status==="approved" && !t.isInternal && t.projectId && t.hours>0 && t.date>=APPRAISAL_START_DATE);
+  const merged = {};
+
+  const upsert = (key, base, clientName) => {
+    if(!merged[key]) merged[key] = { ...base, clientNames:[clientName] };
+    else if(clientName && !merged[key].clientNames.includes(clientName)) merged[key].clientNames.push(clientName);
+  };
+
+  projects.forEach(p => {
+    const projTs = approvedTs.filter(t => t.projectId===p.id);
+    if(projTs.length===0) return;
+    const managers = p.assignedManagers||[];
+    const partners = [p.assignedPartnerId, ...(p.assignedPartners||[])].filter(Boolean);
+    const isRetainer = p.feeType==="retainer";
+
+    if(!isRetainer) {
+      const staffBooked = [...new Set(projTs.map(t=>t.userId))];
+      const fy = fyOfDate(projTs.reduce((a,b)=>a.date<b.date?a:b).date);
+      staffBooked.forEach(uid => {
+        const u = users.find(x=>x.id===uid); if(!u) return;
+        if(managers.includes(uid)) {
+          upsert(`fx-mgr-${p.id}-${uid}`, { type:"fixed", fy, projectId:p.id, staffId:uid, appraiserRole:"partner", eligibleAppraisers:partners, primaryAppraiser:p.assignedPartnerId }, p.clientName);
+        } else {
+          const appraisers = managers.length ? managers : partners;
+          upsert(`fx-staff-${p.id}-${uid}`, { type:"fixed", fy, projectId:p.id, staffId:uid, appraiserRole: managers.length?"manager":"partner", eligibleAppraisers:appraisers, primaryAppraiser: managers[0]||p.assignedPartnerId }, p.clientName);
+        }
+      });
+    } else {
+      const byQ = {};
+      projTs.forEach(t => { const k = `${fyOfDate(t.date)}|${fyQuarterOfDate(t.date)}`; (byQ[k]=byQ[k]||[]).push(t); });
+      Object.entries(byQ).forEach(([k, list]) => {
+        const [fy, quarter] = k.split("|");
+        const staffInQ = [...new Set(list.map(t=>t.userId))];
+        staffInQ.forEach(uid => {
+          const u = users.find(x=>x.id===uid); if(!u) return;
+          if(managers.includes(uid)) {
+            upsert(`rt-mgr-${uid}-${fy}-${quarter}`, { type:"retainer", fy, quarter, staffId:uid, appraiserRole:"partner", eligibleAppraisers:partners, primaryAppraiser:p.assignedPartnerId }, p.clientName);
+          } else {
+            managers.forEach(mgrId => {
+              upsert(`rt-staff-${uid}-${mgrId}-${fy}-${quarter}`, { type:"retainer", fy, quarter, staffId:uid, appraiserRole:"manager", eligibleAppraisers:[mgrId], primaryAppraiser:mgrId }, p.clientName);
+            });
+          }
+        });
+      });
+    }
+  });
+
+  return Object.entries(merged).map(([key, v]) => ({ key, ...v }));
+}
+// Find an already-created appraisal record matching a required slot
+function findAppraisalFor(appraisals, req) {
+  return appraisals.find(a => {
+    if(a.type!==req.type || a.staffId!==req.staffId || a.appraiserRole!==req.appraiserRole) return false;
+    if(req.type==="fixed") return a.projectId===req.projectId;
+    return a.fy===req.fy && a.quarter===req.quarter && req.eligibleAppraisers.includes(a.appraiserId);
+  });
+}
+
 function addAudit(userId, userName, action, detail) {
   const id = genId();
   fsSet("audit", id, { id, userId, userName, action, detail, ts: new Date().toISOString() });
@@ -182,6 +281,8 @@ const I = ({ n, s=18 }) => {
     send:     "M2.01 21L23 12 2.01 3 2 10l15 2-15 2z",
     bell:     "M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z",
     info:     "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z",
+    star:     "M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z",
+    arrowleft:"M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20z",
   };
   return <svg width={s} height={s} viewBox="0 0 24 24" fill="currentColor"><path d={paths[n]||""}/></svg>;
 };
@@ -403,7 +504,7 @@ function Login({ onLogin }) {
 // ══════════════════════════════════════════════════════════════
 // SIDEBAR
 // ══════════════════════════════════════════════════════════════
-function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=0, projPendingCount=0 }) {
+function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=0, projPendingCount=0, appraisalPendingCount=0 }) {
   const isAdmin = user.email===ADMIN_EMAIL;
   const role = user.role; // "partner" | "manager" | "intern"
 
@@ -448,6 +549,13 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=
       roles: ["partner","manager"], // managers need this to track intern non-compliance
       items: [
         { id:"compliance", icon:"shield", label:"Compliance" },
+      ]
+    },
+    {
+      label: "Performance",
+      roles: ["partner","manager","intern"], // everyone sees their own appraisals; scope enforced inside the module
+      items: [
+        { id:"appraisal", icon:"star", label:"Performance Appraisal", appraisalBadge:true },
       ]
     },
     {
@@ -510,6 +618,7 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=
                 {n.badge     && pendingCount>0     && <span className="nb">{pendingCount}</span>}
                 {n.leaveBadge && leavePendingCount>0 && <span className="nb">{leavePendingCount}</span>}
                 {n.projBadge  && projPendingCount>0  && <span className="nb">{projPendingCount}</span>}
+                {n.appraisalBadge && appraisalPendingCount>0 && <span className="nb">{appraisalPendingCount}</span>}
               </div>
             ))}
           </div>
@@ -1242,7 +1351,7 @@ function AssignModal({ project, users:propUsers=[], onSave, onClose }) {
   );
 }
 
-function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
+function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals=[] }) {
   const [showM,setSM]         =useState(false);
   const [editP,setEditP]      =useState(null); // project being edited
   const [assignM,setAM]       =useState(null);
@@ -1303,7 +1412,18 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[] }) {
 
   const approve=id=>{setProjects(p=>p.map(x=>x.id===id?{...x,status:"active",approvedBy:user.id,approvedAt:new Date().toISOString()}:x));addAudit(user.id,user.name,"APPROVE_PROJECT",`Approved ${id}`);setProjTab("active");};
   const reject=(id,reason)=>{setProjects(p=>p.map(x=>x.id===id?{...x,status:"rejected",rejectReason:reason,rejectedBy:user.id}:x));addAudit(user.id,user.name,"REJECT_PROJECT",`Rejected ${id}: ${reason}`);setRejectM(null);setRR("");setProjTab("rejected");};
-  const close  =id=>{if(!window.confirm("Close this engagement?"))return;setProjects(p=>p.map(x=>x.id===id?{...x,status:"closed",closedAt:new Date().toISOString()}:x));addAudit(user.id,user.name,"CLOSE_PROJECT",`Closed ${id}`);};
+  const close  =id=>{
+    const proj = projects.find(x=>x.id===id);
+    if(proj && proj.feeType!=="retainer") {
+      const required = getRequiredAppraisals(users, [proj], tss);
+      const pending = required.filter(r=>findAppraisalFor(appraisals,r)?.status!=="submitted");
+      if(pending.length>0) {
+        const names = pending.map(r=>users.find(u=>u.id===r.staffId)?.name||"—").join(", ");
+        alert(`Cannot close — performance appraisal is still pending for: ${names}. Every team member's appraisal, including the manager's, must be submitted first.`);
+        return;
+      }
+    }
+    if(!window.confirm("Close this engagement?"))return;setProjects(p=>p.map(x=>x.id===id?{...x,status:"closed",closedAt:new Date().toISOString()}:x));addAudit(user.id,user.name,"CLOSE_PROJECT",`Closed ${id}`);};
   const deleteProject=id=>{if(!window.confirm("Permanently delete this project code? This cannot be undone."))return;setProjects(p=>p.filter(x=>x.id!==id));addAudit(user.id,user.name,"DELETE_PROJECT",`Deleted project ${id}`);};
   const saveAssign=(pid,staff,managers,partners=[])=>{setProjects(p=>p.map(x=>x.id===pid?{...x,assignedStaff:staff,assignedManagers:managers,assignedPartners:partners}:x));addAudit(user.id,user.name,"ASSIGN_STAFF",`Updated assignments for ${pid}`);setAM(null);};
 
@@ -4500,6 +4620,286 @@ function ProductivityDashboard({ users=[], projects=[], tss=[] }) {
 }
 
 // ══════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════
+// PERFORMANCE APPRAISAL
+// ══════════════════════════════════════════════════════════════
+function AppraisalMetricInput({ m, value, onChange, disabled }) {
+  const v = value || { score:null, na:false, remark:"" };
+  return (
+    <div style={{padding:"14px 0",borderBottom:"1px solid var(--border)"}}>
+      <div className="fw6" style={{fontSize:14}}>{m.label}</div>
+      <div className="tx tsl mt4">{m.traits}</div>
+      <div style={{display:"flex",alignItems:"center",gap:6,marginTop:10,flexWrap:"wrap"}}>
+        {[1,2,3,4,5].map(n=>(
+          <button key={n} type="button" disabled={disabled||v.na}
+            className={`btn bsm ${v.score===n?"bp":"bgh"}`}
+            style={{width:36,padding:0,justifyContent:"center"}}
+            onClick={()=>onChange({...v,score:n})}>{n}</button>
+        ))}
+        <label style={{display:"flex",alignItems:"center",gap:5,fontSize:12,color:"var(--slate)",marginLeft:10,cursor:disabled?"default":"pointer"}}>
+          <input type="checkbox" checked={!!v.na} disabled={disabled}
+            onChange={e=>onChange({...v,na:e.target.checked,score:e.target.checked?null:v.score})}/>
+          Not applicable
+        </label>
+      </div>
+      <textarea className="fta" style={{marginTop:8,minHeight:52}} disabled={disabled}
+        placeholder="Remark — basis for this score (mandatory)"
+        value={v.remark||""} onChange={e=>onChange({...v,remark:e.target.value})}/>
+    </div>
+  );
+}
+
+function AppraisalForm({ user, users, req, existing, onSave, onBack }) {
+  const isPartnerViewer = user.role==="partner";
+  const isAppraiser = existing ? existing.appraiserId===user.id : (req?.eligibleAppraisers||[]).includes(user.id);
+  const staff = users.find(u=>u.id===(existing?existing.staffId:req.staffId));
+
+  const blank = () => { const o={}; APPRAISAL_METRICS.forEach(m=>o[m.key]={score:null,na:false,remark:""}); return o; };
+  const [metrics, setMetrics] = useState(existing?existing.metrics:blank());
+  const [valueAddition, setValueAddition] = useState(existing?.valueAddition?.remark || "");
+  const [editUnlocked, setEditUnlocked] = useState(false);
+  const [overrideMode, setOverrideMode] = useState(false);
+  const [editNote, setEditNote] = useState("");
+
+  const submitted = existing?.status==="submitted";
+  const canEditNow = !existing || !submitted || (isAppraiser && editUnlocked) || (isPartnerViewer && overrideMode);
+  const locked = submitted && !canEditNow;
+
+  const { sum, max, pct } = calcAppraisalScore(metrics);
+  const allRemarksFilled = APPRAISAL_METRICS.every(m => metrics[m.key].na || (metrics[m.key].remark||"").trim().length>0) && valueAddition.trim().length>0;
+  const allScored = APPRAISAL_METRICS.every(m => metrics[m.key].na || metrics[m.key].score);
+
+  const save = (status) => {
+    if(status==="submitted" && (!allScored || !allRemarksFilled)) { alert("Every metric needs a score (or N/A) and a mandatory remark, and Value Addition needs a note, before submitting."); return; }
+    const base = existing || { id:genId(), type:req.type, fy:req.fy, quarter:req.quarter||null, projectId:req.projectId||null, clientNames:req.clientNames||[], staffId:req.staffId, appraiserRole:req.appraiserRole, appraiserId:user.id, createdAt:new Date().toISOString() };
+    let rec = { ...base, metrics, valueAddition:{ remark:valueAddition }, status };
+    if(status==="submitted") rec.submittedAt = new Date().toISOString();
+    if(isPartnerViewer && overrideMode && existing) {
+      rec.overrideHistory = [...(existing.overrideHistory||[]), { metrics:existing.metrics, valueAddition:existing.valueAddition, replacedAt:new Date().toISOString(), replacedBy:existing.overriddenBy||existing.appraiserId }];
+      rec.overriddenBy = user.id; rec.overriddenAt = new Date().toISOString();
+    }
+    if(isAppraiser && editUnlocked && existing) {
+      rec.editHistory = [...(existing.editHistory||[]), { metrics:existing.metrics, valueAddition:existing.valueAddition, replacedAt:new Date().toISOString() }];
+      rec.editRequestStatus = "used";
+    }
+    onSave(rec);
+  };
+
+  const requestEdit = () => onSave({ ...existing, editRequestStatus:"requested", editRequestedAt:new Date().toISOString(), editRequestNote:editNote });
+  const approveEdit = () => onSave({ ...existing, editRequestStatus:"approved", editApprovedBy:user.id, editApprovedAt:new Date().toISOString() });
+  const denyEdit    = () => onSave({ ...existing, editRequestStatus:"denied" });
+
+  const scopeLabel = (req?.type||existing?.type)==="fixed"
+    ? "Fixed engagement"
+    : `Retainer · ${existing?.quarter||req?.quarter} FY ${existing?.fy||req?.fy}`;
+
+  return (
+    <div>
+      <button className="btn bgh bsm" style={{marginBottom:14}} onClick={onBack}><I n="arrowleft" s={13}/>Back</button>
+      <div className="card">
+        <div className="fxb" style={{alignItems:"flex-start"}}>
+          <div>
+            <div className="card-title">{staff?.name}</div>
+            <div className="card-sub mt4">{scopeLabel} · {(existing?.clientNames||req?.clientNames||[]).join(", ")}</div>
+          </div>
+          <span className={`bdg ${submitted?"bac":"brs"}`}>{submitted?"Submitted":"Draft"}</span>
+        </div>
+
+        {isPartnerViewer && !isAppraiser && submitted && (
+          <div className="al al-i" style={{marginTop:14,flexWrap:"wrap"}}>
+            <I n="info" s={16}/>
+            <div>Given by {users.find(u=>u.id===existing.appraiserId)?.name||"—"}. As a partner you can override any score below.
+              {!overrideMode && <button className="btn bgh bxs" style={{marginLeft:8}} onClick={()=>setOverrideMode(true)}>Override score</button>}
+            </div>
+          </div>
+        )}
+        {existing?.overriddenBy && (
+          <div className="al al-w" style={{marginTop:14}}><I n="alert" s={16}/><div>This score was overridden by {users.find(u=>u.id===existing.overriddenBy)?.name}. {isPartnerViewer?"Original values are kept in history (partner-visible only).":""}</div></div>
+        )}
+        {existing?.editRequestStatus==="requested" && isPartnerViewer && (
+          <div className="al al-w" style={{marginTop:14}}>
+            <I n="alert" s={16}/>
+            <div>{users.find(u=>u.id===existing.appraiserId)?.name} has requested to edit this submitted appraisal{existing.editRequestNote?`: "${existing.editRequestNote}"`:"."}
+              <div style={{marginTop:8,display:"flex",gap:8}}>
+                <button className="btn bsc bxs" onClick={approveEdit}>Approve edit</button>
+                <button className="btn bgh bxs" onClick={denyEdit}>Deny</button>
+              </div>
+            </div>
+          </div>
+        )}
+        {existing?.editRequestStatus==="requested" && isAppraiser && (
+          <div className="al al-w" style={{marginTop:14}}><I n="alert" s={16}/><div>Edit request sent — waiting for a partner to approve.</div></div>
+        )}
+        {existing?.editRequestStatus==="approved" && isAppraiser && !editUnlocked && (
+          <div className="al al-s" style={{marginTop:14}}><I n="check" s={16}/><div>Your edit request was approved.<button className="btn bgo bxs" style={{marginLeft:8}} onClick={()=>setEditUnlocked(true)}>Edit now</button></div></div>
+        )}
+
+        <div style={{marginTop:14}}>
+          {APPRAISAL_METRICS.map(m => (
+            <AppraisalMetricInput key={m.key} m={m} value={metrics[m.key]} disabled={locked}
+              onChange={v=>setMetrics(prev=>({...prev,[m.key]:v}))}/>
+          ))}
+          <div style={{padding:"14px 0"}}>
+            <div className="fw6" style={{fontSize:14}}>Value addition</div>
+            <div className="tx tsl mt4">Standout feature in this engagement — descriptive, not scored</div>
+            <textarea className="fta" style={{marginTop:8}} disabled={locked} value={valueAddition} onChange={e=>setValueAddition(e.target.value)}
+              placeholder="What stood out — an effort, piece of work, or trait that benefited both the client and the firm (mandatory)"/>
+          </div>
+        </div>
+
+        <div className="fxb" style={{borderTop:"1px solid var(--border)",paddingTop:14,marginTop:4}}>
+          <span className="ts tsl">Overall score</span>
+          <span style={{fontFamily:"'Playfair Display',serif",fontSize:22}}>{max?`${sum}/${max} (${pct}%)`:"All N/A"}</span>
+        </div>
+
+        {!locked && (
+          <div className="md-actions" style={{justifyContent:"flex-start",marginTop:16}}>
+            <button className="btn bgh" onClick={()=>save("draft")}>Save draft</button>
+            <button className="btn bp" onClick={()=>save("submitted")}>Submit</button>
+          </div>
+        )}
+        {locked && isAppraiser && !existing.editRequestStatus && (
+          <div style={{marginTop:16}}>
+            <textarea className="fta" style={{minHeight:44}} placeholder="Reason for the edit request (optional)" value={editNote} onChange={e=>setEditNote(e.target.value)}/>
+            <button className="btn bgh bsm" style={{marginTop:8}} onClick={requestEdit}><I n="edit" s={13}/>Request edit</button>
+          </div>
+        )}
+        {locked && <p className="tx tsl mt8">This appraisal is locked. {isAppraiser?"Request an edit above if a correction is needed.":"Only the author, or a partner override, can change it."}</p>}
+      </div>
+    </div>
+  );
+}
+
+function FYSelector({ fy, setFy, options }) {
+  return (
+    <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16}}>
+      <span className="ts tsl">Financial year</span>
+      <select className="fs" style={{width:150}} value={fy} onChange={e=>setFy(e.target.value)}>
+        {options.map(o=><option key={o} value={o}>FY {o}</option>)}
+      </select>
+    </div>
+  );
+}
+
+function AppraisalListRow({ r, ex, onClick }) {
+  const { pct } = ex ? calcAppraisalScore(ex.metrics) : {};
+  const label = r.type==="fixed" ? (r.clientNames||[]).join(", ") : `${(r.clientNames||[]).join(", ")} · ${r.quarter}`;
+  return (
+    <div className="card" style={{cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 18px"}} onClick={onClick}>
+      <div>
+        <div className="fw6" style={{fontSize:14}}>{label}</div>
+        <div className="tx tsl mt4">{r.type==="fixed"?"Fixed engagement":"Retainer"} · {r.appraiserRole==="partner"?"Partner appraisal":"Manager appraisal"}</div>
+      </div>
+      {ex?.status==="submitted" ? <span className="bdg bac">{pct}%</span> : ex?.status==="draft" ? <span className="bdg brs">Draft</span> : <span className="bdg bcl">Pending</span>}
+    </div>
+  );
+}
+
+function PerformanceAppraisal({ user, users=[], projects=[], tss=[], appraisals=[], setAppraisals }) {
+  const isP = user.role==="partner";
+  const isMgr = user.role==="manager";
+  const required = useMemo(()=>getRequiredAppraisals(users, projects, tss), [users, projects, tss]);
+
+  const fyList = [...new Set([currentFY(), ...required.map(r=>r.fy)])].sort().reverse();
+  const [fy, setFy] = useState(currentFY());
+  const [subView, setSubView] = useState("received");
+  const [selStaff, setSelStaff] = useState(null);
+  const [selReq, setSelReq] = useState(null);
+
+  const visibleReceived  = required.filter(r => r.fy===fy && r.staffId===user.id);
+  const visibleGivenReqs = required.filter(r => r.fy===fy && r.staffId!==user.id && r.eligibleAppraisers.includes(user.id));
+
+  const onSave = (rec) => {
+    setAppraisals(prev => prev.some(a=>a.id===rec.id) ? prev.map(a=>a.id===rec.id?rec:a) : [...prev, rec]);
+    setSelReq(null);
+  };
+
+  if(selReq) {
+    const existing = findAppraisalFor(appraisals, selReq);
+    return <AppraisalForm user={user} users={users} req={selReq} existing={existing} onSave={onSave} onBack={()=>setSelReq(null)}/>;
+  }
+
+  if(isP) {
+    const staffIds = [...new Set(required.filter(r=>r.fy===fy).map(r=>r.staffId))];
+    if(!selStaff) {
+      return (
+        <div>
+          <FYSelector fy={fy} setFy={setFy} options={fyList}/>
+          <p className="ts tsl mb8">Staff</p>
+          <div className="g3">
+            {staffIds.map(sid=>{
+              const u = users.find(x=>x.id===sid);
+              const recs = required.filter(r=>r.fy===fy&&r.staffId===sid);
+              const done = recs.filter(r=>findAppraisalFor(appraisals,r)?.status==="submitted").length;
+              return (
+                <div key={sid} className="card" style={{cursor:"pointer"}} onClick={()=>setSelStaff(sid)}>
+                  <div className="fw6">{u?.name}</div>
+                  <div className="tx tsl mt4">{u?.role} · {done}/{recs.length} complete</div>
+                </div>
+              );
+            })}
+            {staffIds.length===0 && <div className="es">No appraisals required yet for this financial year.</div>}
+          </div>
+        </div>
+      );
+    }
+    const u = users.find(x=>x.id===selStaff);
+    const recs = required.filter(r=>r.fy===fy&&r.staffId===selStaff);
+    return (
+      <div>
+        <button className="btn bgh bsm mb16" onClick={()=>setSelStaff(null)}><I n="arrowleft" s={13}/>All staff</button>
+        <p className="card-title mb16">{u?.name} — FY {fy}</p>
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          {recs.map(r=><AppraisalListRow key={r.key} r={r} ex={findAppraisalFor(appraisals,r)} onClick={()=>setSelReq(r)}/>)}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <FYSelector fy={fy} setFy={setFy} options={fyList}/>
+      {isMgr && (
+        <div className="tabs">
+          <div className={`tab ${subView==="received"?"active":""}`} onClick={()=>{setSubView("received");setSelStaff(null);}}>Feedback I've received</div>
+          <div className={`tab ${subView==="given"?"active":""}`} onClick={()=>{setSubView("given");setSelStaff(null);}}>Feedback I've given</div>
+        </div>
+      )}
+      {subView==="received" && (
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          {visibleReceived.map(r=><AppraisalListRow key={r.key} r={r} ex={findAppraisalFor(appraisals,r)} onClick={()=>setSelReq(r)}/>)}
+          {visibleReceived.length===0 && <div className="es">No appraisals for this financial year yet.</div>}
+        </div>
+      )}
+      {isMgr && subView==="given" && (
+        !selStaff ? (
+          <div className="g3">
+            {[...new Set(visibleGivenReqs.map(r=>r.staffId))].map(sid=>{
+              const u = users.find(x=>x.id===sid);
+              const mine = visibleGivenReqs.filter(r=>r.staffId===sid);
+              const done = mine.filter(r=>findAppraisalFor(appraisals,r)?.status==="submitted").length;
+              return (
+                <div key={sid} className="card" style={{cursor:"pointer"}} onClick={()=>setSelStaff(sid)}>
+                  <div className="fw6">{u?.name}</div>
+                  <div className="tx tsl mt4">{done}/{mine.length} complete</div>
+                </div>
+              );
+            })}
+            {visibleGivenReqs.length===0 && <div className="es">You have no team appraisals to give this financial year.</div>}
+          </div>
+        ) : (
+          <div>
+            <button className="btn bgh bsm mb16" onClick={()=>setSelStaff(null)}><I n="arrowleft" s={13}/>My team</button>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {visibleGivenReqs.filter(r=>r.staffId===selStaff).map(r=><AppraisalListRow key={r.key} r={r} ex={findAppraisalFor(appraisals,r)} onClick={()=>setSelReq(r)}/>)}
+            </div>
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
 // ROOT
 // ══════════════════════════════════════════════════════════════
 export default function App() {
@@ -4514,8 +4914,9 @@ export default function App() {
   const [locked,  setLocked]   = useLS("locked_months",[]);
   const [audit]                = useLS("audit",    []);
   const [leaves,  setLeaves]   = useLS("leaves",   []);
+  const [appraisals, setAppraisals] = useLS("appraisals", []);
 
-  const db_props = { users, setUsers, projects, setProjects, tss, setTss, locked, setLocked, audit, leaves, setLeaves };
+  const db_props = { users, setUsers, projects, setProjects, tss, setTss, locked, setLocked, audit, leaves, setLeaves, appraisals, setAppraisals };
 
   // ── Migration: fix existing pending intern entries on projects with no managers ──
   // These entries were stuck — no manager to approve them, not visible to partner either
@@ -4575,7 +4976,13 @@ export default function App() {
   };
   const pendingCount = calcPendingCount(currentUser);
 
-  const titles={dashboard:"Dashboard",week:"My Week",timesheets:"Timesheets",projects:"Projects",approvals:"Approvals",reports:"Reports",profitability:"Profitability",productivity:"Productivity Dashboard",compliance:"Compliance",leave:"Leave",audit:"Audit Trail",users:"User Management",changepassword:"Change Password"};
+  // Appraisals this user still needs to GIVE, current FY, not yet submitted
+  const appraisalPendingCount = currentUser ? (() => {
+    const required = getRequiredAppraisals(users, projects, tss);
+    return required.filter(r => r.fy===currentFY() && r.eligibleAppraisers.includes(currentUser.id) && findAppraisalFor(appraisals,r)?.status!=="submitted").length;
+  })() : 0;
+
+  const titles={dashboard:"Dashboard",week:"My Week",timesheets:"Timesheets",projects:"Projects",approvals:"Approvals",reports:"Reports",profitability:"Profitability",productivity:"Productivity Dashboard",compliance:"Compliance",leave:"Leave",appraisal:"Performance Appraisal",audit:"Audit Trail",users:"User Management",changepassword:"Change Password"};
 
   if(!currentUser) return <><style>{CSS}</style><Login onLogin={u=>{setCU(u);setTab("dashboard");}}/></>;
 
@@ -4589,7 +4996,8 @@ export default function App() {
             if(currentUser.role==="partner") return l.status==="pending_partner"&&(l.approverPartners||[]).includes(currentUser.id)&&!(l.partnerApprovals||[]).includes(currentUser.id);
             return false;
           }).length}
-          projPendingCount={currentUser.role==="partner" ? projects.filter(p=>p.status==="pending_approval").length : 0}/>
+          projPendingCount={currentUser.role==="partner" ? projects.filter(p=>p.status==="pending_approval").length : 0}
+          appraisalPendingCount={appraisalPendingCount}/>
         <div className="main">
           <div className="topbar">
             <div className="tb-title">{titles[tab]}</div>
@@ -4603,6 +5011,7 @@ export default function App() {
             {tab==="week"       &&<WeekView     user={currentUser} {...db_props}/>}
             {tab==="timesheets" &&<Timesheets   user={currentUser} {...db_props}/>}
             {tab==="projects"   &&<Projects     user={currentUser} {...db_props}/>}
+            {tab==="appraisal" &&<PerformanceAppraisal user={currentUser} {...db_props}/>}
             {tab==="approvals"  &&["partner","manager"].includes(currentUser.role)&&<Approvals user={currentUser} {...db_props}/>}
             {tab==="reports"    &&currentUser.role==="partner"&&<Reports  user={currentUser} {...db_props} setLocked={setLocked}/>}
             {tab==="profitability"&&currentUser.role==="partner"&&<Profitability {...db_props}/>}
