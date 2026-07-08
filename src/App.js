@@ -229,6 +229,8 @@ function getRequiredAppraisals(users, projects, tss) {
         const staffInQ = [...new Set(list.map(t=>t.userId))];
         staffInQ.forEach(uid => {
           const u = users.find(x=>x.id===uid); if(!u) return;
+          if(isStaffInactiveForQuarter(u, fy, quarter)) return;
+          if(isGraceExcludedQuarter(fy, quarter, effectiveJoinDate(u))) return;
           if(managers.includes(uid)) {
             upsert(`rt-mgr-${uid}-${fy}-${quarter}`, { type:"retainer", fy, quarter, staffId:uid, appraiserRole:"partner", eligibleAppraisers:partners, primaryAppraiser:p.assignedPartnerId }, p.clientName);
           } else {
@@ -280,6 +282,22 @@ function blankGoalRecord(fy, quarter, staffId) {
     goals:[1,2,3].map(sl=>({sl,desc:"",steps:""})), goalStatus:null,
     assess:[1,2,3].map(sl=>({sl,status:"",remark:""})), assessStatus:null,
   };
+}
+// Effective join date for grace-period purposes: a reactivation counts as a fresh join.
+function effectiveJoinDate(u) { return u?.reactivatedFrom || u?.dateOfJoining || null; }
+// Someone joining in the final 14 days of a quarter is excluded from that one quarter (retainer appraisal + goal setting only).
+function isGraceExcludedQuarter(fy, quarter, joinDate) {
+  if(!joinDate) return false;
+  const [, qEnd] = quarterDateRange(fy, quarter);
+  const d = new Date(qEnd); d.setDate(d.getDate()-13);
+  const graceStart = d.toISOString().slice(0,10);
+  return joinDate>=graceStart && joinDate<=qEnd;
+}
+// A staff member is treated as absent for a quarter if they'd already gone inactive before that quarter began.
+function isStaffInactiveForQuarter(u, fy, quarter) {
+  if(!u || u.active!==false || !u.inactiveFrom) return false;
+  const [qStart] = quarterDateRange(fy, quarter);
+  return u.inactiveFrom <= qStart;
 }
 
 function addAudit(userId, userName, action, detail) {
@@ -1447,7 +1465,7 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
   const close  =id=>{
     const proj = projects.find(x=>x.id===id);
     if(proj && proj.feeType!=="retainer") {
-      const required = getRequiredAppraisals(users, [proj], tss);
+      const required = getRequiredAppraisals(users, [proj], tss).filter(r=>users.find(u=>u.id===r.staffId)?.active!==false);
       const pending = required.filter(r=>findAppraisalFor(appraisals,r)?.status!=="submitted");
       if(pending.length>0) {
         const names = pending.map(r=>users.find(u=>u.id===r.staffId)?.name||"—").join(", ");
@@ -2306,25 +2324,28 @@ function AuditTrail({ audit=[] }) {
 function UserManagement({ user, users=[], setUsers, isPartner=false }) {
   const [showM,setSM]     =useState(false);
   const [editU,setEU]     =useState(null);
-  const [form,setF]       =useState({name:"",email:"",role:"intern",billingRate:"",billingRateEffectiveDate:"",actualRate:"",actualRateEffectiveDate:"",password:""});
+  const [form,setF]       =useState({name:"",email:"",role:"intern",dateOfJoining:"",billingRate:"",billingRateEffectiveDate:"",actualRate:"",actualRateEffectiveDate:"",password:""});
   const [ferr,setFerr]    =useState("");
   const [filterRole,setFR]=useState("");
   const [filterStatus,setFS]=useState("");
   const [search,setSrch]  =useState("");
   const [umPage,setUMPage]=useState(1);
+  const [deactivateFor,setDeactivateFor]=useState(null); // { id, name, date }
   const UM_PAGE = 10;
   const isAdmin = user.email===ADMIN_EMAIL;
   const isPartnerUser = user.role==="partner";
 
-  const openAdd=()=>{setEU(null);setF({name:"",email:"",role:"intern",billingRate:"",billingRateEffectiveDate:todayStr(),actualRate:"",actualRateEffectiveDate:todayStr(),password:""});setFerr("");setSM(true);};
-  const openEdit=u=>{setEU(u);setF({name:u.name,email:u.email,role:u.role,billingRate:u.billingRate,billingRateEffectiveDate:u.billingRateEffectiveDate||todayStr(),actualRate:u.actualRate||"",actualRateEffectiveDate:u.actualRateEffectiveDate||todayStr(),password:""});setFerr("");setSM(true);};
+  const openAdd=()=>{setEU(null);setF({name:"",email:"",role:"intern",dateOfJoining:todayStr(),billingRate:"",billingRateEffectiveDate:todayStr(),actualRate:"",actualRateEffectiveDate:todayStr(),password:""});setFerr("");setSM(true);};
+  const openEdit=u=>{setEU(u);setF({name:u.name,email:u.email,role:u.role,dateOfJoining:u.dateOfJoining||"",billingRate:u.billingRate,billingRateEffectiveDate:u.billingRateEffectiveDate||todayStr(),actualRate:u.actualRate||"",actualRateEffectiveDate:u.actualRateEffectiveDate||todayStr(),password:""});setFerr("");setSM(true);};
 
   const save= async ()=>{
     if(!form.name||!form.email||!form.billingRate){setFerr("Name, email and billing rate are required.");return;}
+    if(!editU && !form.dateOfJoining){setFerr("Date of joining is required for new staff.");return;}
     if(!form.email.endsWith("@msna.co.in")){setFerr("Must be an @msna.co.in address.");return;}
     if(editU){
       setUsers(p=>p.map(u=>u.id===editU.id?{...u,
         name:form.name,role:form.role,
+        dateOfJoining:form.dateOfJoining||u.dateOfJoining||null,
         billingRate:Number(form.billingRate),
         billingRateEffectiveDate:form.billingRateEffectiveDate||todayStr(),
         actualRate:form.actualRate?Number(form.actualRate):null,
@@ -2346,6 +2367,7 @@ function UserManagement({ user, users=[], setUsers, isPartner=false }) {
       if(!form.password){setFerr("Password is required for new users.");return;}
       if(users.find(u=>u.email.toLowerCase()===form.email.toLowerCase())){setFerr("Email already exists.");return;}
       setUsers(p=>[...p,{id:genId(),name:form.name,email:form.email,role:form.role,
+        dateOfJoining:form.dateOfJoining,
         billingRate:Number(form.billingRate),
         billingRateEffectiveDate:form.billingRateEffectiveDate||todayStr(),
         actualRate:form.actualRate?Number(form.actualRate):null,
@@ -2363,7 +2385,16 @@ function UserManagement({ user, users=[], setUsers, isPartner=false }) {
     setSM(false);
   };
 
-  const toggle=id=>{setUsers(p=>p.map(u=>u.id===id?{...u,active:!u.active}:u));addAudit(user.id,user.name,"TOGGLE_USER",`Toggled ${id}`);};
+  const requestDeactivate = u => setDeactivateFor({ id:u.id, name:u.name, date:todayStr() });
+  const confirmDeactivate = () => {
+    setUsers(p=>p.map(u=>u.id===deactivateFor.id?{...u,active:false,inactiveFrom:deactivateFor.date}:u));
+    addAudit(user.id,user.name,"TOGGLE_USER",`Deactivated ${deactivateFor.id} effective ${deactivateFor.date}`);
+    setDeactivateFor(null);
+  };
+  const reactivate = id => {
+    setUsers(p=>p.map(u=>u.id===id?{...u,active:true,reactivatedFrom:todayStr(),inactiveFrom:null}:u));
+    addAudit(user.id,user.name,"TOGGLE_USER",`Reactivated ${id}`);
+  };
   const deleteUser=id=>{
     const target=users.find(u=>u.id===id);
     if(!target) return;
@@ -2412,13 +2443,14 @@ function UserManagement({ user, users=[], setUsers, isPartner=false }) {
 
       <div className="card">
         <div className="tw"><table>
-          <thead><tr><th style={{width:36}}>#</th><th>Name</th><th>Email</th><th>Role</th><th>Billing Rate</th><th>Actual Cost</th><th>Status</th><th>Actions</th></tr></thead>
+          <thead><tr><th style={{width:36}}>#</th><th>Name</th><th>Email</th><th>Role</th><th>Date of Joining</th><th>Billing Rate</th><th>Actual Cost</th><th>Status</th><th>Actions</th></tr></thead>
           <tbody>{filtered.slice((umPage-1)*UM_PAGE, umPage*UM_PAGE).map((u,idx)=>(
             <tr key={u.id}>
               <td className="tx tsl" style={{fontSize:12}}>{(umPage-1)*UM_PAGE+idx+1}</td>
               <td className="fw6">{u.name}{u.email===ADMIN_EMAIL&&<span className="tx tgo"> ★ Admin</span>}</td>
               <td className="ts tsl">{u.email}</td>
               <td><span className={`bdg ${u.role==="partner"?"rpa":u.role==="manager"?"rma":"ria"}`}>{u.role.charAt(0).toUpperCase()+u.role.slice(1)}</span></td>
+              <td className="ts">{u.dateOfJoining?fmtDate(u.dateOfJoining):<span className="tx tsl">—</span>}</td>
               <td>
                 <div className="fw6">{fmtCurrency(u.billingRate)}<span className="tx tsl">/hr</span></div>
                 {u.billingRateEffectiveDate&&<div className="tx tsl" style={{fontSize:11}}>w.e.f. {fmtDate(u.billingRateEffectiveDate)}</div>}
@@ -2429,10 +2461,11 @@ function UserManagement({ user, users=[], setUsers, isPartner=false }) {
                     {u.actualRateEffectiveDate&&<div className="tx tsl" style={{fontSize:11}}>w.e.f. {fmtDate(u.actualRateEffectiveDate)}</div>}</>
                   :<span className="tx tsl">—</span>}
               </td>
-              <td><span className={`bdg ${u.active?"bac":"bcl"}`}>{u.active?"Active":"Inactive"}</span></td>
+              <td><span className={`bdg ${u.active?"bac":"bcl"}`}>{u.active?"Active":"Inactive"}</span>
+                {!u.active&&u.inactiveFrom&&<div className="tx tsl mt4" style={{fontSize:11}}>from {fmtDate(u.inactiveFrom)}</div>}</td>
               <td><div className="fx g8">
                 {isPartnerUser&&<button className="btn bgh bic bsm" onClick={()=>openEdit(u)}><I n="edit" s={14}/></button>}
-                {u.id!==user.id&&<button className={`btn bsm ${u.active?"bd":"bsc"}`} onClick={()=>toggle(u.id)}>{u.active?"Deactivate":"Activate"}</button>}
+                {u.id!==user.id&&<button className={`btn bsm ${u.active?"bd":"bsc"}`} onClick={()=>u.active?requestDeactivate(u):reactivate(u.id)}>{u.active?"Deactivate":"Activate"}</button>}
                 {u.id!==user.id&&u.email!==ADMIN_EMAIL&&<button className="btn bd bic bsm" title="Delete user" onClick={()=>deleteUser(u.id)}><I n="trash" s={14}/></button>}
               </div></td>
             </tr>
@@ -2459,6 +2492,7 @@ function UserManagement({ user, users=[], setUsers, isPartner=false }) {
                 <option value="intern">Intern</option><option value="manager">Manager</option><option value="partner">Partner</option>
               </select>
             </div>
+            <div className="fg"><label className="fl">Date of Joining{!editU&&" *"}</label><input type="date" className="fi" value={form.dateOfJoining} onChange={e=>setF(f=>({...f,dateOfJoining:e.target.value}))}/></div>
             {/* Billing Rate */}
             <div style={{background:"var(--cream)",borderRadius:8,padding:"14px 16px",border:"1px solid var(--border)"}}>
               <div style={{fontSize:12,fontWeight:600,color:"var(--navy)",textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:10}}>Billing Rate (charged to client)</div>
@@ -2480,6 +2514,22 @@ function UserManagement({ user, users=[], setUsers, isPartner=false }) {
             <div className="md-actions">
               <button className="btn bgh" onClick={()=>setSM(false)}>Cancel</button>
               <button className="btn bp" onClick={save}><I n="check" s={15}/>{editU?"Save Changes":"Create Account"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deactivateFor&&(
+        <div className="mo" onClick={()=>setDeactivateFor(null)}>
+          <div className="md" style={{maxWidth:420}} onClick={e=>e.stopPropagation()}>
+            <div className="md-title">Deactivate {deactivateFor.name}?</div>
+            <p className="ts tsl mb16">This date determines which quarters they still appear in for appraisals and goal setting — earlier quarters remain visible, later ones won't require them.</p>
+            <div className="fg"><label className="fl">Last working day / inactive from</label>
+              <input type="date" className="fi" value={deactivateFor.date} onChange={e=>setDeactivateFor(d=>({...d,date:e.target.value}))}/>
+            </div>
+            <div className="md-actions">
+              <button className="btn bgh" onClick={()=>setDeactivateFor(null)}>Cancel</button>
+              <button className="btn bd" onClick={confirmDeactivate}>Deactivate</button>
             </div>
           </div>
         </div>
@@ -5112,17 +5162,22 @@ function GoalSetting({ user, users=[], goals=[], setGoals }) {
   const quartersForFY = GOAL_QUARTER_ORDER.filter(q=>isQuarterInGoalScheme(fy,q));
   const onSave = (rec) => setGoals(prev => prev.some(g=>g.id===rec.id) ? prev.map(g=>g.id===rec.id?rec:g) : [...prev, rec]);
 
-  const renderStaffPage = (staffId) => (
-    <div style={{display:"flex",flexDirection:"column",gap:14}}>
-      {quartersForFY.map(q => {
-        const rec = goals.find(g=>g.fy===fy&&g.quarter===q&&g.staffId===staffId);
-        return <GoalQuarterCard key={q} fy={fy} quarter={q} staffId={staffId} viewer={user} users={users} record={rec} onSave={onSave}/>;
-      })}
-    </div>
-  );
+  const renderStaffPage = (staffId) => {
+    const su = users.find(x=>x.id===staffId);
+    const quarters = quartersForFY.filter(q => !isStaffInactiveForQuarter(su, fy, q) && !isGraceExcludedQuarter(fy, q, effectiveJoinDate(su)));
+    return (
+      <div style={{display:"flex",flexDirection:"column",gap:14}}>
+        {quarters.length===0 && <div className="es">No applicable quarters for this staff member in FY {fy}.</div>}
+        {quarters.map(q => {
+          const rec = goals.find(g=>g.fy===fy&&g.quarter===q&&g.staffId===staffId);
+          return <GoalQuarterCard key={q} fy={fy} quarter={q} staffId={staffId} viewer={user} users={users} record={rec} onSave={onSave}/>;
+        })}
+      </div>
+    );
+  };
 
   if(isP) {
-    const staffList = users.filter(u=>u.role!=="partner" && u.active!==false);
+    const staffList = users.filter(u=>u.role!=="partner");
     if(!selStaff) {
       return (
         <div>
@@ -5131,7 +5186,7 @@ function GoalSetting({ user, users=[], goals=[], setGoals }) {
           <div className="g3">
             {staffList.map(u=>(
               <div key={u.id} className="card" style={{cursor:"pointer"}} onClick={()=>setSelStaff(u.id)}>
-                <div className="fw6">{u.name}</div>
+                <div className="fw6">{u.name}{u.active===false&&<span className="bdg bcl" style={{marginLeft:8}}>Inactive</span>}</div>
                 <div className="tx tsl mt4">{u.role}</div>
               </div>
             ))}
