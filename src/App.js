@@ -300,6 +300,16 @@ function isStaffInactiveForQuarter(u, fy, quarter) {
   return u.inactiveFrom <= qStart;
 }
 
+// Inactive staff drop out of PENDING requirements they haven't started (nothing to enable),
+// but any appraisal already recorded stays visible — greyed out — as historical record.
+function gateInactiveAppraisals(required, appraisals, users) {
+  return required.filter(r => {
+    const u = users.find(x=>x.id===r.staffId);
+    if(u?.active!==false) return true;
+    return !!findAppraisalFor(appraisals, r);
+  });
+}
+
 function addAudit(userId, userName, action, detail) {
   const id = genId();
   fsSet("audit", id, { id, userId, userName, action, detail, ts: new Date().toISOString() });
@@ -2443,7 +2453,7 @@ function UserManagement({ user, users=[], setUsers, isPartner=false }) {
 
       <div className="card">
         <div className="tw"><table>
-          <thead><tr><th style={{width:36}}>#</th><th>Name</th><th>Email</th><th>Role</th><th>Date of Joining</th><th>Billing Rate</th><th>Actual Cost</th><th>Status</th><th>Actions</th></tr></thead>
+          <thead><tr><th style={{width:36}}>#</th><th>Name</th><th>Email</th><th>Role</th><th>Date of Joining</th><th>Date of Leaving</th><th>Billing Rate</th><th>Actual Cost</th><th>Status</th><th>Actions</th></tr></thead>
           <tbody>{filtered.slice((umPage-1)*UM_PAGE, umPage*UM_PAGE).map((u,idx)=>(
             <tr key={u.id}>
               <td className="tx tsl" style={{fontSize:12}}>{(umPage-1)*UM_PAGE+idx+1}</td>
@@ -2451,6 +2461,7 @@ function UserManagement({ user, users=[], setUsers, isPartner=false }) {
               <td className="ts tsl">{u.email}</td>
               <td><span className={`bdg ${u.role==="partner"?"rpa":u.role==="manager"?"rma":"ria"}`}>{u.role.charAt(0).toUpperCase()+u.role.slice(1)}</span></td>
               <td className="ts">{u.dateOfJoining?fmtDate(u.dateOfJoining):<span className="tx tsl">—</span>}</td>
+              <td className="ts">{!u.active&&u.inactiveFrom?fmtDate(u.inactiveFrom):<span className="tx tsl">—</span>}</td>
               <td>
                 <div className="fw6">{fmtCurrency(u.billingRate)}<span className="tx tsl">/hr</span></div>
                 {u.billingRateEffectiveDate&&<div className="tx tsl" style={{fontSize:11}}>w.e.f. {fmtDate(u.billingRateEffectiveDate)}</div>}
@@ -2461,8 +2472,7 @@ function UserManagement({ user, users=[], setUsers, isPartner=false }) {
                     {u.actualRateEffectiveDate&&<div className="tx tsl" style={{fontSize:11}}>w.e.f. {fmtDate(u.actualRateEffectiveDate)}</div>}</>
                   :<span className="tx tsl">—</span>}
               </td>
-              <td><span className={`bdg ${u.active?"bac":"bcl"}`}>{u.active?"Active":"Inactive"}</span>
-                {!u.active&&u.inactiveFrom&&<div className="tx tsl mt4" style={{fontSize:11}}>from {fmtDate(u.inactiveFrom)}</div>}</td>
+              <td><span className={`bdg ${u.active?"bac":"bcl"}`}>{u.active?"Active":"Inactive"}</span></td>
               <td><div className="fx g8">
                 {isPartnerUser&&<button className="btn bgh bic bsm" onClick={()=>openEdit(u)}><I n="edit" s={14}/></button>}
                 {u.id!==user.id&&<button className={`btn bsm ${u.active?"bd":"bsc"}`} onClick={()=>u.active?requestDeactivate(u):reactivate(u.id)}>{u.active?"Deactivate":"Activate"}</button>}
@@ -4880,7 +4890,8 @@ function AppraisalListRow({ r, ex, onClick }) {
 function PerformanceAppraisal({ user, users=[], projects=[], tss=[], appraisals=[], setAppraisals }) {
   const isP = user.role==="partner";
   const isMgr = user.role==="manager";
-  const required = useMemo(()=>getRequiredAppraisals(users, projects, tss), [users, projects, tss]);
+  const rawRequired = useMemo(()=>getRequiredAppraisals(users, projects, tss), [users, projects, tss]);
+  const required = useMemo(()=>gateInactiveAppraisals(rawRequired, appraisals, users), [rawRequired, appraisals, users]);
 
   const fyList = [...new Set([currentFY(), ...required.map(r=>r.fy)])].sort().reverse();
   const [fy, setFy] = useState(currentFY());
@@ -4911,11 +4922,12 @@ function PerformanceAppraisal({ user, users=[], projects=[], tss=[], appraisals=
           <div className="g3">
             {staffIds.map(sid=>{
               const u = users.find(x=>x.id===sid);
+              const inactive = u?.active===false;
               const recs = required.filter(r=>r.fy===fy&&r.staffId===sid);
               const done = recs.filter(r=>findAppraisalFor(appraisals,r)?.status==="submitted").length;
               return (
-                <div key={sid} className="card" style={{cursor:"pointer"}} onClick={()=>setSelStaff(sid)}>
-                  <div className="fw6">{u?.name}</div>
+                <div key={sid} className="card" style={{cursor:"pointer",opacity:inactive?.55:1}} onClick={()=>setSelStaff(sid)}>
+                  <div className="fw6">{u?.name}{inactive&&<span className="bdg bcl" style={{marginLeft:8}}>Inactive</span>}</div>
                   <div className="tx tsl mt4">{u?.role} · {done}/{recs.length} complete</div>
                 </div>
               );
@@ -4926,12 +4938,13 @@ function PerformanceAppraisal({ user, users=[], projects=[], tss=[], appraisals=
       );
     }
     const u = users.find(x=>x.id===selStaff);
+    const inactive = u?.active===false;
     const recs = required.filter(r=>r.fy===fy&&r.staffId===selStaff);
     return (
       <div>
         <button className="btn bgh bsm mb16" onClick={()=>setSelStaff(null)}><I n="arrowleft" s={13}/>All staff</button>
-        <p className="card-title mb16">{u?.name} — FY {fy}</p>
-        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+        <p className="card-title mb16">{u?.name}{inactive&&<span className="bdg bcl" style={{marginLeft:8}}>Inactive</span>} — FY {fy}</p>
+        <div style={{display:"flex",flexDirection:"column",gap:8,opacity:inactive?.6:1}}>
           {recs.map(r=><AppraisalListRow key={r.key} r={r} ex={findAppraisalFor(appraisals,r)} onClick={()=>setSelReq(r)}/>)}
         </div>
       </div>
@@ -5177,7 +5190,12 @@ function GoalSetting({ user, users=[], goals=[], setGoals }) {
   };
 
   if(isP) {
-    const staffList = users.filter(u=>u.role!=="partner");
+    const staffList = users.filter(u => {
+      if(u.role==="partner") return false;
+      const hasApplicableQuarter = quartersForFY.some(q => !isStaffInactiveForQuarter(u, fy, q) && !isGraceExcludedQuarter(fy, q, effectiveJoinDate(u)));
+      if(hasApplicableQuarter) return true;
+      return goals.some(g=>g.fy===fy && g.staffId===u.id); // no quarter left this FY, but keep if a record exists (historical)
+    });
     if(!selStaff) {
       return (
         <div>
@@ -5185,7 +5203,7 @@ function GoalSetting({ user, users=[], goals=[], setGoals }) {
           <p className="ts tsl mb8">Staff</p>
           <div className="g3">
             {staffList.map(u=>(
-              <div key={u.id} className="card" style={{cursor:"pointer"}} onClick={()=>setSelStaff(u.id)}>
+              <div key={u.id} className="card" style={{cursor:"pointer",opacity:u.active===false?.55:1}} onClick={()=>setSelStaff(u.id)}>
                 <div className="fw6">{u.name}{u.active===false&&<span className="bdg bcl" style={{marginLeft:8}}>Inactive</span>}</div>
                 <div className="tx tsl mt4">{u.role}</div>
               </div>
@@ -5200,8 +5218,8 @@ function GoalSetting({ user, users=[], goals=[], setGoals }) {
       <div>
         <button className="btn bgh bsm mb16" onClick={()=>setSelStaff(null)}><I n="arrowleft" s={13}/>All staff</button>
         <FYSelector fy={fy} setFy={setFy} options={fyList}/>
-        <p className="card-title mb16">{u?.name}</p>
-        {renderStaffPage(selStaff)}
+        <p className="card-title mb16">{u?.name}{u?.active===false&&<span className="bdg bcl" style={{marginLeft:8}}>Inactive</span>}</p>
+        <div style={{opacity:u?.active===false?.7:1}}>{renderStaffPage(selStaff)}</div>
       </div>
     );
   }
