@@ -3751,8 +3751,17 @@ function Leave({ user, users=[], leaves=[], setLeaves, tss=[] }) {
     const moStr = reportMonth;
 
     // Staff = interns and managers only
+    // Sort by category (manager before intern), then by date of joining ascending
+    const roleOrder = {manager:0,intern:1};
     const staff = users.filter(u=>u.active&&["intern","manager"].includes(u.role))
-      .sort((a,b)=>a.role.localeCompare(b.role)||a.name.localeCompare(b.name));
+      .sort((a,b)=>{
+        const ro = (roleOrder[a.role]??99)-(roleOrder[b.role]??99);
+        if(ro!==0) return ro;
+        const da = a.dateOfJoining||"9999-99-99";
+        const db = b.dateOfJoining||"9999-99-99";
+        if(da!==db) return da<db?-1:1;
+        return a.name.localeCompare(b.name);
+      });
 
     // Get approved leaves for the month
     const moStart = `${moStr}-01`;
@@ -3792,10 +3801,10 @@ function Leave({ user, users=[], leaves=[], setLeaves, tss=[] }) {
     });
 
     // Build rows
-    const headerRow1 = ["Staff Name","Role",...ordinals];
+    const headerRow1 = ["Staff Name","Category","Date of Joining",...ordinals];
     const dataRows = staff.map(u=>{
       const marks = Array.from({length:daysInMo},(_,i)=>getMark(u.id,i+1));
-      return [u.name, u.role.charAt(0).toUpperCase()+u.role.slice(1), ...marks];
+      return [u.name, u.role.charAt(0).toUpperCase()+u.role.slice(1), u.dateOfJoining?fmtDate(u.dateOfJoining):"—", ...marks];
     });
 
     // Summary row — count PL, SL, HPL, HSL per person
@@ -3806,7 +3815,7 @@ function Leave({ user, users=[], leaves=[], setLeaves, tss=[] }) {
       const hpl=marks.filter(m=>m==="HPL").length;
       const hsl=marks.filter(m=>m==="HSL").length;
       const absent=marks.filter(m=>m==="A").length;
-      return [u.name, u.role.charAt(0).toUpperCase()+u.role.slice(1), pl, sl, hpl, hsl, absent];
+      return [u.name, u.role.charAt(0).toUpperCase()+u.role.slice(1), u.dateOfJoining?fmtDate(u.dateOfJoining):"—", pl, sl, hpl, hsl, absent];
     });
 
     // Legend
@@ -3822,7 +3831,7 @@ function Leave({ user, users=[], leaves=[], setLeaves, tss=[] }) {
       ...dataRows,
       [],
       ["SUMMARY"],
-      ["Staff Name","Role","PL Days","SL Days","Half-day PL","Half-day SL","Absent"],
+      ["Staff Name","Category","Date of Joining","PL Days","SL Days","Half-day PL","Half-day SL","Absent"],
       ...summaryRows,
       [],
       ...legend,
