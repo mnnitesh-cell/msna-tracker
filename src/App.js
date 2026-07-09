@@ -5015,9 +5015,11 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
 
   const rec = record || blankGoalRecord(fy, quarter, staffId);
   const goalLocked = rec.goalStatus==="submitted";
-  const goalEditable = isPartnerViewer || (isSelf && (!goalLocked || rec.goalEditRequestStatus==="approved"));
   const assessLocked = rec.assessStatus==="submitted";
-  const assessEditable = isPartnerViewer || (isSelf && (!assessLocked || rec.assessEditRequestStatus==="approved"));
+  const [goalOverride, setGoalOverride] = useState(false);
+  const [assessOverride, setAssessOverride] = useState(false);
+  const goalEditable = (isSelf && (!goalLocked || rec.goalEditRequestStatus==="approved")) || (isPartnerViewer && goalLocked && goalOverride);
+  const assessEditable = (isSelf && (!assessLocked || rec.assessEditRequestStatus==="approved")) || (isPartnerViewer && assessLocked && assessOverride);
 
   const [goals, setGoals] = useState(rec.goals);
   const [assess, setAssess] = useState(rec.assess);
@@ -5050,6 +5052,7 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
       next.goalEditRequestStatus = "used";
     }
     onSave(next);
+    setGoalOverride(false);
   };
   const requestGoalEdit  = () => onSave({ ...rec, goalEditRequestStatus:"requested", goalEditRequestedAt:new Date().toISOString(), goalEditRequestNote:goalEditNote });
   const approveGoalEdit  = () => onSave({ ...rec, goalEditRequestStatus:"approved", goalEditApprovedBy:viewer.id, goalEditApprovedAt:new Date().toISOString() });
@@ -5067,6 +5070,7 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
       next.assessEditRequestStatus = "used";
     }
     onSave(next);
+    setAssessOverride(false);
   };
   const requestAssessEdit = () => onSave({ ...rec, assessEditRequestStatus:"requested", assessEditRequestedAt:new Date().toISOString(), assessEditRequestNote:assessEditNote });
   const approveAssessEdit = () => onSave({ ...rec, assessEditRequestStatus:"approved", assessEditApprovedBy:viewer.id, assessEditApprovedAt:new Date().toISOString() });
@@ -5086,7 +5090,11 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
       )}
       {rec.goalEditRequestStatus==="requested" && isSelf && <div className="al al-w"><I n="alert" s={16}/><div>Edit request sent — waiting for a partner to approve.</div></div>}
       {rec.goalFinalizedBy && <div className="al al-i"><I n="info" s={16}/><div>Finalized by {users.find(u=>u.id===rec.goalFinalizedBy)?.name}. {isPartnerViewer?"Earlier version kept in history (partner-visible only).":""}</div></div>}
+      {isPartnerViewer && goalLocked && !goalOverride && (
+        <div className="al al-i"><I n="info" s={16}/><div>Submitted by {users.find(u=>u.id===rec.staffId)?.name}. <button className="btn bgh bxs" style={{marginLeft:8}} onClick={()=>setGoalOverride(true)}>Override & edit</button></div></div>
+      )}
 
+      {isPartnerViewer && !goalLocked && <p className="tx tsl mb8">Waiting for {users.find(u=>u.id===rec.staffId)?.name} to set and submit these goals.</p>}
       <div className="tw">
         <table>
           <thead><tr><th style={{width:30}}>#</th><th>Goal</th><th>Steps to achieve it</th></tr></thead>
@@ -5132,6 +5140,11 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
             </div></div>
           )}
           {rec.assessEditRequestStatus==="requested" && isSelf && <div className="al al-w"><I n="alert" s={16}/><div>Edit request sent — waiting for a partner to approve.</div></div>}
+          {rec.assessFinalizedBy && <div className="al al-i"><I n="info" s={16}/><div>Finalized by {users.find(u=>u.id===rec.assessFinalizedBy)?.name}. {isPartnerViewer?"Earlier version kept in history (partner-visible only).":""}</div></div>}
+          {isPartnerViewer && assessLocked && !assessOverride && (
+            <div className="al al-i"><I n="info" s={16}/><div>Submitted by {users.find(u=>u.id===rec.staffId)?.name}. <button className="btn bgh bxs" style={{marginLeft:8}} onClick={()=>setAssessOverride(true)}>Override & edit</button></div></div>
+          )}
+          {isPartnerViewer && !assessLocked && <p className="tx tsl mb8">Waiting for {users.find(u=>u.id===rec.staffId)?.name} to complete their self-assessment.</p>}
 
           {goals.map(g=>{
             const a = assess.find(x=>x.sl===g.sl) || {sl:g.sl,status:"",remark:""};
