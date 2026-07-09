@@ -214,6 +214,7 @@ function getRequiredAppraisals(users, projects, tss) {
       const fy = fyOfDate(projTs.reduce((a,b)=>a.date<b.date?a:b).date);
       staffBooked.forEach(uid => {
         const u = users.find(x=>x.id===uid); if(!u) return;
+        if(u.role==="partner") return; // partners are never appraised, regardless of project assignment arrays
         if(managers.includes(uid)) {
           upsert(`fx-mgr-${p.id}-${uid}`, { type:"fixed", fy, projectId:p.id, staffId:uid, appraiserRole:"partner", eligibleAppraisers:partners, primaryAppraiser:p.assignedPartnerId }, p.clientName);
         } else {
@@ -229,6 +230,7 @@ function getRequiredAppraisals(users, projects, tss) {
         const staffInQ = [...new Set(list.map(t=>t.userId))];
         staffInQ.forEach(uid => {
           const u = users.find(x=>x.id===uid); if(!u) return;
+          if(u.role==="partner") return; // partners are never appraised, regardless of project assignment arrays
           if(isStaffInactiveForQuarter(u, fy, quarter)) return;
           if(isGraceExcludedQuarter(fy, quarter, effectiveJoinDate(u))) return;
           if(managers.includes(uid)) {
