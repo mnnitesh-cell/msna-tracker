@@ -285,6 +285,24 @@ function blankGoalRecord(fy, quarter, staffId) {
     assess:[1,2,3].map(sl=>({sl,status:"",remark:""})), assessStatus:null,
   };
 }
+// The two most recent quarters (of the in-scheme ones) that have actually started, for a given FY —
+// used to show a "previous quarter + current quarter" status summary on the staff card.
+function twoRecentQuartersForFY(fy) {
+  const today = todayStr();
+  return GOAL_QUARTER_ORDER.filter(q => isQuarterInGoalScheme(fy,q) && quarterDateRange(fy,q)[0]<=today).slice(-2);
+}
+// Combined goal + self-assessment status for one quarter, for the staff card summary.
+function goalQuarterStatus(fy, quarter, staffId, goals, users) {
+  const u = users.find(x=>x.id===staffId);
+  if(isStaffInactiveForQuarter(u, fy, quarter) || isGraceExcludedQuarter(fy, quarter, effectiveJoinDate(u))) return { label:"Not applicable", cls:"bcl" };
+  const rec = goals.find(g=>g.fy===fy&&g.quarter===quarter&&g.staffId===staffId);
+  const [, qEnd] = quarterDateRange(fy, quarter);
+  const ended = todayStr() > qEnd;
+  if(!rec || rec.goalStatus!=="submitted") return { label:"Goals pending", cls:"brs" };
+  if(!ended) return { label:"Goals submitted", cls:"bac" };
+  if(rec.assessStatus!=="submitted") return { label:"Self-assessment pending", cls:"brs" };
+  return { label:"Complete", cls:"bac" };
+}
 // Effective join date for grace-period purposes: a reactivation counts as a fresh join.
 function effectiveJoinDate(u) { return u?.reactivatedFrom || u?.dateOfJoining || null; }
 // Someone joining in the final 14 days of a quarter is excluded from that one quarter (retainer appraisal + goal setting only).
@@ -5224,12 +5242,28 @@ function GoalSetting({ user, users=[], goals=[], setGoals }) {
           <FYSelector fy={fy} setFy={setFy} options={fyList}/>
           <p className="ts tsl mb8">Staff</p>
           <div className="g3">
-            {staffList.map(u=>(
-              <div key={u.id} className="card" style={{cursor:"pointer",opacity:u.active===false?.55:1}} onClick={()=>setSelStaff(u.id)}>
-                <div className="fw6">{u.name}{u.active===false&&<span className="bdg bcl" style={{marginLeft:8}}>Inactive</span>}</div>
-                <div className="tx tsl mt4">{u.role}</div>
-              </div>
-            ))}
+            {staffList.map(u=>{
+              const recentQs = twoRecentQuartersForFY(fy);
+              return (
+                <div key={u.id} className="card" style={{cursor:"pointer",opacity:u.active===false?.55:1}} onClick={()=>setSelStaff(u.id)}>
+                  <div className="fw6">{u.name}{u.active===false&&<span className="bdg bcl" style={{marginLeft:8}}>Inactive</span>}</div>
+                  <div className="tx tsl mt4 mb8">{u.role}</div>
+                  {recentQs.length===0
+                    ? <div className="tx tsl">Not started yet</div>
+                    : <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                        {recentQs.map(q => {
+                          const st = goalQuarterStatus(fy, q, u.id, goals, users);
+                          return (
+                            <div key={q} className="fxb">
+                              <span className="tx tsl" style={{fontSize:12}}>{q}</span>
+                              <span className={`bdg ${st.cls}`}>{st.label}</span>
+                            </div>
+                          );
+                        })}
+                      </div>}
+                </div>
+              );
+            })}
             {staffList.length===0 && <div className="es">No staff yet.</div>}
           </div>
         </div>
