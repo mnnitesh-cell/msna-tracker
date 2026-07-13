@@ -291,16 +291,33 @@ function twoRecentQuartersForFY(fy) {
   const today = todayStr();
   return GOAL_QUARTER_ORDER.filter(q => isQuarterInGoalScheme(fy,q) && quarterDateRange(fy,q)[0]<=today).slice(-2);
 }
+// Per-goal/self-assessment-entry review status set by the partner; defaults to "pending" until reviewed.
+function itemReviewStatus(item) { return item?.reviewStatus || "pending"; }
+// Overall status for a set of 3 items once that phase has been submitted at least once.
+function phaseReviewStatus(items, phaseSubmitted) {
+  if(!phaseSubmitted) return null;
+  if((items||[]).some(i=>itemReviewStatus(i)==="rejected")) return "resubmission";
+  if((items||[]).every(i=>itemReviewStatus(i)==="approved")) return "approved";
+  return "submitted";
+}
 // Combined goal + self-assessment status for one quarter, for the staff card summary.
 function goalQuarterStatus(fy, quarter, staffId, goals, users) {
   const u = users.find(x=>x.id===staffId);
   if(isStaffInactiveForQuarter(u, fy, quarter) || isGraceExcludedQuarter(fy, quarter, effectiveJoinDate(u))) return { label:"Not applicable", cls:"bcl" };
-  const rec = goals.find(g=>g.fy===fy&&g.quarter===quarter&&g.staffId===staffId);
+  const rec = goals.find(g=>g.fy===fy&&g.quarter===quarter&&g.staffId===staffId) || blankGoalRecord(fy,quarter,staffId);
+  const goalSubmitted = rec.goalStatus==="submitted";
+  if(!goalSubmitted) return { label:"Goals pending", cls:"brs" };
+  const goalPhase = phaseReviewStatus(rec.goals, true);
+  if(goalPhase==="resubmission") return { label:"Goals: resubmission needed", cls:"bp2" };
+  if(goalPhase==="submitted") return { label:"Goals: pending review", cls:"brs" };
   const [, qEnd] = quarterDateRange(fy, quarter);
   const ended = todayStr() > qEnd;
-  if(!rec || rec.goalStatus!=="submitted") return { label:"Goals pending", cls:"brs" };
-  if(!ended) return { label:"Goals submitted", cls:"bac" };
-  if(rec.assessStatus!=="submitted") return { label:"Self-assessment pending", cls:"brs" };
+  if(!ended) return { label:"Goals approved", cls:"bac" };
+  const assessSubmitted = rec.assessStatus==="submitted";
+  if(!assessSubmitted) return { label:"Self-assessment pending", cls:"brs" };
+  const assessPhase = phaseReviewStatus(rec.assess, true);
+  if(assessPhase==="resubmission") return { label:"Assessment: resubmission needed", cls:"bp2" };
+  if(assessPhase==="submitted") return { label:"Assessment: pending review", cls:"brs" };
   return { label:"Complete", cls:"bac" };
 }
 // Effective join date for grace-period purposes: a reactivation counts as a fresh join.
@@ -5034,20 +5051,17 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
   const isSelf = viewer.id===staffId;
 
   const rec = record || blankGoalRecord(fy, quarter, staffId);
-  const goalLocked = rec.goalStatus==="submitted";
-  const assessLocked = rec.assessStatus==="submitted";
-  const [goalOverride, setGoalOverride] = useState(false);
-  const [assessOverride, setAssessOverride] = useState(false);
-  const goalEditable = (isSelf && (!goalLocked || rec.goalEditRequestStatus==="approved")) || (isPartnerViewer && goalLocked && goalOverride);
-  const assessEditable = (isSelf && (!assessLocked || rec.assessEditRequestStatus==="approved")) || (isPartnerViewer && assessLocked && assessOverride);
+  const goalSubmitted = rec.goalStatus==="submitted";
+  const assessSubmitted = rec.assessStatus==="submitted";
+  const goalPhase = phaseReviewStatus(rec.goals, goalSubmitted);     // null | "submitted" | "resubmission" | "approved"
+  const assessPhase = phaseReviewStatus(rec.assess, assessSubmitted);
 
   const [goals, setGoals] = useState(rec.goals);
   const [assess, setAssess] = useState(rec.assess);
-  const [goalEditNote, setGoalEditNote] = useState("");
-  const [assessEditNote, setAssessEditNote] = useState("");
+  const [goalRejectNotes, setGoalRejectNotes] = useState({});
+  const [assessRejectNotes, setAssessRejectNotes] = useState({});
 
-  useEffect(()=>{ setGoals(rec.goals); }, [rec.id, rec.goalStatus, rec.goalFinalizedAt]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(()=>{ setAssess(rec.assess); }, [rec.id, rec.assessStatus, rec.assessFinalizedAt]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(()=>{ setGoals(rec.goals); setAssess(rec.assess); }, [record]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if(!started) {
     return (
@@ -5057,93 +5071,124 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
     );
   }
 
-  const saveGoals = (status) => {
-    if(status==="submitted") {
-      if(goals.some(g=>!g.desc.trim()||!g.steps.trim())) { alert("All 3 goals need a description and steps before submitting."); return; }
-    }
-    let next = { ...rec, goals, goalStatus: status };
-    if(status==="submitted" && rec.goalStatus!=="submitted") next.goalSubmittedAt = new Date().toISOString();
-    if(isPartnerViewer && goalLocked) {
-      next.goalHistory = [...(rec.goalHistory||[]), { goals:rec.goals, replacedAt:new Date().toISOString() }];
-      next.goalFinalizedBy = viewer.id; next.goalFinalizedAt = new Date().toISOString(); next.goalStatus = "submitted";
-    }
-    if(isSelf && rec.goalEditRequestStatus==="approved") {
-      next.goalHistory = [...(rec.goalHistory||[]), { goals:rec.goals, replacedAt:new Date().toISOString() }];
-      next.goalEditRequestStatus = "used";
-    }
-    onSave(next);
-    setGoalOverride(false);
+  const submitInitialGoals = (status) => {
+    if(status==="submitted" && goals.some(g=>!g.desc.trim()||!g.steps.trim())) { alert("All 3 goals need a description and steps before submitting."); return; }
+    const nextGoals = status==="submitted" ? goals.map(g=>({...g, reviewStatus:"pending", reviewRemark:null})) : goals;
+    onSave({ ...rec, goals:nextGoals, goalStatus:status, goalSubmittedAt: status==="submitted" ? new Date().toISOString() : rec.goalSubmittedAt });
   };
-  const requestGoalEdit  = () => onSave({ ...rec, goalEditRequestStatus:"requested", goalEditRequestedAt:new Date().toISOString(), goalEditRequestNote:goalEditNote });
-  const approveGoalEdit  = () => onSave({ ...rec, goalEditRequestStatus:"approved", goalEditApprovedBy:viewer.id, goalEditApprovedAt:new Date().toISOString() });
-  const denyGoalEdit     = () => onSave({ ...rec, goalEditRequestStatus:"denied" });
+  const resubmitGoal = (sl) => {
+    const item = goals.find(g=>g.sl===sl);
+    if(!item.desc.trim()||!item.steps.trim()) { alert("This goal needs a description and steps before resubmitting."); return; }
+    onSave({ ...rec, goals: rec.goals.map(g=>g.sl===sl ? { ...item, reviewStatus:"pending", reviewRemark:null } : g) });
+  };
+  const approveGoal = (sl) => onSave({ ...rec, goals: rec.goals.map(g=>g.sl===sl ? { ...g, reviewStatus:"approved", reviewedBy:viewer.id, reviewedAt:new Date().toISOString(), reviewRemark:null } : g) });
+  const rejectGoal = (sl) => {
+    const note = (goalRejectNotes[sl]||"").trim();
+    if(!note) { alert("A remark is required when rejecting a goal."); return; }
+    onSave({ ...rec, goals: rec.goals.map(g=>g.sl===sl ? { ...g, reviewStatus:"rejected", reviewRemark:note, reviewedBy:viewer.id, reviewedAt:new Date().toISOString() } : g) });
+    setGoalRejectNotes(prev=>({...prev,[sl]:""}));
+  };
 
-  const saveAssess = (status) => {
-    let next = { ...rec, assess, assessStatus: status };
-    if(status==="submitted" && rec.assessStatus!=="submitted") next.assessSubmittedAt = new Date().toISOString();
-    if(isPartnerViewer && assessLocked) {
-      next.assessHistory = [...(rec.assessHistory||[]), { assess:rec.assess, replacedAt:new Date().toISOString() }];
-      next.assessFinalizedBy = viewer.id; next.assessFinalizedAt = new Date().toISOString(); next.assessStatus = "submitted";
-    }
-    if(isSelf && rec.assessEditRequestStatus==="approved") {
-      next.assessHistory = [...(rec.assessHistory||[]), { assess:rec.assess, replacedAt:new Date().toISOString() }];
-      next.assessEditRequestStatus = "used";
-    }
-    onSave(next);
-    setAssessOverride(false);
+  const submitInitialAssess = () => {
+    if(assess.some(a=>!a.status)) { alert("Please select a status for each goal before submitting your self-assessment."); return; }
+    onSave({ ...rec, assess: assess.map(a=>({...a, reviewStatus:"pending", reviewRemark:null})), assessStatus:"submitted", assessSubmittedAt:new Date().toISOString() });
   };
-  const requestAssessEdit = () => onSave({ ...rec, assessEditRequestStatus:"requested", assessEditRequestedAt:new Date().toISOString(), assessEditRequestNote:assessEditNote });
-  const approveAssessEdit = () => onSave({ ...rec, assessEditRequestStatus:"approved", assessEditApprovedBy:viewer.id, assessEditApprovedAt:new Date().toISOString() });
-  const denyAssessEdit    = () => onSave({ ...rec, assessEditRequestStatus:"denied" });
+  const resubmitAssess = (sl) => {
+    const item = assess.find(a=>a.sl===sl);
+    if(!item.status) { alert("Please select a status before resubmitting."); return; }
+    onSave({ ...rec, assess: rec.assess.map(a=>a.sl===sl ? { ...item, reviewStatus:"pending", reviewRemark:null } : a) });
+  };
+  const approveAssess = (sl) => onSave({ ...rec, assess: rec.assess.map(a=>a.sl===sl ? { ...a, reviewStatus:"approved", reviewedBy:viewer.id, reviewedAt:new Date().toISOString(), reviewRemark:null } : a) });
+  const rejectAssess = (sl) => {
+    const note = (assessRejectNotes[sl]||"").trim();
+    if(!note) { alert("A remark is required when rejecting a self-assessment entry."); return; }
+    onSave({ ...rec, assess: rec.assess.map(a=>a.sl===sl ? { ...a, reviewStatus:"rejected", reviewRemark:note, reviewedBy:viewer.id, reviewedAt:new Date().toISOString() } : a) });
+    setAssessRejectNotes(prev=>({...prev,[sl]:""}));
+  };
+
+  const goalBadge = !goalSubmitted ? {cls:"brs",label:"Goals in draft"} : goalPhase==="resubmission" ? {cls:"bp2",label:"Resubmission needed"} : goalPhase==="submitted" ? {cls:"brs",label:"Pending review"} : {cls:"bac",label:"Goals approved"};
+  const assessBadge = !assessSubmitted ? {cls:"brs",label:"Not submitted"} : assessPhase==="resubmission" ? {cls:"bp2",label:"Resubmission needed"} : assessPhase==="submitted" ? {cls:"brs",label:"Pending review"} : {cls:"bac",label:"Approved"};
 
   return (
     <div className="card">
       <div className="fxb mb16">
         <span className="fw6">{quarter} · {quarterLabel(fy,quarter)}</span>
-        <span className={`bdg ${goalLocked?"bac":"brs"}`}>{goalLocked?"Goals locked":"Goals in draft"}</span>
+        <span className={`bdg ${goalBadge.cls}`}>{goalBadge.label}</span>
       </div>
 
-      {rec.goalEditRequestStatus==="requested" && isPartnerViewer && (
-        <div className="al al-w"><I n="alert" s={16}/><div>{users.find(u=>u.id===rec.staffId)?.name} requested to edit locked goals{rec.goalEditRequestNote?`: "${rec.goalEditRequestNote}"`:"."}
-          <div style={{marginTop:8,display:"flex",gap:8}}><button className="btn bsc bxs" onClick={approveGoalEdit}>Approve</button><button className="btn bgh bxs" onClick={denyGoalEdit}>Deny</button></div>
-        </div></div>
-      )}
-      {rec.goalEditRequestStatus==="requested" && isSelf && <div className="al al-w"><I n="alert" s={16}/><div>Edit request sent — waiting for a partner to approve.</div></div>}
-      {rec.goalFinalizedBy && <div className="al al-i"><I n="info" s={16}/><div>Finalized by {users.find(u=>u.id===rec.goalFinalizedBy)?.name}. {isPartnerViewer?"Earlier version kept in history (partner-visible only).":""}</div></div>}
-      {isPartnerViewer && goalLocked && !goalOverride && (
-        <div className="al al-i"><I n="info" s={16}/><div>Submitted by {users.find(u=>u.id===rec.staffId)?.name}. <button className="btn bgh bxs" style={{marginLeft:8}} onClick={()=>setGoalOverride(true)}>Override & edit</button></div></div>
-      )}
+      {isPartnerViewer && !goalSubmitted && <p className="tx tsl mb8">Waiting for {users.find(u=>u.id===rec.staffId)?.name} to set and submit these goals.</p>}
 
-      {isPartnerViewer && !goalLocked && <p className="tx tsl mb8">Waiting for {users.find(u=>u.id===rec.staffId)?.name} to set and submit these goals.</p>}
-      <div className="tw">
-        <table>
-          <thead><tr><th style={{width:30}}>#</th><th>Goal</th><th>Steps to achieve it</th></tr></thead>
-          <tbody>
-            {goals.map(g=>(
-              <tr key={g.sl}>
-                <td style={{verticalAlign:"top"}}>{g.sl}</td>
-                <td>{goalEditable
-                  ? <textarea className="fta" style={{minHeight:44}} value={g.desc} onChange={e=>setGoals(prev=>prev.map(x=>x.sl===g.sl?{...x,desc:e.target.value}:x))}/>
-                  : <div style={{padding:"6px 0"}}>{g.desc||"—"}</div>}</td>
-                <td>{goalEditable
-                  ? <textarea className="fta" style={{minHeight:44}} value={g.steps} onChange={e=>setGoals(prev=>prev.map(x=>x.sl===g.sl?{...x,steps:e.target.value}:x))}/>
-                  : <div style={{padding:"6px 0"}}>{g.steps||"—"}</div>}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {goalEditable && (
-        <div className="md-actions" style={{justifyContent:"flex-start",marginTop:12}}>
-          <button className="btn bgh bsm" onClick={()=>saveGoals("draft")}>Save draft</button>
-          <button className="btn bp bsm" onClick={()=>saveGoals("submitted")}>{isPartnerViewer&&goalLocked?"Save & finalize":"Submit & lock"}</button>
+      {!goalSubmitted && (
+        <div className="tw">
+          <table>
+            <thead><tr><th style={{width:30}}>#</th><th>Goal</th><th>Steps to achieve it</th></tr></thead>
+            <tbody>
+              {goals.map(g=>(
+                <tr key={g.sl}>
+                  <td style={{verticalAlign:"top"}}>{g.sl}</td>
+                  <td>{isSelf
+                    ? <textarea className="fta" style={{minHeight:44}} value={g.desc} onChange={e=>setGoals(prev=>prev.map(x=>x.sl===g.sl?{...x,desc:e.target.value}:x))}/>
+                    : <div style={{padding:"6px 0"}}>{g.desc||"—"}</div>}</td>
+                  <td>{isSelf
+                    ? <textarea className="fta" style={{minHeight:44}} value={g.steps} onChange={e=>setGoals(prev=>prev.map(x=>x.sl===g.sl?{...x,steps:e.target.value}:x))}/>
+                    : <div style={{padding:"6px 0"}}>{g.steps||"—"}</div>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
-      {!goalEditable && isSelf && goalLocked && !rec.goalEditRequestStatus && (
-        <div style={{marginTop:12}}>
-          <textarea className="fta" style={{minHeight:40}} placeholder="Reason for the edit request (optional)" value={goalEditNote} onChange={e=>setGoalEditNote(e.target.value)}/>
-          <button className="btn bgh bxs" style={{marginTop:6}} onClick={requestGoalEdit}><I n="edit" s={12}/>Request edit</button>
+      {isSelf && !goalSubmitted && (
+        <div className="md-actions" style={{justifyContent:"flex-start",marginTop:12}}>
+          <button className="btn bgh bsm" onClick={()=>submitInitialGoals("draft")}>Save draft</button>
+          <button className="btn bp bsm" onClick={()=>submitInitialGoals("submitted")}>Submit & lock</button>
+        </div>
+      )}
+
+      {goalSubmitted && (
+        <div style={{display:"flex",flexDirection:"column",gap:10}}>
+          {goals.map(g=>{
+            const persisted = rec.goals.find(x=>x.sl===g.sl) || g;
+            const status = persisted.reviewStatus || "pending";
+            const rowEditable = isSelf && status==="rejected";
+            return (
+              <div key={g.sl} style={{padding:"10px 0",borderBottom:"1px solid var(--border)"}}>
+                <div className="ts fw6">Goal {g.sl}</div>
+                {rowEditable ? (
+                  <>
+                    <textarea className="fta" style={{marginTop:6,minHeight:44}} value={g.desc} onChange={e=>setGoals(prev=>prev.map(x=>x.sl===g.sl?{...x,desc:e.target.value}:x))} placeholder="Goal description"/>
+                    <textarea className="fta" style={{marginTop:6,minHeight:44}} value={g.steps} onChange={e=>setGoals(prev=>prev.map(x=>x.sl===g.sl?{...x,steps:e.target.value}:x))} placeholder="Steps to achieve it"/>
+                  </>
+                ) : (
+                  <>
+                    <div className="tx" style={{marginTop:4}}>{g.desc||"—"}</div>
+                    <div className="tx tsl" style={{marginTop:2}}>{g.steps||"—"}</div>
+                  </>
+                )}
+                <div style={{marginTop:8}}>
+                  {status==="approved" && <span className="bdg bac">Approved</span>}
+                  {status==="rejected" && (
+                    <div>
+                      <span className="bdg bp2">Rejected</span>
+                      <span className="tx tsl" style={{marginLeft:8}}>{persisted.reviewRemark}</span>
+                      {isSelf && <div style={{marginTop:8}}><button className="btn bp bxs" onClick={()=>resubmitGoal(g.sl)}>Resubmit</button></div>}
+                    </div>
+                  )}
+                  {status==="pending" && isSelf && <span className="tx tsl">Awaiting partner review</span>}
+                  {status==="pending" && isPartnerViewer && (
+                    <div>
+                      <div style={{display:"flex",gap:8,marginBottom:6}}>
+                        <button className="btn bsc bxs" onClick={()=>approveGoal(g.sl)}>Approve</button>
+                      </div>
+                      <textarea className="fta" style={{minHeight:34}} placeholder="Remark (required if rejecting)"
+                        value={goalRejectNotes[g.sl]||""} onChange={e=>setGoalRejectNotes(prev=>({...prev,[g.sl]:e.target.value}))}/>
+                      <button className="btn bd bxs" style={{marginTop:6}} onClick={()=>rejectGoal(g.sl)}>Reject</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -5152,52 +5197,62 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
         <div style={{marginTop:18,paddingTop:14,borderTop:"1px solid var(--border)"}}>
           <div className="fxb mb8">
             <span className="fw6" style={{fontSize:13}}>Self-assessment</span>
-            <span className={`bdg ${assessLocked?"bac":"brs"}`}>{assessLocked?"Locked":"Not submitted"}</span>
+            <span className={`bdg ${assessBadge.cls}`}>{assessBadge.label}</span>
           </div>
-          {rec.assessEditRequestStatus==="requested" && isPartnerViewer && (
-            <div className="al al-w"><I n="alert" s={16}/><div>{users.find(u=>u.id===rec.staffId)?.name} requested to edit the self-assessment{rec.assessEditRequestNote?`: "${rec.assessEditRequestNote}"`:"."}
-              <div style={{marginTop:8,display:"flex",gap:8}}><button className="btn bsc bxs" onClick={approveAssessEdit}>Approve</button><button className="btn bgh bxs" onClick={denyAssessEdit}>Deny</button></div>
-            </div></div>
-          )}
-          {rec.assessEditRequestStatus==="requested" && isSelf && <div className="al al-w"><I n="alert" s={16}/><div>Edit request sent — waiting for a partner to approve.</div></div>}
-          {rec.assessFinalizedBy && <div className="al al-i"><I n="info" s={16}/><div>Finalized by {users.find(u=>u.id===rec.assessFinalizedBy)?.name}. {isPartnerViewer?"Earlier version kept in history (partner-visible only).":""}</div></div>}
-          {isPartnerViewer && assessLocked && !assessOverride && (
-            <div className="al al-i"><I n="info" s={16}/><div>Submitted by {users.find(u=>u.id===rec.staffId)?.name}. <button className="btn bgh bxs" style={{marginLeft:8}} onClick={()=>setAssessOverride(true)}>Override & edit</button></div></div>
-          )}
-          {isPartnerViewer && !assessLocked && <p className="tx tsl mb8">Waiting for {users.find(u=>u.id===rec.staffId)?.name} to complete their self-assessment.</p>}
+          {isPartnerViewer && !assessSubmitted && <p className="tx tsl mb8">Waiting for {users.find(u=>u.id===rec.staffId)?.name} to complete their self-assessment.</p>}
 
           {goals.map(g=>{
             const a = assess.find(x=>x.sl===g.sl) || {sl:g.sl,status:"",remark:""};
+            const persistedA = rec.assess.find(x=>x.sl===g.sl) || a;
+            const aStatus = assessSubmitted ? (persistedA.reviewStatus || "pending") : null;
+            const rowEditable = !assessSubmitted || (isSelf && aStatus==="rejected");
             return (
               <div key={g.sl} style={{padding:"10px 0",borderBottom:"1px solid var(--border)"}}>
                 <div className="ts fw6">{g.sl}. {g.desc||"—"}</div>
                 <div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
                   {["Completed","WIP","Zero progress"].map(s=>(
-                    <button key={s} type="button" disabled={!assessEditable} className={`btn bxs ${a.status===s?"bp":"bgh"}`}
+                    <button key={s} type="button" disabled={!rowEditable} className={`btn bxs ${a.status===s?"bp":"bgh"}`}
                       onClick={()=>setAssess(prev=>{
                         const exists = prev.find(x=>x.sl===g.sl);
                         return exists ? prev.map(x=>x.sl===g.sl?{...x,status:s}:x) : [...prev,{sl:g.sl,status:s,remark:""}];
                       })}>{s}</button>
                   ))}
                 </div>
-                <textarea className="fta" style={{marginTop:8,minHeight:36}} disabled={!assessEditable} placeholder="Remark (optional)"
+                <textarea className="fta" style={{marginTop:8,minHeight:36}} disabled={!rowEditable} placeholder="Remark (optional)"
                   value={a.remark||""} onChange={e=>setAssess(prev=>{
                     const exists = prev.find(x=>x.sl===g.sl);
                     return exists ? prev.map(x=>x.sl===g.sl?{...x,remark:e.target.value}:x) : [...prev,{sl:g.sl,status:"",remark:e.target.value}];
                   })}/>
+                {assessSubmitted && (
+                  <div style={{marginTop:8}}>
+                    {aStatus==="approved" && <span className="bdg bac">Approved</span>}
+                    {aStatus==="rejected" && (
+                      <div>
+                        <span className="bdg bp2">Rejected</span>
+                        <span className="tx tsl" style={{marginLeft:8}}>{persistedA.reviewRemark}</span>
+                        {isSelf && <div style={{marginTop:8}}><button className="btn bp bxs" onClick={()=>resubmitAssess(g.sl)}>Resubmit</button></div>}
+                      </div>
+                    )}
+                    {aStatus==="pending" && isSelf && <span className="tx tsl">Awaiting partner review</span>}
+                    {aStatus==="pending" && isPartnerViewer && (
+                      <div>
+                        <div style={{display:"flex",gap:8,marginBottom:6}}>
+                          <button className="btn bsc bxs" onClick={()=>approveAssess(g.sl)}>Approve</button>
+                        </div>
+                        <textarea className="fta" style={{minHeight:34}} placeholder="Remark (required if rejecting)"
+                          value={assessRejectNotes[g.sl]||""} onChange={e=>setAssessRejectNotes(prev=>({...prev,[g.sl]:e.target.value}))}/>
+                        <button className="btn bd bxs" style={{marginTop:6}} onClick={()=>rejectAssess(g.sl)}>Reject</button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}
 
-          {assessEditable && (
+          {isSelf && !assessSubmitted && (
             <div className="md-actions" style={{justifyContent:"flex-start",marginTop:12}}>
-              <button className="btn bp bsm" onClick={()=>saveAssess("submitted")}>{isPartnerViewer&&assessLocked?"Save & finalize":"Submit self-assessment"}</button>
-            </div>
-          )}
-          {!assessEditable && isSelf && assessLocked && !rec.assessEditRequestStatus && (
-            <div style={{marginTop:12}}>
-              <textarea className="fta" style={{minHeight:40}} placeholder="Reason for the edit request (optional)" value={assessEditNote} onChange={e=>setAssessEditNote(e.target.value)}/>
-              <button className="btn bgh bxs" style={{marginTop:6}} onClick={requestAssessEdit}><I n="edit" s={12}/>Request edit</button>
+              <button className="btn bp bsm" onClick={submitInitialAssess}>Submit self-assessment</button>
             </div>
           )}
         </div>
@@ -5379,7 +5434,11 @@ export default function App() {
       if(today<s) return;
       const rec = goals.find(g=>g.fy===fy&&g.quarter===q&&g.staffId===currentUser.id);
       if(!rec || rec.goalStatus!=="submitted") { cnt++; return; }
-      if(today>e && rec.assessStatus!=="submitted") cnt++;
+      if(phaseReviewStatus(rec.goals,true)==="resubmission") { cnt++; return; }
+      if(today>e) {
+        if(rec.assessStatus!=="submitted") { cnt++; return; }
+        if(phaseReviewStatus(rec.assess,true)==="resubmission") cnt++;
+      }
     });
     return cnt;
   })() : 0;
