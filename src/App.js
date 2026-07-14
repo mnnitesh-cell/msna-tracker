@@ -5079,9 +5079,15 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
   const resubmitGoal = (sl) => {
     const item = goals.find(g=>g.sl===sl);
     if(!item.desc.trim()||!item.steps.trim()) { alert("This goal needs a description and steps before resubmitting."); return; }
-    onSave({ ...rec, goals: rec.goals.map(g=>g.sl===sl ? { ...item, reviewStatus:"pending", reviewRemark:null } : g) });
+    const persisted = rec.goals.find(g=>g.sl===sl);
+    const history = [...(persisted.reviewHistory||[]), { status:persisted.reviewStatus, remark:persisted.reviewRemark, reviewedBy:persisted.reviewedBy, reviewedAt:persisted.reviewedAt }];
+    onSave({ ...rec, goals: rec.goals.map(g=>g.sl===sl ? { ...item, reviewStatus:"pending", reviewRemark:null, reviewHistory:history } : g) });
   };
-  const approveGoal = (sl) => onSave({ ...rec, goals: rec.goals.map(g=>g.sl===sl ? { ...g, reviewStatus:"approved", reviewedBy:viewer.id, reviewedAt:new Date().toISOString(), reviewRemark:null } : g) });
+  const approveGoal = (sl) => {
+    const note = (goalRejectNotes[sl]||"").trim();
+    onSave({ ...rec, goals: rec.goals.map(g=>g.sl===sl ? { ...g, reviewStatus:"approved", reviewedBy:viewer.id, reviewedAt:new Date().toISOString(), reviewRemark:note||null } : g) });
+    setGoalRejectNotes(prev=>({...prev,[sl]:""}));
+  };
   const rejectGoal = (sl) => {
     const note = (goalRejectNotes[sl]||"").trim();
     if(!note) { alert("A remark is required when rejecting a goal."); return; }
@@ -5096,9 +5102,15 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
   const resubmitAssess = (sl) => {
     const item = assess.find(a=>a.sl===sl);
     if(!item.status) { alert("Please select a status before resubmitting."); return; }
-    onSave({ ...rec, assess: rec.assess.map(a=>a.sl===sl ? { ...item, reviewStatus:"pending", reviewRemark:null } : a) });
+    const persisted = rec.assess.find(a=>a.sl===sl);
+    const history = [...(persisted.reviewHistory||[]), { status:persisted.reviewStatus, remark:persisted.reviewRemark, reviewedBy:persisted.reviewedBy, reviewedAt:persisted.reviewedAt }];
+    onSave({ ...rec, assess: rec.assess.map(a=>a.sl===sl ? { ...item, reviewStatus:"pending", reviewRemark:null, reviewHistory:history } : a) });
   };
-  const approveAssess = (sl) => onSave({ ...rec, assess: rec.assess.map(a=>a.sl===sl ? { ...a, reviewStatus:"approved", reviewedBy:viewer.id, reviewedAt:new Date().toISOString(), reviewRemark:null } : a) });
+  const approveAssess = (sl) => {
+    const note = (assessRejectNotes[sl]||"").trim();
+    onSave({ ...rec, assess: rec.assess.map(a=>a.sl===sl ? { ...a, reviewStatus:"approved", reviewedBy:viewer.id, reviewedAt:new Date().toISOString(), reviewRemark:note||null } : a) });
+    setAssessRejectNotes(prev=>({...prev,[sl]:""}));
+  };
   const rejectAssess = (sl) => {
     const note = (assessRejectNotes[sl]||"").trim();
     if(!note) { alert("A remark is required when rejecting a self-assessment entry."); return; }
@@ -5166,7 +5178,12 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
                   </>
                 )}
                 <div style={{marginTop:8}}>
-                  {status==="approved" && <span className="bdg bac">Approved</span>}
+                  {status==="approved" && (
+                    <div>
+                      <span className="bdg bac">Approved</span>
+                      {persisted.reviewRemark && <span className="tx tsl" style={{marginLeft:8}}>{persisted.reviewRemark}</span>}
+                    </div>
+                  )}
                   {status==="rejected" && (
                     <div>
                       <span className="bdg bp2">Rejected</span>
@@ -5177,12 +5194,21 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
                   {status==="pending" && isSelf && <span className="tx tsl">Awaiting partner review</span>}
                   {status==="pending" && isPartnerViewer && (
                     <div>
-                      <div style={{display:"flex",gap:8,marginBottom:6}}>
-                        <button className="btn bsc bxs" onClick={()=>approveGoal(g.sl)}>Approve</button>
-                      </div>
-                      <textarea className="fta" style={{minHeight:34}} placeholder="Remark (required if rejecting)"
+                      <textarea className="fta" style={{minHeight:34}} placeholder="Remark — optional if approving, required if rejecting"
                         value={goalRejectNotes[g.sl]||""} onChange={e=>setGoalRejectNotes(prev=>({...prev,[g.sl]:e.target.value}))}/>
-                      <button className="btn bd bxs" style={{marginTop:6}} onClick={()=>rejectGoal(g.sl)}>Reject</button>
+                      <div style={{display:"flex",gap:8,marginTop:6}}>
+                        <button className="btn bsc bxs" onClick={()=>approveGoal(g.sl)}>Approve</button>
+                        <button className="btn bd bxs" onClick={()=>rejectGoal(g.sl)}>Reject</button>
+                      </div>
+                    </div>
+                  )}
+                  {persisted.reviewHistory?.length>0 && (
+                    <div style={{marginTop:8,paddingTop:8,borderTop:"1px solid var(--border)"}}>
+                      {persisted.reviewHistory.map((h,i)=>(
+                        <div key={i} className="tx tsl" style={{fontSize:12,marginTop:2}}>
+                          Previously {h.status} by {users.find(u=>u.id===h.reviewedBy)?.name||"—"}{h.remark?`: "${h.remark}"`:""}
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -5225,7 +5251,12 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
                   })}/>
                 {assessSubmitted && (
                   <div style={{marginTop:8}}>
-                    {aStatus==="approved" && <span className="bdg bac">Approved</span>}
+                    {aStatus==="approved" && (
+                      <div>
+                        <span className="bdg bac">Approved</span>
+                        {persistedA.reviewRemark && <span className="tx tsl" style={{marginLeft:8}}>{persistedA.reviewRemark}</span>}
+                      </div>
+                    )}
                     {aStatus==="rejected" && (
                       <div>
                         <span className="bdg bp2">Rejected</span>
@@ -5236,12 +5267,21 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
                     {aStatus==="pending" && isSelf && <span className="tx tsl">Awaiting partner review</span>}
                     {aStatus==="pending" && isPartnerViewer && (
                       <div>
-                        <div style={{display:"flex",gap:8,marginBottom:6}}>
-                          <button className="btn bsc bxs" onClick={()=>approveAssess(g.sl)}>Approve</button>
-                        </div>
-                        <textarea className="fta" style={{minHeight:34}} placeholder="Remark (required if rejecting)"
+                        <textarea className="fta" style={{minHeight:34}} placeholder="Remark — optional if approving, required if rejecting"
                           value={assessRejectNotes[g.sl]||""} onChange={e=>setAssessRejectNotes(prev=>({...prev,[g.sl]:e.target.value}))}/>
-                        <button className="btn bd bxs" style={{marginTop:6}} onClick={()=>rejectAssess(g.sl)}>Reject</button>
+                        <div style={{display:"flex",gap:8,marginTop:6}}>
+                          <button className="btn bsc bxs" onClick={()=>approveAssess(g.sl)}>Approve</button>
+                          <button className="btn bd bxs" onClick={()=>rejectAssess(g.sl)}>Reject</button>
+                        </div>
+                      </div>
+                    )}
+                    {persistedA.reviewHistory?.length>0 && (
+                      <div style={{marginTop:8,paddingTop:8,borderTop:"1px solid var(--border)"}}>
+                        {persistedA.reviewHistory.map((h,i)=>(
+                          <div key={i} className="tx tsl" style={{fontSize:12,marginTop:2}}>
+                            Previously {h.status} by {users.find(u=>u.id===h.reviewedBy)?.name||"—"}{h.remark?`: "${h.remark}"`:""}
+                          </div>
+                        ))}
                       </div>
                     )}
                   </div>
