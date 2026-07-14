@@ -5060,6 +5060,8 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
   const [assess, setAssess] = useState(rec.assess);
   const [goalRejectNotes, setGoalRejectNotes] = useState({});
   const [assessRejectNotes, setAssessRejectNotes] = useState({});
+  const [goalChanging, setGoalChanging] = useState({});
+  const [assessChanging, setAssessChanging] = useState({});
 
   useEffect(()=>{ setGoals(rec.goals); setAssess(rec.assess); }, [record]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -5083,16 +5085,16 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
     const history = [...(persisted.reviewHistory||[]), { status:persisted.reviewStatus, remark:persisted.reviewRemark, reviewedBy:persisted.reviewedBy, reviewedAt:persisted.reviewedAt }];
     onSave({ ...rec, goals: rec.goals.map(g=>g.sl===sl ? { ...item, reviewStatus:"pending", reviewRemark:null, reviewHistory:history } : g) });
   };
-  const approveGoal = (sl) => {
+  // Partner decisions (approve/reject) are reversible — any prior decision is preserved in history, never overwritten silently.
+  const decideGoal = (sl, decision) => {
     const note = (goalRejectNotes[sl]||"").trim();
-    onSave({ ...rec, goals: rec.goals.map(g=>g.sl===sl ? { ...g, reviewStatus:"approved", reviewedBy:viewer.id, reviewedAt:new Date().toISOString(), reviewRemark:note||null } : g) });
+    if(decision==="rejected" && !note) { alert("A remark is required when rejecting a goal."); return; }
+    const persisted = rec.goals.find(g=>g.sl===sl);
+    const prevWasDecided = persisted.reviewStatus==="approved" || persisted.reviewStatus==="rejected";
+    const history = prevWasDecided ? [...(persisted.reviewHistory||[]), { status:persisted.reviewStatus, remark:persisted.reviewRemark, reviewedBy:persisted.reviewedBy, reviewedAt:persisted.reviewedAt }] : (persisted.reviewHistory||[]);
+    onSave({ ...rec, goals: rec.goals.map(g=>g.sl===sl ? { ...g, reviewStatus:decision, reviewedBy:viewer.id, reviewedAt:new Date().toISOString(), reviewRemark:note||null, reviewHistory:history } : g) });
     setGoalRejectNotes(prev=>({...prev,[sl]:""}));
-  };
-  const rejectGoal = (sl) => {
-    const note = (goalRejectNotes[sl]||"").trim();
-    if(!note) { alert("A remark is required when rejecting a goal."); return; }
-    onSave({ ...rec, goals: rec.goals.map(g=>g.sl===sl ? { ...g, reviewStatus:"rejected", reviewRemark:note, reviewedBy:viewer.id, reviewedAt:new Date().toISOString() } : g) });
-    setGoalRejectNotes(prev=>({...prev,[sl]:""}));
+    setGoalChanging(prev=>({...prev,[sl]:false}));
   };
 
   const submitInitialAssess = () => {
@@ -5106,16 +5108,15 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
     const history = [...(persisted.reviewHistory||[]), { status:persisted.reviewStatus, remark:persisted.reviewRemark, reviewedBy:persisted.reviewedBy, reviewedAt:persisted.reviewedAt }];
     onSave({ ...rec, assess: rec.assess.map(a=>a.sl===sl ? { ...item, reviewStatus:"pending", reviewRemark:null, reviewHistory:history } : a) });
   };
-  const approveAssess = (sl) => {
+  const decideAssess = (sl, decision) => {
     const note = (assessRejectNotes[sl]||"").trim();
-    onSave({ ...rec, assess: rec.assess.map(a=>a.sl===sl ? { ...a, reviewStatus:"approved", reviewedBy:viewer.id, reviewedAt:new Date().toISOString(), reviewRemark:note||null } : a) });
+    if(decision==="rejected" && !note) { alert("A remark is required when rejecting a self-assessment entry."); return; }
+    const persisted = rec.assess.find(a=>a.sl===sl);
+    const prevWasDecided = persisted.reviewStatus==="approved" || persisted.reviewStatus==="rejected";
+    const history = prevWasDecided ? [...(persisted.reviewHistory||[]), { status:persisted.reviewStatus, remark:persisted.reviewRemark, reviewedBy:persisted.reviewedBy, reviewedAt:persisted.reviewedAt }] : (persisted.reviewHistory||[]);
+    onSave({ ...rec, assess: rec.assess.map(a=>a.sl===sl ? { ...a, reviewStatus:decision, reviewedBy:viewer.id, reviewedAt:new Date().toISOString(), reviewRemark:note||null, reviewHistory:history } : a) });
     setAssessRejectNotes(prev=>({...prev,[sl]:""}));
-  };
-  const rejectAssess = (sl) => {
-    const note = (assessRejectNotes[sl]||"").trim();
-    if(!note) { alert("A remark is required when rejecting a self-assessment entry."); return; }
-    onSave({ ...rec, assess: rec.assess.map(a=>a.sl===sl ? { ...a, reviewStatus:"rejected", reviewRemark:note, reviewedBy:viewer.id, reviewedAt:new Date().toISOString() } : a) });
-    setAssessRejectNotes(prev=>({...prev,[sl]:""}));
+    setAssessChanging(prev=>({...prev,[sl]:false}));
   };
 
   const goalBadge = !goalSubmitted ? {cls:"brs",label:"Goals in draft"} : goalPhase==="resubmission" ? {cls:"bp2",label:"Resubmission needed"} : goalPhase==="submitted" ? {cls:"brs",label:"Pending review"} : {cls:"bac",label:"Goals approved"};
@@ -5182,6 +5183,7 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
                     <div>
                       <span className="bdg bac">Approved</span>
                       {persisted.reviewRemark && <span className="tx tsl" style={{marginLeft:8}}>{persisted.reviewRemark}</span>}
+                      {isPartnerViewer && !goalChanging[g.sl] && <button className="btn bgh bxs" style={{marginLeft:8}} onClick={()=>setGoalChanging(p=>({...p,[g.sl]:true}))}><I n="edit" s={12}/>Change decision</button>}
                     </div>
                   )}
                   {status==="rejected" && (
@@ -5189,16 +5191,18 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
                       <span className="bdg bp2">Rejected</span>
                       <span className="tx tsl" style={{marginLeft:8}}>{persisted.reviewRemark}</span>
                       {isSelf && <div style={{marginTop:8}}><button className="btn bp bxs" onClick={()=>resubmitGoal(g.sl)}>Resubmit</button></div>}
+                      {isPartnerViewer && !goalChanging[g.sl] && <div style={{marginTop:6}}><button className="btn bgh bxs" onClick={()=>setGoalChanging(p=>({...p,[g.sl]:true}))}><I n="edit" s={12}/>Change decision</button></div>}
                     </div>
                   )}
                   {status==="pending" && isSelf && <span className="tx tsl">Awaiting partner review</span>}
-                  {status==="pending" && isPartnerViewer && (
+                  {((status==="pending" && isPartnerViewer) || (isPartnerViewer && goalChanging[g.sl])) && (
                     <div>
                       <textarea className="fta" style={{minHeight:34}} placeholder="Remark — optional if approving, required if rejecting"
                         value={goalRejectNotes[g.sl]||""} onChange={e=>setGoalRejectNotes(prev=>({...prev,[g.sl]:e.target.value}))}/>
                       <div style={{display:"flex",gap:8,marginTop:6}}>
-                        <button className="btn bsc bxs" onClick={()=>approveGoal(g.sl)}>Approve</button>
-                        <button className="btn bd bxs" onClick={()=>rejectGoal(g.sl)}>Reject</button>
+                        <button className="btn bsc bxs" onClick={()=>decideGoal(g.sl,"approved")}>Approve</button>
+                        <button className="btn bd bxs" onClick={()=>decideGoal(g.sl,"rejected")}>Reject</button>
+                        {goalChanging[g.sl] && <button className="btn bgh bxs" onClick={()=>setGoalChanging(p=>({...p,[g.sl]:false}))}>Cancel</button>}
                       </div>
                     </div>
                   )}
@@ -5255,6 +5259,7 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
                       <div>
                         <span className="bdg bac">Approved</span>
                         {persistedA.reviewRemark && <span className="tx tsl" style={{marginLeft:8}}>{persistedA.reviewRemark}</span>}
+                        {isPartnerViewer && !assessChanging[g.sl] && <button className="btn bgh bxs" style={{marginLeft:8}} onClick={()=>setAssessChanging(p=>({...p,[g.sl]:true}))}><I n="edit" s={12}/>Change decision</button>}
                       </div>
                     )}
                     {aStatus==="rejected" && (
@@ -5262,16 +5267,18 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
                         <span className="bdg bp2">Rejected</span>
                         <span className="tx tsl" style={{marginLeft:8}}>{persistedA.reviewRemark}</span>
                         {isSelf && <div style={{marginTop:8}}><button className="btn bp bxs" onClick={()=>resubmitAssess(g.sl)}>Resubmit</button></div>}
+                        {isPartnerViewer && !assessChanging[g.sl] && <div style={{marginTop:6}}><button className="btn bgh bxs" onClick={()=>setAssessChanging(p=>({...p,[g.sl]:true}))}><I n="edit" s={12}/>Change decision</button></div>}
                       </div>
                     )}
                     {aStatus==="pending" && isSelf && <span className="tx tsl">Awaiting partner review</span>}
-                    {aStatus==="pending" && isPartnerViewer && (
+                    {((aStatus==="pending" && isPartnerViewer) || (isPartnerViewer && assessChanging[g.sl])) && (
                       <div>
                         <textarea className="fta" style={{minHeight:34}} placeholder="Remark — optional if approving, required if rejecting"
                           value={assessRejectNotes[g.sl]||""} onChange={e=>setAssessRejectNotes(prev=>({...prev,[g.sl]:e.target.value}))}/>
                         <div style={{display:"flex",gap:8,marginTop:6}}>
-                          <button className="btn bsc bxs" onClick={()=>approveAssess(g.sl)}>Approve</button>
-                          <button className="btn bd bxs" onClick={()=>rejectAssess(g.sl)}>Reject</button>
+                          <button className="btn bsc bxs" onClick={()=>decideAssess(g.sl,"approved")}>Approve</button>
+                          <button className="btn bd bxs" onClick={()=>decideAssess(g.sl,"rejected")}>Reject</button>
+                          {assessChanging[g.sl] && <button className="btn bgh bxs" onClick={()=>setAssessChanging(p=>({...p,[g.sl]:false}))}>Cancel</button>}
                         </div>
                       </div>
                     )}
