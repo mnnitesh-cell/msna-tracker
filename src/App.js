@@ -4327,6 +4327,7 @@ function ProductivityDashboard({ users=[], projects=[], tss=[] }) {
   // Non-productive = Leave, Holiday, Idle only
   const PRODUCTIVE_CATS = ["Assurance","Virtual CFO","Compliance","Consulting","Reading"];
   const NON_BILLABLE_CATS = ["Leave","Holiday","Idle","Reading"]; // Reading: productive but never billable
+  const NON_PRODUCTIVE_CATS = ["Leave","Holiday","Idle"]; // Idle/Leave card only — excludes Reading, which is productive
 
   // ── Period filter ──
   const allMonths = [...new Set(tss.map(t=>monthKey(t.date)).filter(Boolean))].sort().reverse();
@@ -4363,7 +4364,7 @@ function ProductivityDashboard({ users=[], projects=[], tss=[] }) {
   const productiveHrs= filtered.filter(t=>PRODUCTIVE_CATS.includes(t.category||t.type)).reduce((s,t)=>s+t.hours,0);
   const billPct      = totalHrs>0?Math.round(billableHrs/totalHrs*1000)/10:0;
   const prodPct      = totalHrs>0?Math.round(productiveHrs/totalHrs*1000)/10:0;
-  const idleLeaveHrs = filtered.filter(t=>NON_BILLABLE_CATS.includes(t.category||t.type)).reduce((s,t)=>s+t.hours,0);
+  const idleLeaveHrs = filtered.filter(t=>NON_PRODUCTIVE_CATS.includes(t.category||t.type)).reduce((s,t)=>s+t.hours,0);
   const activeClients= [...new Set(filtered.map(t=>{const p=projects.find(px=>px.id===t.projectId); return p?.clientName;}).filter(Boolean))].length;
 
   // ── By category ──
