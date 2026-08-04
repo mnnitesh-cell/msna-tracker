@@ -4799,6 +4799,8 @@ function AppraisalForm({ user, users, req, existing, onSave, onBack }) {
   const [editUnlocked, setEditUnlocked] = useState(false);
   const [overrideMode, setOverrideMode] = useState(false);
   const [editNote, setEditNote] = useState("");
+  const [partnerFeedback, setPartnerFeedback] = useState(existing?.partnerFeedback || "");
+  const savePartnerFeedback = () => onSave({ ...existing, partnerFeedback, partnerFeedbackBy:user.id, partnerFeedbackAt:new Date().toISOString() });
 
   const submitted = existing?.status==="submitted";
   // Authorization first: only the assigned appraiser (or a partner) may ever edit this form.
@@ -4857,7 +4859,33 @@ function AppraisalForm({ user, users, req, existing, onSave, onBack }) {
           </div>
         )}
         {existing?.overriddenBy && (
-          <div className="al al-w" style={{marginTop:14}}><I n="alert" s={16}/><div>This score was overridden by {users.find(u=>u.id===existing.overriddenBy)?.name}. {isPartnerViewer?"Original values are kept in history (partner-visible only).":""}</div></div>
+          <div className="al al-w" style={{marginTop:14}}><I n="alert" s={16}/><div>This score was overridden by {users.find(u=>u.id===existing.overriddenBy)?.name}. {isPartnerViewer?"Earlier version(s) shown below (partner-visible only).":""}</div></div>
+        )}
+        {isPartnerViewer && existing?.overrideHistory?.length>0 && (
+          <div style={{marginTop:14}}>
+            <div className="fw6" style={{fontSize:13}}>Override history</div>
+            {existing.overrideHistory.map((h,i) => {
+              const { sum:hSum, max:hMax, pct:hPct } = calcAppraisalScore(h.metrics);
+              return (
+                <div key={i} style={{marginTop:8,padding:"10px 12px",background:"var(--cream)",borderRadius:8,border:"1px solid var(--border)"}}>
+                  <div className="tx tsl">Replaced by {users.find(u=>u.id===h.replacedBy)?.name||"—"} on {fmtDate(h.replacedAt)} · previous score {hMax?`${hSum}/${hMax} (${hPct}%)`:"All N/A"}</div>
+                  {APPRAISAL_METRICS.map(m => {
+                    const v = h.metrics?.[m.key];
+                    return (
+                      <div key={m.key} style={{marginTop:6}}>
+                        <div className="tx" style={{fontWeight:600,fontSize:12}}>{m.label}: {v?.na?"N/A":(v?.score||"—")}</div>
+                        {!v?.na && v?.remark && <div className="tx tsl" style={{fontSize:12}}>{v.remark}</div>}
+                      </div>
+                    );
+                  })}
+                  <div style={{marginTop:6}}>
+                    <div className="tx" style={{fontWeight:600,fontSize:12}}>Value addition</div>
+                    <div className="tx tsl" style={{fontSize:12}}>{h.valueAddition?.remark||"—"}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         )}
         {existing?.editRequestStatus==="requested" && isPartnerViewer && (
           <div className="al al-w" style={{marginTop:14}}>
@@ -4897,6 +4925,24 @@ function AppraisalForm({ user, users, req, existing, onSave, onBack }) {
           <span className="ts tsl">Overall score</span>
           <span style={{fontFamily:"'Playfair Display',serif",fontSize:22}}>{max?`${sum}/${max} (${pct}%)`:"All N/A"}</span>
         </div>
+
+        {existing && (
+          <div style={{marginTop:16,paddingTop:14,borderTop:"1px solid var(--border)"}}>
+            <div className="fw6" style={{fontSize:14}}>Partner feedback <span className="tx tsl" style={{fontWeight:400}}>(optional — any partner can add this)</span></div>
+            {isPartnerViewer ? (
+              <>
+                <textarea className="fta" style={{marginTop:8}} value={partnerFeedback} onChange={e=>setPartnerFeedback(e.target.value)} placeholder="Add any additional feedback for this person — visible to them"/>
+                <button className="btn bgh bsm" style={{marginTop:8}} onClick={savePartnerFeedback}>Save feedback</button>
+                {existing.partnerFeedbackBy && <p className="tx tsl mt8">Last updated by {users.find(u=>u.id===existing.partnerFeedbackBy)?.name} on {fmtDate(existing.partnerFeedbackAt)}</p>}
+              </>
+            ) : existing.partnerFeedback ? (
+              <>
+                <p className="tx mt8">{existing.partnerFeedback}</p>
+                <p className="tx tsl mt4">— {users.find(u=>u.id===existing.partnerFeedbackBy)?.name}, {fmtDate(existing.partnerFeedbackAt)}</p>
+              </>
+            ) : <p className="tx tsl mt8">No additional feedback yet.</p>}
+          </div>
+        )}
 
         {canEditNow && (
           <div className="md-actions" style={{justifyContent:"flex-start",marginTop:16}}>
