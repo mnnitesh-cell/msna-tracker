@@ -1275,6 +1275,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
                           </label>
                         ))}
                       </div>
+                      <div style={{fontSize:11,color:"var(--slate)",marginTop:6}}>Visible to all partners — any partner can approve, not only those selected here.</div>
                     </div>
                   </div>
                 )}
@@ -1846,11 +1847,9 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
     if(isP){
       // Partners approve: managers, AND interns on projects with no managers
       if(u2?.role!=="manager"&&u2?.role!=="intern") return false;
-      // Internal time: show only to specifically selected partner approvers
-      if(t.isInternal){
-        if(t.internalPartnerApprovers?.length>0) return t.internalPartnerApprovers.includes(user.id);
-        return false;
-      }
+      // Internal time: visible to ALL partners (any partner can approve as backup),
+      // even though specific partner(s) were originally requested by the staff member.
+      if(t.isInternal) return true;
       // Engagement time
       const proj = projects.find(px=>px.id===t.projectId);
       if(!proj) return false;
@@ -1881,7 +1880,7 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
     if(["pending","resubmitted"].includes(t.status)) return false;
     if(isP){
       if(u2?.role!=="manager"&&u2?.role!=="intern") return false;
-      if(t.isInternal) return (t.internalPartnerApprovers||[]).includes(user.id);
+      if(t.isInternal) return true; // history: visible to all partners, same as pending
       const proj = projects.find(px=>px.id===t.projectId);
       if(!proj) return false;
       const isMyProject = proj.assignedPartnerId===user.id||(proj.assignedPartners||[]).includes(user.id);
@@ -1919,6 +1918,12 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
     if(ts.filedById || ts.status==="pending_partner"){
       const attr = users.find(u=>u.id===ts.userId);
       if(attr?.role==="partner") return attr;
+    }
+    // Internal time: first originally-requested partner approver (for filtering only —
+    // ALL partners can see and act on internal-time entries, not just this one)
+    if(ts.isInternal){
+      const pid = (ts.internalPartnerApprovers||[])[0];
+      return pid ? (users.find(u=>u.id===pid) || null) : null;
     }
     // Regular entry: look at project's assigned partner
     const proj = projects.find(p=>p.id===ts.projectId);
@@ -2035,7 +2040,11 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
                     <td>{ts.billable?<span className="tsc fw6">✓</span>:<span className="tsl">—</span>}</td>
                     <td className="ts tsl" style={{maxWidth:170}}>{ts.description}</td>
                     <td style={{whiteSpace:"nowrap"}}>
-                      {entryPartner
+                      {ts.isInternal
+                        ?(ts.internalPartnerApprovers?.length>0
+                          ?<><div className="fw6" style={{fontSize:13}}>{ts.internalPartnerApprovers.map(id=>users.find(u=>u.id===id)?.name).filter(Boolean).join(", ")}</div><div className="tx tsl" style={{fontSize:11}}>Requested · any partner can approve</div></>
+                          :<span className="tsl">—</span>)
+                        :entryPartner
                         ?<><div className="fw6" style={{fontSize:13}}>{entryPartner.name}</div><div className="tx tsl" style={{fontSize:11}}>Partner</div></>
                         :<span className="tsl">—</span>}
                     </td>
@@ -5501,10 +5510,7 @@ export default function App() {
       if(!["pending","resubmitted"].includes(t.status)) return false;
       if(isP){
         if(u2?.role!=="manager"&&u2?.role!=="intern") return false;
-        if(t.isInternal){
-          if(t.internalPartnerApprovers?.length>0) return t.internalPartnerApprovers.includes(cu.id);
-          return false;
-        }
+        if(t.isInternal) return true; // badge count: visible to all partners, same as pending
         const proj = projects.find(px=>px.id===t.projectId);
         if(!proj) return false;
         const isMyProj = proj.assignedPartnerId===cu.id||(proj.assignedPartners||[]).includes(cu.id);
