@@ -3790,6 +3790,13 @@ function Leave({ user, users=[], leaves=[], setLeaves, tss=[] }) {
   };
   const today2=todayStr();
   const onLeaveToday=calendarLeaves.filter(l=>today2>=l.startDate&&today2<=l.endDate);
+  // Pending (not yet approved) leave requests that fall anywhere within the displayed month —
+  // shown as a separate list so it's easy to see who's still awaiting sign-off, not just today.
+  const calMoStart=`${calYear}-${String(calMonth+1).padStart(2,"0")}-01`;
+  const calMoEnd=`${calYear}-${String(calMonth+1).padStart(2,"0")}-${String(daysInMonth).padStart(2,"0")}`;
+  const monthPendingLeaves=leaves
+    .filter(l=>l.status!=="approved"&&l.status!=="rejected"&&l.startDate<=calMoEnd&&l.endDate>=calMoStart)
+    .sort((a,b)=>a.startDate<b.startDate?-1:a.startDate>b.startDate?1:0);
   const initials=(name)=>name?.split(" ").map(n=>n[0]).join("").slice(0,2).toUpperCase()||"??";
 
   // ── Excel Attendance Matrix Download ──
@@ -3971,6 +3978,27 @@ function Leave({ user, users=[], leaves=[], setLeaves, tss=[] }) {
                       {isPending&&<span style={{fontSize:10,fontWeight:600,padding:"1px 6px",borderRadius:20,background:"#fef3c7",color:"#92400e"}}>Pending approval</span>}
                     </div>
                     <div style={{fontSize:11,color:"var(--slate)"}}>{u2?.role} · {l.leaveType==="planned"?"Planned":"Sick"} Leave</div>
+                  </div>
+                </div>;
+              })}
+            </div>}
+        </div>
+        <div className="lv-today-card">
+          <div style={{fontWeight:600,fontSize:13,marginBottom:10}}>Pending approval — {calMonthLabel}</div>
+          {monthPendingLeaves.length===0
+            ?<div style={{color:"var(--slate)",fontSize:13}}>No pending leave requests this month.</div>
+            :<div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {monthPendingLeaves.map(l=>{
+                const u2=users.find(u=>u.id===l.userId);
+                const stageLabel=l.status==="pending_manager"?"Awaiting manager":"Awaiting partner";
+                return <div key={l.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 14px",background:"var(--cream)",borderRadius:8,border:"1px dashed var(--amber)"}}>
+                  <div className={`lv-av ${u2?.role||"intern"}`}>{initials(l.userName)}</div>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:13,fontWeight:500,display:"flex",alignItems:"center",gap:6}}>
+                      {l.userName}
+                      <span style={{fontSize:10,fontWeight:600,padding:"1px 6px",borderRadius:20,background:"#fef3c7",color:"#92400e"}}>{stageLabel}</span>
+                    </div>
+                    <div style={{fontSize:11,color:"var(--slate)"}}>{u2?.role} · {l.leaveType==="planned"?"Planned":"Sick"} Leave · {fmtDate(l.startDate)}{l.startDate!==l.endDate?` — ${fmtDate(l.endDate)}`:""}</div>
                   </div>
                 </div>;
               })}
