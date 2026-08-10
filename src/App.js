@@ -3781,13 +3781,16 @@ function Leave({ user, users=[], leaves=[], setLeaves, tss=[] }) {
   while(cells.length%7!==0) cells.push({day:cells.length-startPad-daysInMonth+1,thisMonth:false,date:null});
 
   const approvedLeaves=leaves.filter(l=>l.status==="approved");
+  // Calendar shows all non-rejected leave requests (pending + approved) so verbal/off-app
+  // approvals still surface on the calendar instead of waiting on every digital sign-off.
+  const calendarLeaves=leaves.filter(l=>l.status!=="rejected");
   const getLeavesOnDate=(date)=>{
     if(!date) return [];
-    return approvedLeaves.filter(l=>date>=l.startDate&&date<=l.endDate)
+    return calendarLeaves.filter(l=>date>=l.startDate&&date<=l.endDate)
       .map(l=>({...l,role:users.find(u=>u.id===l.userId)?.role||"intern"}));
   };
   const today2=todayStr();
-  const onLeaveToday=approvedLeaves.filter(l=>today2>=l.startDate&&today2<=l.endDate);
+  const onLeaveToday=calendarLeaves.filter(l=>today2>=l.startDate&&today2<=l.endDate);
   const initials=(name)=>name?.split(" ").map(n=>n[0]).join("").slice(0,2).toUpperCase()||"??";
 
   // ── Excel Attendance Matrix Download ──
@@ -3946,7 +3949,7 @@ function Leave({ user, users=[], leaves=[], setLeaves, tss=[] }) {
                 <div key={i} className={cls}>
                   <div className="lv-day-num">{cell.day}</div>
                   <div className="lv-day-names">
-                    {onLeave.map(l=><div key={l.id} className={`lv-tag ${l.role}`} title={`${l.userName} — ${l.leaveType==="planned"?"Planned":"Sick"} Leave`}>{initials(l.userName)}</div>)}
+                    {onLeave.map(l=><div key={l.id} className={`lv-tag ${l.role}`} title={`${l.userName} — ${l.leaveType==="planned"?"Planned":"Sick"} Leave${l.status!=="approved"?" (Pending approval)":""}`}>{initials(l.userName)}</div>)}
                   </div>
                 </div>
               );
@@ -3960,9 +3963,16 @@ function Leave({ user, users=[], leaves=[], setLeaves, tss=[] }) {
             :<div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
               {onLeaveToday.map(l=>{
                 const u2=users.find(u=>u.id===l.userId);
-                return <div key={l.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 14px",background:"var(--cream)",borderRadius:8,border:"1px solid var(--border)"}}>
+                const isPending=l.status!=="approved";
+                return <div key={l.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 14px",background:"var(--cream)",borderRadius:8,border:isPending?"1px dashed var(--amber)":"1px solid var(--border)"}}>
                   <div className={`lv-av ${u2?.role||"intern"}`}>{initials(l.userName)}</div>
-                  <div><div style={{fontSize:13,fontWeight:500}}>{l.userName}</div><div style={{fontSize:11,color:"var(--slate)"}}>{u2?.role} · {l.leaveType==="planned"?"Planned":"Sick"} Leave</div></div>
+                  <div>
+                    <div style={{fontSize:13,fontWeight:500,display:"flex",alignItems:"center",gap:6}}>
+                      {l.userName}
+                      {isPending&&<span style={{fontSize:10,fontWeight:600,padding:"1px 6px",borderRadius:20,background:"#fef3c7",color:"#92400e"}}>Pending approval</span>}
+                    </div>
+                    <div style={{fontSize:11,color:"var(--slate)"}}>{u2?.role} · {l.leaveType==="planned"?"Planned":"Sick"} Leave</div>
+                  </div>
                 </div>;
               })}
             </div>}
