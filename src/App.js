@@ -3780,7 +3780,6 @@ function Leave({ user, users=[], leaves=[], setLeaves, tss=[] }) {
   }
   while(cells.length%7!==0) cells.push({day:cells.length-startPad-daysInMonth+1,thisMonth:false,date:null});
 
-  const approvedLeaves=leaves.filter(l=>l.status==="approved");
   // Calendar shows all non-rejected leave requests (pending + approved) so verbal/off-app
   // approvals still surface on the calendar instead of waiting on every digital sign-off.
   const calendarLeaves=leaves.filter(l=>l.status!=="rejected");
