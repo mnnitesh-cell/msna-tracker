@@ -2097,9 +2097,9 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
                   <th style={{cursor:"pointer"}} onClick={()=>toggleSort("project")}>Project{sortIcon("project")}</th>
                   <th style={{cursor:"pointer"}} onClick={()=>toggleSort("category")}>Category{sortIcon("category")}</th>
                   <th style={{cursor:"pointer"}} onClick={()=>toggleSort("hours")}>Hrs{sortIcon("hours")}</th>
-                  <th>Billable</th><th>Description</th>
+                  <th>Description</th>
                   <th>Partner</th>
-                  <th>Status</th><th>Actions</th>
+                  <th>Actions</th>
                 </tr></thead>
                 <tbody>{paginatedPending.map((ts,idx)=>{
                   const u2=users.find(u=>u.id===ts.userId); const p=projects.find(p=>p.id===ts.projectId); const rate=u2?.billingRate||0;
@@ -2114,7 +2114,6 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
                     <td><div className="fw6 mono">{p?.code}</div><div className="tx tsl">{p?.clientName} — {p?.name}</div></td>
                     <td className="ts">{ts.category}</td>
                     <td className="fw6">{fmtHrs(ts.hours)}h{ts.billable&&<div className="tx tgo">{fmtCurrency(ts.hours*rate)}</div>}</td>
-                    <td>{ts.billable?<span className="tsc fw6">✓</span>:<span className="tsl">—</span>}</td>
                     <td className="ts tsl" style={{maxWidth:170}}>{ts.description}</td>
                     <td style={{whiteSpace:"nowrap"}}>
                       {ts.isInternal
@@ -2125,7 +2124,6 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
                         ?<><div className="fw6" style={{fontSize:13}}>{entryPartner.name}</div><div className="tx tsl" style={{fontSize:11}}>Partner</div></>
                         :<span className="tsl">—</span>}
                     </td>
-                    <td><span className={`bdg ${sc(ts.status)}`}>{ts.status}</span></td>
                     <td><div className="fx g8">
                       <button className="btn bsc bsm" onClick={()=>ts.status==="pending_partner"?approveOnBehalf(ts.id):approve(ts.id)}><I n="check" s={13}/>Approve</button>
                       <button className="btn bd bsm" onClick={()=>{setRM(ts);setR("");setRE("");}}><I n="x" s={13}/>Reject</button>
