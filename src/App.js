@@ -425,6 +425,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--cream);color:var(--navy);
 
 /* ── BUTTONS ── */
 .btn{display:inline-flex;align-items:center;gap:7px;border:none;border-radius:var(--r);padding:10px 18px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:500;cursor:pointer;transition:all .15s;white-space:nowrap;line-height:1;}
+.btn:disabled{opacity:.45;cursor:not-allowed;}
 .bp{background:var(--navy);color:#fff;} .bp:hover{background:var(--navy-mid);}
 .bgo{background:var(--gold);color:var(--navy);font-weight:600;} .bgo:hover{background:var(--gold-light);}
 .bsc{background:var(--green);color:#fff;} .bsc:hover{background:#059669;}
@@ -449,6 +450,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--cream);color:var(--navy);
 .ni:hover{background:rgba(255,255,255,.07);color:rgba(255,255,255,.85);}
 .ni.active{background:rgba(201,168,76,.14);color:var(--gold-light);}
 .nb{position:absolute;right:10px;background:var(--gold);color:var(--navy);font-size:11px;font-weight:700;border-radius:20px;padding:1px 8px;min-width:20px;text-align:center;}
+.nb2{position:absolute;right:10px;background:#6d28d9;color:#fff;font-size:11px;font-weight:700;border-radius:20px;padding:1px 8px;min-width:20px;text-align:center;}
 .sb-ft{padding:14px 10px;border-top:1px solid rgba(255,255,255,.08);}
 .sb-section-label{font-size:10px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:rgba(255,255,255,.22);padding:10px 12px 3px;margin-top:2px;}
 .sb-divider{height:1px;background:rgba(255,255,255,.07);margin:8px 12px;}
@@ -487,6 +489,7 @@ tr:hover td{background:#fcfcfc;}
 .brs{background:#fef3c7;color:#92400e;}
 .bac{background:#dbeafe;color:#1e40af;}
 .bcl{background:#f1f5f9;color:#64748b;}
+.bpc{background:#f3e8ff;color:#6d28d9;}
 .blk{background:#fee2e2;color:#991b1b;}
 .rpa{background:var(--gold-pale);color:#92400e;}
 .rma{background:#dbeafe;color:#1e40af;}
@@ -599,7 +602,7 @@ function Login({ onLogin }) {
 // ══════════════════════════════════════════════════════════════
 // SIDEBAR
 // ══════════════════════════════════════════════════════════════
-function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=0, projPendingCount=0, appraisalPendingCount=0, goalPendingCount=0 }) {
+function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=0, projPendingCount=0, projClosurePendingCount=0, appraisalPendingCount=0, goalPendingCount=0 }) {
   const isAdmin = user.email===ADMIN_EMAIL;
   const role = user.role; // "partner" | "manager" | "intern"
 
@@ -713,7 +716,8 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=
                 <I n={n.icon} s={16}/>{n.label}
                 {n.badge     && pendingCount>0     && <span className="nb">{pendingCount}</span>}
                 {n.leaveBadge && leavePendingCount>0 && <span className="nb">{leavePendingCount}</span>}
-                {n.projBadge  && projPendingCount>0  && <span className="nb">{projPendingCount}</span>}
+                {n.projBadge  && projPendingCount>0  && <span className="nb" style={projClosurePendingCount>0?{right:44}:undefined}>{projPendingCount}</span>}
+                {n.projBadge  && projClosurePendingCount>0  && <span className="nb2" title="Pending closure requests">{projClosurePendingCount}</span>}
                 {n.appraisalBadge && appraisalPendingCount>0 && <span className="nb">{appraisalPendingCount}</span>}
                 {n.goalBadge && goalPendingCount>0 && <span className="nb">{goalPendingCount}</span>}
               </div>
@@ -1456,6 +1460,8 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
   const [projTab,setProjTab]  =useState("active"); // active, pending, approved, rejected
   const [rejectM,setRejectM]  =useState(null);
   const [rejectReason,setRR]  =useState("");
+  const [closeRejectM,setCRM] =useState(null); // project being rejected at closure stage
+  const [closeRejectReason,setCRR] =useState("");
   const [page,setPage]        =useState(1);
   const PAGE_SIZE             =10;
   const [search,setSearch]    =useState("");
@@ -1510,22 +1516,53 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
 
   const approve=id=>{setProjects(p=>p.map(x=>x.id===id?{...x,status:"active",approvedBy:user.id,approvedAt:new Date().toISOString()}:x));addAudit(user.id,user.name,"APPROVE_PROJECT",`Approved ${id}`);setProjTab("active");};
   const reject=(id,reason)=>{setProjects(p=>p.map(x=>x.id===id?{...x,status:"rejected",rejectReason:reason,rejectedBy:user.id}:x));addAudit(user.id,user.name,"REJECT_PROJECT",`Rejected ${id}: ${reason}`);setRejectM(null);setRR("");setProjTab("rejected");};
-  const close  =id=>{
+  // Helper: pending appraisals for a project (non-retainer only — retainers are exempt from the appraisal gate)
+  const pendingAppraisalsFor = proj => {
+    if(!proj || proj.feeType==="retainer") return [];
+    const required = getRequiredAppraisals(users, [proj], tss).filter(r=>users.find(u=>u.id===r.staffId)?.active!==false);
+    return required.filter(r=>findAppraisalFor(appraisals,r)?.status!=="submitted");
+  };
+
+  // Instant close — assigned partner or admin only. Still gated on appraisals for non-retainer engagements.
+  const close = id=>{
     const proj = projects.find(x=>x.id===id);
-    if(proj && proj.feeType!=="retainer") {
-      const required = getRequiredAppraisals(users, [proj], tss).filter(r=>users.find(u=>u.id===r.staffId)?.active!==false);
-      const pending = required.filter(r=>findAppraisalFor(appraisals,r)?.status!=="submitted");
-      if(pending.length>0) {
-        const names = pending.map(r=>users.find(u=>u.id===r.staffId)?.name||"—").join(", ");
-        alert(`Cannot close — performance appraisal is still pending for: ${names}. Every team member's appraisal, including the manager's, must be submitted first.`);
-        return;
-      }
+    const pending = pendingAppraisalsFor(proj);
+    if(pending.length>0) {
+      const names = pending.map(r=>users.find(u=>u.id===r.staffId)?.name||"—").join(", ");
+      alert(`Cannot close — performance appraisal is still pending for: ${names}. Every team member's appraisal, including the manager's, must be submitted first.`);
+      return;
     }
-    if(!window.confirm("Close this engagement?"))return;setProjects(p=>p.map(x=>x.id===id?{...x,status:"closed",closedAt:new Date().toISOString()}:x));addAudit(user.id,user.name,"CLOSE_PROJECT",`Closed ${id}`);};
+    if(!window.confirm("Close this engagement?"))return;
+    setProjects(p=>p.map(x=>x.id===id?{...x,status:"closed",closedAt:new Date().toISOString(),closedBy:user.id}:x));
+    addAudit(user.id,user.name,"CLOSE_PROJECT",`Closed ${id}`);
+  };
+
+  // Manager (or a non-assigned partner) raises a closure request — always routes to partner approval, retainers included.
+  const requestClose = id=>{
+    const proj = projects.find(x=>x.id===id);
+    if(!window.confirm(`Request closure of ${proj?.code}? This will need a partner's approval.`))return;
+    setProjects(p=>p.map(x=>x.id===id?{...x,status:"pending_closure",closeRequestedBy:user.id,closeRequestedAt:new Date().toISOString(),closeRejectReason:null}:x));
+    addAudit(user.id,user.name,"REQUEST_CLOSE_PROJECT",`Requested closure of ${id}`);
+  };
+
+  // Any partner (not just the assigned one) can approve a closure request, subject to the appraisal gate.
+  const closeApprove = id=>{
+    const proj = projects.find(x=>x.id===id);
+    if(pendingAppraisalsFor(proj).length>0) return; // guarded by disabled button too
+    setProjects(p=>p.map(x=>x.id===id?{...x,status:"closed",closedAt:new Date().toISOString(),closedBy:user.id}:x));
+    addAudit(user.id,user.name,"APPROVE_CLOSE_PROJECT",`Approved closure of ${id}`);
+  };
+
+  // Any partner can reject a closure request — reverts to Active with a reason.
+  const closeReject = (id,reason)=>{
+    setProjects(p=>p.map(x=>x.id===id?{...x,status:"active",closeRejectReason:reason,closeRejectedBy:user.id}:x));
+    addAudit(user.id,user.name,"REJECT_CLOSE_PROJECT",`Rejected closure of ${id}: ${reason}`);
+    setCRM(null);setCRR("");
+  };
   const deleteProject=id=>{if(!window.confirm("Permanently delete this project code? This cannot be undone."))return;setProjects(p=>p.filter(x=>x.id!==id));addAudit(user.id,user.name,"DELETE_PROJECT",`Deleted project ${id}`);};
   const saveAssign=(pid,staff,managers,partners=[])=>{setProjects(p=>p.map(x=>x.id===pid?{...x,assignedStaff:staff,assignedManagers:managers,assignedPartners:partners}:x));addAudit(user.id,user.name,"ASSIGN_STAFF",`Updated assignments for ${pid}`);setAM(null);};
 
-  const statusClass=s=>s==="active"?"bac":s==="closed"?"bcl":s==="pending_approval"?"bp2":"br";
+  const statusClass=s=>s==="active"?"bac":s==="closed"?"bcl":s==="pending_approval"?"bp2":s==="pending_closure"?"bpc":"br";
   const toggleSort = (col) => { if(sortBy===col){setSortDir(d=>d==="asc"?"desc":"asc");}else{setSortBy(col);setSortDir("asc");} setPage(1); };
   const sortIcon = (col) => sortBy===col ? (sortDir==="asc"?" ↑":" ↓") : "";
 
@@ -1534,6 +1571,7 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
   const tabFiltered = isP ? (
     projTab==="active"    ? allVisible.filter(p=>["active","closed"].includes(p.status)) :
     projTab==="pending"   ? allVisible.filter(p=>p.status==="pending_approval") :
+    projTab==="closure"   ? allVisible.filter(p=>p.status==="pending_closure") :
     projTab==="rejected"  ? allVisible.filter(p=>p.status==="rejected") :
     allVisible
   ) : allVisible;
@@ -1565,6 +1603,7 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
   const totalPages = Math.max(1,Math.ceil(sorted.length/PAGE_SIZE));
   const paginated = sorted.slice((page-1)*PAGE_SIZE, page*PAGE_SIZE);
   const pendingCount = projects.filter(p=>p.status==="pending_approval").length;
+  const closurePendingCount = projects.filter(p=>p.status==="pending_closure").length;
   const hasFilters = search||filterPartner||filterCat||filterFee;
 
   return (
@@ -1580,6 +1619,9 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
           <div className={`tab ${projTab==="active"?"active":""}`} onClick={()=>{setProjTab("active");setPage(1);}}>Active & Closed</div>
           <div className={`tab ${projTab==="pending"?"active":""}`} onClick={()=>{setProjTab("pending");setPage(1);}}>
             Pending Approval{pendingCount>0&&<span style={{background:"var(--amber)",color:"#fff",borderRadius:20,padding:"1px 7px",fontSize:10,marginLeft:5}}>{pendingCount}</span>}
+          </div>
+          <div className={`tab ${projTab==="closure"?"active":""}`} onClick={()=>{setProjTab("closure");setPage(1);}}>
+            Pending Closure{closurePendingCount>0&&<span style={{background:"#6d28d9",color:"#fff",borderRadius:20,padding:"1px 7px",fontSize:10,marginLeft:5}}>{closurePendingCount}</span>}
           </div>
           <div className={`tab ${projTab==="rejected"?"active":""}`} onClick={()=>{setProjTab("rejected");setPage(1);}}>Rejected</div>
           <div className={`tab ${projTab==="all"?"active":""}`} onClick={()=>{setProjTab("all");setPage(1);}}>All</div>
@@ -1636,6 +1678,7 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
                 <td><span className="fw6 mono" style={{fontSize:14}}>{p.code}</span></td>
                 <td><div className="fw6">{p.name}</div><div className="tx tsl">{p.description}</div>
                   {p.status==="rejected"&&p.rejectReason&&<div className="tx tdn mt4">↩ {p.rejectReason}</div>}
+                  {p.status==="active"&&p.closeRejectReason&&<div className="tx tdn mt4">↩ Closure request rejected: {p.closeRejectReason}</div>}
                 </td>
                 <td>{p.clientName}</td>
                 <td className="ts">{partner?.name||"—"}</td>
@@ -1644,7 +1687,7 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
                     <div className="pbw"><div className={`pbf ${pct>=100?"pbov":pct>=80?"pbwn":"pbok"}`} style={{width:pct+"%"}}/></div></>
                   :<span className="tx tsl">No budget set</span>}</td>
                 <td style={{minWidth:110}}>{billingDisplay}</td>
-                <td><span className={`bdg ${statusClass(p.status)}`}>{p.status==="pending_approval"?"Pending":p.status.charAt(0).toUpperCase()+p.status.slice(1)}</span></td>
+                <td><span className={`bdg ${statusClass(p.status)}`}>{p.status==="pending_approval"?"Pending":p.status==="pending_closure"?"Pending Closure":p.status.charAt(0).toUpperCase()+p.status.slice(1)}</span></td>
                 <td><div className="fx g8" style={{flexWrap:"wrap"}}>
                   {isP&&p.status==="pending_approval"&&<>
                     <button className="btn bsc bsm" onClick={()=>approve(p.id)}><I n="check" s={12}/>Approve</button>
@@ -1654,8 +1697,25 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
                     {/* Partners always see Assign; Managers see it if assigned to the project */}
                     {(isP||(isMgr&&(p.assignedManagers||[]).includes(user.id)))&&
                       <button className="btn bp bsm" onClick={()=>setAM(p)}><I n="users" s={12}/>Assign</button>}
-                    {((isP&&(user.email===ADMIN_EMAIL||p.assignedPartnerId===user.id))||(isMgr&&(p.assignedManagers||[]).includes(user.id)))&&<button className="btn bgh bsm" onClick={()=>close(p.id)}><I n="archive" s={12}/>Close</button>}
+                    {/* Assigned partner (or admin) can still close instantly */}
+                    {isP&&(user.email===ADMIN_EMAIL||p.assignedPartnerId===user.id)&&
+                      <button className="btn bgh bsm" onClick={()=>close(p.id)}><I n="archive" s={12}/>Close</button>}
+                    {/* Managers (and non-assigned partners) must raise a closure request */}
+                    {((isMgr&&(p.assignedManagers||[]).includes(user.id))||(isP&&user.email!==ADMIN_EMAIL&&p.assignedPartnerId!==user.id))&&
+                      <button className="btn bgh bsm" onClick={()=>requestClose(p.id)}><I n="send" s={12}/>Request Closure</button>}
                   </>}
+                  {p.status==="pending_closure"&&isP&&(()=>{
+                    const pending = pendingAppraisalsFor(p);
+                    return <div style={{display:"flex",flexDirection:"column",gap:6,minWidth:220}}>
+                      {pending.length>0&&<div className="tx tdn" style={{lineHeight:1.4}}>
+                        <I n="alert" s={11}/> Appraisal pending — {pending.map(r=>users.find(u=>u.id===r.staffId)?.name||"—").join(", ")}
+                      </div>}
+                      <div className="fx g8" style={{flexWrap:"wrap"}}>
+                        <button className="btn bsc bsm" disabled={pending.length>0} title={pending.length>0?"All appraisals must be submitted first":""} onClick={()=>closeApprove(p.id)}><I n="check" s={12}/>Approve Closure</button>
+                        <button className="btn bd bsm" onClick={()=>{setCRM(p);setCRR("");}}><I n="x" s={12}/>Reject</button>
+                      </div>
+                    </div>;
+                  })()}
                   {/* Edit: partner always, manager only if pending */}
                   {canEditProj&&<button className="btn bgh bic bsm" title="Edit project" onClick={()=>openEdit(p)}><I n="edit" s={13}/></button>}
                   {/* Delete: assigned partner or admin only */}
@@ -1688,6 +1748,23 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
             <div className="md-actions">
               <button className="btn bgh" onClick={()=>setRejectM(null)}>Cancel</button>
               <button className="btn bd" onClick={()=>{if(!rejectReason.trim()){return;}reject(rejectM.id,rejectReason);}}><I n="x" s={14}/>Confirm Reject</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reject closure-request modal with remarks */}
+      {closeRejectM&&(
+        <div className="mo" onClick={()=>setCRM(null)}>
+          <div className="md" onClick={e=>e.stopPropagation()} style={{maxWidth:440}}>
+            <div className="md-title">Reject Closure Request</div>
+            <div className="al al-w mb16"><I n="alert" s={14}/><div>Rejecting closure of <strong>{closeRejectM.code}</strong> — {closeRejectM.name}. The engagement will revert to Active.</div></div>
+            <div className="fg"><label className="fl">Reason / Remarks</label>
+              <textarea className="fta" placeholder="Please give a reason for rejecting this closure request..." value={closeRejectReason} onChange={e=>setCRR(e.target.value)}/>
+            </div>
+            <div className="md-actions">
+              <button className="btn bgh" onClick={()=>setCRM(null)}>Cancel</button>
+              <button className="btn bd" onClick={()=>{if(!closeRejectReason.trim()){return;}closeReject(closeRejectM.id,closeRejectReason);}}><I n="x" s={14}/>Confirm Reject</button>
             </div>
           </div>
         </div>
@@ -5604,6 +5681,7 @@ export default function App() {
             return false;
           }).length}
           projPendingCount={currentUser.role==="partner" ? projects.filter(p=>p.status==="pending_approval").length : 0}
+          projClosurePendingCount={currentUser.role==="partner" ? projects.filter(p=>p.status==="pending_closure").length : 0}
           appraisalPendingCount={appraisalPendingCount}
           goalPendingCount={goalPendingCount}/>
         <div className="main">
