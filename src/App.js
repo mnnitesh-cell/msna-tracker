@@ -1475,6 +1475,7 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
   const isP=user.role==="partner";
   const isMgr=user.role==="manager";
   const partners=users.filter(u=>u.role==="partner"&&u.active).slice().sort((a,b)=>a.name.localeCompare(b.name));
+  const lastProjectCode=projects.length?projects.slice().sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||""))[0].code:null;
 
   const openAdd=()=>{setEditP(null);setF({code:"",name:"",clientName:"",description:"",assignedPartnerId:isP?user.id:"",budgetHours:"",monthlyBudgetHours:"",engagementFee:"",feeType:"fixed",retainerMonths:"",category:"Assurance",billable:true,assignedStaff:[],assignedManagers:[],assignedPartners:[]});setFerr("");setSM(true);};
   const openEdit=(p)=>{setEditP(p);setF({code:p.code,name:p.name,clientName:p.clientName,description:p.description||"",assignedPartnerId:p.assignedPartnerId,budgetHours:p.budgetHours||"",monthlyBudgetHours:p.monthlyBudgetHours||"",engagementFee:p.monthlyFee||p.engagementFee||"",feeType:p.feeType||"fixed",retainerMonths:p.retainerMonths||"",category:p.category||"Assurance",billable:p.billable!==false,assignedStaff:p.assignedStaff||[],assignedManagers:p.assignedManagers||[],assignedPartners:p.assignedPartners||[]});setFerr("");setSM(true);};
@@ -1777,7 +1778,11 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
             {!isP&&<div className="al al-i"><I n="info" s={15}/><div>Requires Partner approval before staff can book time.</div></div>}
             {ferr&&<div className="err">{ferr}</div>}
             <div className="g2">
-              <div className="fg"><label className="fl">Project Code</label><input className="fi" placeholder="e.g. VCFO-2025-001" value={form.code} onChange={e=>setF(f=>({...f,code:e.target.value}))} style={{textTransform:"uppercase"}}/></div>
+              <div className="fg">
+                <label className="fl">Project Code</label>
+                <input className="fi" placeholder="e.g. VCFO-2025-001" value={form.code} onChange={e=>setF(f=>({...f,code:e.target.value}))} style={{textTransform:"uppercase"}}/>
+                {!editP&&lastProjectCode&&<div className="ts mt4" style={{color:"var(--slate)"}}>Last code created: <b style={{color:"var(--navy)"}}>{lastProjectCode}</b></div>}
+              </div>
               <div className="fg"><label className="fl">Client Name</label><input className="fi" placeholder="Client / Entity" value={form.clientName} onChange={e=>setF(f=>({...f,clientName:e.target.value}))}/></div>
             </div>
             <div className="fg"><label className="fl">Engagement Name</label><input className="fi" placeholder="e.g. Virtual CFO Services FY2025-26" value={form.name} onChange={e=>setF(f=>({...f,name:e.target.value}))}/></div>
