@@ -216,10 +216,10 @@ function getRequiredAppraisals(users, projects, tss) {
         const u = users.find(x=>x.id===uid); if(!u) return;
         if(u.role==="partner") return; // partners are never appraised, regardless of project assignment arrays
         if(managers.includes(uid)) {
-          upsert(`fx-mgr-${p.id}-${uid}`, { type:"fixed", fy, projectId:p.id, staffId:uid, appraiserRole:"partner", eligibleAppraisers:partners, primaryAppraiser:p.assignedPartnerId }, p.clientName);
+          upsert(`fx-mgr-${p.id}-${uid}`, { type:"fixed", fy, projectId:p.id, projectName:p.name, projectCode:p.code, staffId:uid, appraiserRole:"partner", eligibleAppraisers:partners, primaryAppraiser:p.assignedPartnerId }, p.clientName);
         } else {
           const appraisers = managers.length ? managers : partners;
-          upsert(`fx-staff-${p.id}-${uid}`, { type:"fixed", fy, projectId:p.id, staffId:uid, appraiserRole: managers.length?"manager":"partner", eligibleAppraisers:appraisers, primaryAppraiser: managers[0]||p.assignedPartnerId }, p.clientName);
+          upsert(`fx-staff-${p.id}-${uid}`, { type:"fixed", fy, projectId:p.id, projectName:p.name, projectCode:p.code, staffId:uid, appraiserRole: managers.length?"manager":"partner", eligibleAppraisers:appraisers, primaryAppraiser: managers[0]||p.assignedPartnerId }, p.clientName);
         }
       });
     } else {
@@ -4971,6 +4971,12 @@ function AppraisalForm({ user, users, req, existing, onSave, onBack }) {
           <div>
             <div className="card-title">{staff?.name}</div>
             <div className="card-sub mt4">{scopeLabel} · {(existing?.clientNames||req?.clientNames||[]).join(", ")}</div>
+            {(req?.type||existing?.type)==="fixed" && (req?.projectName||req?.projectCode) && (
+              <div className="card-sub mt4" style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:8}}>
+                {req?.projectName && <b style={{color:"var(--navy)"}}>{req.projectName}</b>}
+                {req?.projectCode && <span className="mono" style={{fontSize:11,background:"var(--cream)",border:"1px solid var(--border)",borderRadius:5,padding:"1px 6px"}}>{req.projectCode}</span>}
+              </div>
+            )}
           </div>
           <span className={`bdg ${submitted?"bac":"brs"}`}>{submitted?"Submitted":"Draft"}</span>
         </div>
@@ -5100,14 +5106,27 @@ function FYSelector({ fy, setFy, options }) {
 
 function AppraisalListRow({ r, ex, onClick }) {
   const { pct } = ex ? calcAppraisalScore(ex.metrics) : {};
-  const label = r.type==="fixed" ? (r.clientNames||[]).join(", ") : `${(r.clientNames||[]).join(", ")} · ${r.quarter}`;
+  const isFixed = r.type==="fixed";
+  const label = isFixed ? (r.clientNames||[]).join(", ") : `${(r.clientNames||[]).join(", ")} · ${r.quarter}`;
+  // Fixed-fee: a client can have several engagements, so show which one this appraisal is for.
+  const engName = isFixed ? (r.projectName||"").trim() : "";
+  const engCode = isFixed ? (r.projectCode||"") : "";
+  const showEngName = !!engName && !(r.clientNames||[]).some(c=>(c||"").trim().toLowerCase()===engName.toLowerCase());
   return (
-    <div className="card" style={{cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 18px"}} onClick={onClick}>
-      <div>
+    <div className="card" style={{cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",gap:16,padding:"14px 18px"}} onClick={onClick}>
+      <div style={{minWidth:0}}>
         <div className="fw6" style={{fontSize:14}}>{label}</div>
-        <div className="tx tsl mt4">{r.type==="fixed"?"Fixed engagement":"Retainer"} · {r.appraiserRole==="partner"?"Partner appraisal":"Manager appraisal"}</div>
+        {isFixed && (showEngName || engCode) && (
+          <div style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:8,marginTop:4}}>
+            {showEngName && <span style={{fontSize:13,color:"var(--navy-mid)"}}>{engName}</span>}
+            {engCode && <span className="mono" style={{fontSize:11,color:"var(--slate)",background:"var(--cream)",border:"1px solid var(--border)",borderRadius:5,padding:"1px 6px"}}>{engCode}</span>}
+          </div>
+        )}
+        <div className="tx tsl mt4">{isFixed?"Fixed engagement":"Retainer"} · {r.appraiserRole==="partner"?"Partner appraisal":"Manager appraisal"}</div>
       </div>
-      {ex?.status==="submitted" ? <span className="bdg bac">{pct}%</span> : ex?.status==="draft" ? <span className="bdg brs">Draft</span> : <span className="bdg bcl">Pending</span>}
+      <div style={{flexShrink:0}}>
+        {ex?.status==="submitted" ? <span className="bdg bac">{pct}%</span> : ex?.status==="draft" ? <span className="bdg brs">Draft</span> : <span className="bdg bcl">Pending</span>}
+      </div>
     </div>
   );
 }
