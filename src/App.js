@@ -303,7 +303,10 @@ function phaseReviewStatus(items, phaseSubmitted) {
 // Combined goal + self-assessment status for one quarter, for the staff card summary.
 function goalQuarterStatus(fy, quarter, staffId, goals, users) {
   const u = users.find(x=>x.id===staffId);
-  if(isStaffInactiveForQuarter(u, fy, quarter) || isGraceExcludedQuarter(fy, quarter, effectiveJoinDate(u))) return { label:"Not applicable", cls:"bcl" };
+  const excl = goalQuarterExclusion(u, fy, quarter, goals);
+  if(excl==="beforeJoining") return { label:"Before joining", cls:"bcl" };
+  if(excl==="grace") return { label:"Skipped: joined late", cls:"bcl" };
+  if(excl) return { label:"Not applicable", cls:"bcl" };
   const rec = goals.find(g=>g.fy===fy&&g.quarter===quarter&&g.staffId===staffId) || blankGoalRecord(fy,quarter,staffId);
   const goalSubmitted = rec.goalStatus==="submitted";
   if(!goalSubmitted) return { label:"Goals pending", cls:"brs" };
@@ -322,13 +325,32 @@ function goalQuarterStatus(fy, quarter, staffId, goals, users) {
 }
 // Effective join date for grace-period purposes: a reactivation counts as a fresh join.
 function effectiveJoinDate(u) { return u?.reactivatedFrom || u?.dateOfJoining || null; }
-// Someone joining in the final 14 days of a quarter is excluded from that one quarter (retainer appraisal + goal setting only).
-function isGraceExcludedQuarter(fy, quarter, joinDate) {
+// Grace windows: someone joining in the final N days of a quarter is excluded from that one quarter.
+// Retainer appraisals use 14 days; Goal Setting uses 45 days (joining day and quarter-end day both count).
+const APPRAISAL_GRACE_DAYS = 14;
+const GOAL_GRACE_DAYS = 45;
+function isGraceExcludedQuarter(fy, quarter, joinDate, graceDays=APPRAISAL_GRACE_DAYS) {
   if(!joinDate) return false;
   const [, qEnd] = quarterDateRange(fy, quarter);
-  const d = new Date(qEnd); d.setDate(d.getDate()-13);
+  const d = new Date(qEnd); d.setDate(d.getDate()-(graceDays-1));
   const graceStart = d.toISOString().slice(0,10);
   return joinDate>=graceStart && joinDate<=qEnd;
+}
+// Quarter ended before the person joined (or rejoined) the firm.
+function isBeforeJoiningQuarter(fy, quarter, joinDate) {
+  if(!joinDate) return false;
+  const [, qEnd] = quarterDateRange(fy, quarter);
+  return qEnd < joinDate;
+}
+// Why a goal quarter does not apply to a staff member, or null if it applies.
+// An existing record always keeps the quarter visible (historical, e.g. before a reactivation).
+function goalQuarterExclusion(u, fy, quarter, goals=[]) {
+  if(goals.some(g=>g.fy===fy&&g.quarter===quarter&&g.staffId===u?.id)) return null;
+  if(isStaffInactiveForQuarter(u, fy, quarter)) return "inactive";
+  const jd = effectiveJoinDate(u);
+  if(isBeforeJoiningQuarter(fy, quarter, jd)) return "beforeJoining";
+  if(isGraceExcludedQuarter(fy, quarter, jd, GOAL_GRACE_DAYS)) return "grace";
+  return null;
 }
 // A staff member is treated as absent for a quarter if they'd already gone inactive before that quarter began.
 function isStaffInactiveForQuarter(u, fy, quarter) {
@@ -5519,9 +5541,17 @@ function GoalSetting({ user, users=[], goals=[], setGoals }) {
 
   const renderStaffPage = (staffId) => {
     const su = users.find(x=>x.id===staffId);
-    const quarters = quartersForFY.filter(q => !isStaffInactiveForQuarter(su, fy, q) && !isGraceExcludedQuarter(fy, q, effectiveJoinDate(su)));
+    const quarters = quartersForFY.filter(q => !goalQuarterExclusion(su, fy, q, goals));
+    const graceQ = quartersForFY.find(q => goalQuarterExclusion(su, fy, q, goals)==="grace");
+    const jd = effectiveJoinDate(su);
+    const nextQ = graceQ ? quarters.find(q => GOAL_QUARTER_ORDER.indexOf(q) > GOAL_QUARTER_ORDER.indexOf(graceQ)) : null;
     return (
       <div style={{display:"flex",flexDirection:"column",gap:14}}>
+        {graceQ && (
+          <div className="card" style={{padding:"10px 14px",borderLeft:"3px solid var(--border)"}}>
+            <span className="tx tsl">{staffId===user.id?"You":"They"} joined on {fmtDate(jd)}, within the last {GOAL_GRACE_DAYS} days of {graceQ} ({quarterLabel(fy,graceQ)}), so goal setting for {graceQ} is skipped.{nextQ ? ` Goals start from ${nextQ}.` : " Goals start from the next quarter."}</span>
+          </div>
+        )}
         {quarters.length===0 && <div className="es">No applicable quarters for this staff member in FY {fy}.</div>}
         {quarters.map(q => {
           const rec = goals.find(g=>g.fy===fy&&g.quarter===q&&g.staffId===staffId);
@@ -5534,7 +5564,7 @@ function GoalSetting({ user, users=[], goals=[], setGoals }) {
   if(isP) {
     const staffList = users.filter(u => {
       if(u.role==="partner") return false;
-      const hasApplicableQuarter = quartersForFY.some(q => !isStaffInactiveForQuarter(u, fy, q) && !isGraceExcludedQuarter(fy, q, effectiveJoinDate(u)));
+      const hasApplicableQuarter = quartersForFY.some(q => !goalQuarterExclusion(u, fy, q, goals));
       if(hasApplicableQuarter) return true;
       return goals.some(g=>g.fy===fy && g.staffId===u.id); // no quarter left this FY, but keep if a record exists (historical)
     });
@@ -5676,6 +5706,7 @@ export default function App() {
     GOAL_QUARTER_ORDER.filter(q=>isQuarterInGoalScheme(fy,q)).forEach(q => {
       const [s,e] = quarterDateRange(fy,q);
       if(today<s) return;
+      if(goalQuarterExclusion(users.find(x=>x.id===currentUser.id)||currentUser, fy, q, goals)) return;
       const rec = goals.find(g=>g.fy===fy&&g.quarter===q&&g.staffId===currentUser.id);
       if(!rec || rec.goalStatus!=="submitted") { cnt++; return; }
       if(phaseReviewStatus(rec.goals,true)==="resubmission") { cnt++; return; }
