@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { initializeApp } from "firebase/app";
-import { getFirestore, collection, doc, onSnapshot, setDoc, deleteDoc, getDoc, getDocs } from "firebase/firestore";
-import { getAuth, signInWithEmailAndPassword, signOut, updatePassword, reauthenticateWithCredential, EmailAuthProvider, createUserWithEmailAndPassword } from "firebase/auth";
+import { getFirestore, collection, doc, onSnapshot, setDoc, deleteDoc, getDocs } from "firebase/firestore";
+import { getAuth, signInWithEmailAndPassword, signOut, updatePassword, reauthenticateWithCredential, EmailAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, sendPasswordResetEmail } from "firebase/auth";
 
 // ── FIREBASE CONFIG ──
 const firebaseConfig = {
@@ -16,6 +16,9 @@ const firebaseConfig = {
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
 const auth = getAuth(firebaseApp);
+// Second, independent Auth instance used ONLY to create new staff accounts,
+// so the partner creating the account stays signed in as themselves.
+const secondaryAuth = getAuth(initializeApp(firebaseConfig, "secondary"));
 
 // ── CONSTANTS ──
 const ADMIN_EMAIL = "nitesh@msna.co.in";
@@ -36,25 +39,6 @@ const APPRAISAL_METRICS = [
   { key:"clientSatisfaction", label:"Client satisfaction",           traits:"Based on client feedback on the overall engagement" },
 ];
 
-const SEED_USERS = [
-  { id:"u1", name:"Naveen S N",     email:"naveen@msna.co.in",   role:"partner", billingRate:5000, active:true },
-  { id:"u2", name:"Nitesh M N",     email:"nitesh@msna.co.in",   role:"partner", billingRate:5000, active:true },
-  { id:"u3", name:"Madan Hemaraju", email:"madan@msna.co.in",    role:"partner", billingRate:5000, active:true },
-  { id:"u4", name:"Ashwini Magod",  email:"ashwini@msna.co.in",  role:"partner", billingRate:5000, active:true },
-  { id:"u5", name:"Namitha M N",    email:"namitha@msna.co.in",  role:"partner", billingRate:5000, active:true },
-  { id:"u6", name:"Ravi Kumar",     email:"ravi@msna.co.in",     role:"manager", billingRate:2500, active:true },
-  { id:"u7", name:"Priya Sharma",   email:"priya@msna.co.in",    role:"manager", billingRate:2500, active:true },
-  { id:"u8", name:"Arjun Reddy",    email:"arjun@msna.co.in",    role:"intern",  billingRate:800,  active:true },
-  { id:"u9", name:"Sneha Patel",    email:"sneha@msna.co.in",    role:"intern",  billingRate:800,  active:true },
-];
-const SEED_PASSWORDS = {
-  "naveen@msna.co.in":"partner123","nitesh@msna.co.in":"partner123",
-  "madan@msna.co.in":"partner123","ashwini@msna.co.in":"partner123",
-  "namitha@msna.co.in":"partner123","ravi@msna.co.in":"manager123",
-  "priya@msna.co.in":"manager123","arjun@msna.co.in":"intern123","sneha@msna.co.in":"intern123",
-};
-
-// ── STORAGE ──
 // ── FIRESTORE HELPERS ──
 const fsSet = async (col, id, data) => {
   try { await setDoc(doc(db, col, id), data); } catch(e) { console.error("fsSet error", e); }
@@ -63,39 +47,24 @@ const fsDel = async (col, id) => {
   try { await deleteDoc(doc(db, col, id)); } catch(e) { console.error("fsDel error", e); }
 };
 
-// ── INIT: Seed Firestore with default users/passwords on first run ──
-const initStorage = async () => {
-  try {
-    const snap = await getDoc(doc(db, "meta", "seeded"));
-    if (!snap.exists()) {
-      for (const u of SEED_USERS) await fsSet("users", u.id, u);
-      // Seed passwords into Firestore
-      for (const [email, pw] of Object.entries(SEED_PASSWORDS)) {
-        await fsSet("passwords", btoa(email), { email, pw });
-      }
-      await fsSet("meta", "seeded", { at: new Date().toISOString() });
-    }
-  } catch(e) { console.error("initStorage error", e); }
-  // Migrate any localStorage passwords to Firestore (handles passwords set before this fix)
-  try {
-    const localPws = getStoreObj("msna_passwords");
-    for (const [email, pw] of Object.entries(localPws)) {
-      const existing = await getDoc(doc(db, "passwords", btoa(email))).catch(()=>null);
-      if (!existing || !existing.exists()) {
-        await fsSet("passwords", btoa(email), { email, pw });
-      }
-    }
-    // Additional passwords can be set via User Management in the app
-  } catch(e) {}
-  if (!localStorage.getItem("msna_passwords")) localStorage.setItem("msna_passwords", JSON.stringify(SEED_PASSWORDS));
-};
-
-// Keep for password lookups only (passwords stay local, never in cloud)
-const getStoreObj = k => { try { return JSON.parse(localStorage.getItem(k)||"{}"); } catch { return {}; } };
+// ── SECURITY (v34) ──
+// Passwords live ONLY in Firebase Auth. Nothing password-related is stored in Firestore or the browser.
+// Older versions cached passwords in localStorage; wipe that cache on every load.
+const clearLegacyPasswordCache = () => { try { localStorage.removeItem("msna_passwords"); } catch(e) {} };
+// Cost rates are partner-only and live in the "rates" collection, not on the user doc.
+const RATE_FIELDS = ["actualRate","actualRateEffectiveDate"];
+const stripRates = u => { const c = { ...u }; RATE_FIELDS.forEach(f => { delete c[f]; }); return c; };
+const hasRateFields = u => RATE_FIELDS.some(f => f in u);
+const roleKey = email => (email||"").trim().toLowerCase();
 
 // ── FIRESTORE REAL-TIME HOOK ──
-function useLS(colName, fallback=[]) {
+// enabled=false → no listener (e.g. before sign-in, or a partner-only collection for non-partners).
+// A Firestore listener that is refused by security rules dies permanently, so we only
+// open it once the user is signed in, and re-open it whenever "enabled" flips on.
+// Returns [data, set, loaded] — loaded is true once the first snapshot has arrived.
+function useLS(colName, fallback=[], enabled=true) {
   const [data, setData] = useState(fallback);
+  const [loaded, setLoaded] = useState(false);
   const isArr = Array.isArray(fallback);
   // Keep a ref to latest data for use in set() without stale closure
   const dataRef = useRef(fallback);
@@ -103,17 +72,19 @@ function useLS(colName, fallback=[]) {
   // Subscribe to Firestore real-time updates
   useEffect(() => {
     if (!isArr) return;
+    if (!enabled) { dataRef.current = fallback; setData(fallback); setLoaded(false); return; }
     const unsub = onSnapshot(
       collection(db, colName),
       snap => {
         const docs = snap.docs.map(d => ({ ...d.data(), id: d.id }));
         dataRef.current = docs;
         setData(docs);
+        setLoaded(true);
       },
       err => console.error("onSnapshot error", colName, err)
     );
     return unsub;
-  }, [colName, isArr]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [colName, isArr, enabled]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Write to Firestore FIRST, then update local state
   // This avoids calling fsSet inside a state updater
@@ -143,7 +114,7 @@ function useLS(colName, fallback=[]) {
     });
   }, [colName]);
 
-  return [data, set];
+  return [data, set, loaded];
 }
 
 // ── UTILS ──
@@ -633,11 +604,18 @@ function Login({ onLogin }) {
     try {
       // Sign in via Firebase Auth
       await signInWithEmailAndPassword(auth, email.trim(), pw);
-      // Load user profile from Firestore
-      const usersSnap = await getDocs(collection(db, "users")).catch(()=>null);
-      const users = usersSnap && !usersSnap.empty ? usersSnap.docs.map(d=>({...d.data(),id:d.id})) : SEED_USERS;
-      const u = users.find(x=>x.email.toLowerCase()===email.trim().toLowerCase()&&x.active);
-      if(!u){ setErr("No active account found for this email."); setLoading(false); return; }
+      // Load user profile from Firestore (security rules only allow this for staff on the access list)
+      let usersSnap;
+      try { usersSnap = await getDocs(collection(db, "users")); }
+      catch(e) {
+        console.error("Profile load refused", e);
+        await signOut(auth).catch(()=>{});
+        setErr("Your account does not have access yet. Please contact the Admin.");
+        setLoading(false); return;
+      }
+      const users = usersSnap.docs.map(d=>({...d.data(),id:d.id}));
+      const u = users.find(x=>roleKey(x.email)===roleKey(email)&&x.active);
+      if(!u){ await signOut(auth).catch(()=>{}); setErr("No active account found for this email."); setLoading(false); return; }
       onLogin(u);
     } catch(e) {
       if(e.code==="auth/invalid-credential"||e.code==="auth/wrong-password"||e.code==="auth/user-not-found"){
@@ -2513,7 +2491,7 @@ function AuditTrail({ audit=[] }) {
       <div className="sh"><div><div className="card-title">Audit Trail</div><div className="card-sub mt4 ts">Last 100 system actions, newest first</div></div></div>
       <div className="card">
         {auditSorted.length===0?<div className="es"><div className="es-icon"><I n="history" s={36}/></div>No audit records yet.</div>:
-          audit.map(a=>(
+          auditSorted.map(a=>(
             <div key={a.id} className="audit-row">
               <div style={{width:8,height:8,borderRadius:"50%",background:color(a.action),flexShrink:0,marginTop:5}}/>
               <div style={{flex:1}}>
@@ -2541,56 +2519,85 @@ function UserManagement({ user, users=[], setUsers, isPartner=false }) {
   const [search,setSrch]  =useState("");
   const [umPage,setUMPage]=useState(1);
   const [deactivateFor,setDeactivateFor]=useState(null); // { id, name, date }
+  const [saving,setSaving]=useState(false);
+  const [resetMsg,setResetMsg]=useState("");
   const UM_PAGE = 10;
   const isAdmin = user.email===ADMIN_EMAIL;
   const isPartnerUser = user.role==="partner";
 
-  const openAdd=()=>{setEU(null);setF({name:"",email:"",role:"intern",dateOfJoining:todayStr(),billingRate:"",billingRateEffectiveDate:todayStr(),actualRate:"",actualRateEffectiveDate:todayStr(),password:""});setFerr("");setSM(true);};
-  const openEdit=u=>{setEU(u);setF({name:u.name,email:u.email,role:u.role,dateOfJoining:u.dateOfJoining||"",billingRate:u.billingRate,billingRateEffectiveDate:u.billingRateEffectiveDate||todayStr(),actualRate:u.actualRate||"",actualRateEffectiveDate:u.actualRateEffectiveDate||todayStr(),password:""});setFerr("");setSM(true);};
+  const openAdd=()=>{setEU(null);setF({name:"",email:"",role:"intern",dateOfJoining:todayStr(),billingRate:"",billingRateEffectiveDate:todayStr(),actualRate:"",actualRateEffectiveDate:todayStr(),password:""});setFerr("");setResetMsg("");setSM(true);};
+  const openEdit=u=>{setEU(u);setF({name:u.name,email:u.email,role:u.role,dateOfJoining:u.dateOfJoining||"",billingRate:u.billingRate,billingRateEffectiveDate:u.billingRateEffectiveDate||todayStr(),actualRate:u.actualRate||"",actualRateEffectiveDate:u.actualRateEffectiveDate||todayStr(),password:""});setFerr("");setResetMsg("");setSM(true);};
+
+  // Cost rates are written to the partner-only "rates" collection, never to the user doc.
+  const writeRates = (userId) => setDoc(doc(db, "rates", userId), {
+    actualRate: form.actualRate ? Number(form.actualRate) : null,
+    actualRateEffectiveDate: form.actualRateEffectiveDate || todayStr(),
+  });
+
+  // Firebase emails the staff member a secure link to set a new password. Nobody else ever sees it.
+  const sendReset = async (email) => {
+    setResetMsg("");
+    try {
+      await sendPasswordResetEmail(auth, email);
+      setResetMsg(`Password reset link sent to ${email}. Ask them to check spam if it does not arrive in a few minutes.`);
+      addAudit(user.id,user.name,"SEND_PASSWORD_RESET",`Sent password reset link to ${email}`);
+    } catch(e) {
+      console.error("Reset email error", e);
+      setResetMsg("Could not send the reset link. Please try again.");
+    }
+  };
 
   const save= async ()=>{
+    if(saving) return;
+    setFerr("");
     if(!form.name||!form.email||!form.billingRate){setFerr("Name, email and billing rate are required.");return;}
     if(!editU && !form.dateOfJoining){setFerr("Date of joining is required for new staff.");return;}
-    if(!form.email.endsWith("@msna.co.in")){setFerr("Must be an @msna.co.in address.");return;}
+    if(!roleKey(form.email).endsWith("@msna.co.in")){setFerr("Must be an @msna.co.in address.");return;}
     if(editU){
-      setUsers(p=>p.map(u=>u.id===editU.id?{...u,
+      setSaving(true);
+      try { await writeRates(editU.id); }
+      catch(e){ console.error("Rates save error",e); setFerr("Could not save the cost rate. Please try again."); setSaving(false); return; }
+      setUsers(p=>p.map(u=>u.id===editU.id?stripRates({...u,
         name:form.name,role:form.role,
         dateOfJoining:form.dateOfJoining||u.dateOfJoining||null,
         billingRate:Number(form.billingRate),
         billingRateEffectiveDate:form.billingRateEffectiveDate||todayStr(),
-        actualRate:form.actualRate?Number(form.actualRate):null,
-        actualRateEffectiveDate:form.actualRateEffectiveDate||todayStr(),
-      }:u));
-      if(form.password){
-        // Update password in Firebase Auth
-        try {
-          const usersSnap = await getDocs(collection(db,"users"));
-          const existing = usersSnap.docs.find(d=>d.data().email.toLowerCase()===form.email.toLowerCase());
-          if(existing){
-            // Can't update another user's password from client SDK — store in Firestore for now, admin handles via console if needed
-            fsSet("passwords", btoa(form.email), {email:form.email, pw:form.password});
-          }
-        } catch(e){ console.error("Auth update error",e); }
-      }
+      }):u));
       addAudit(user.id,user.name,"EDIT_USER",`Updated ${form.email}`);
+      setSaving(false);
     } else {
-      if(!form.password){setFerr("Password is required for new users.");return;}
-      if(users.find(u=>u.email.toLowerCase()===form.email.toLowerCase())){setFerr("Email already exists.");return;}
-      setUsers(p=>[...p,{id:genId(),name:form.name,email:form.email,role:form.role,
+      if(!form.password){setFerr("Initial password is required for new users.");return;}
+      if(form.password.length<6){setFerr("Initial password must be at least 6 characters.");return;}
+      if(users.find(u=>roleKey(u.email)===roleKey(form.email))){setFerr("Email already exists.");return;}
+      setSaving(true);
+      // 1. Create the login first, on the secondary Auth instance, so this partner stays signed in.
+      let alreadyHadLogin = false;
+      try {
+        await createUserWithEmailAndPassword(secondaryAuth, roleKey(form.email), form.password);
+      } catch(e){
+        if(e.code==="auth/email-already-in-use") alreadyHadLogin = true;
+        else {
+          console.error("Auth create error",e);
+          setFerr(e.code==="auth/weak-password"?"Initial password is too weak.":"Could not create the login. Please try again.");
+          setSaving(false); return;
+        }
+      } finally {
+        await signOut(secondaryAuth).catch(()=>{});
+      }
+      // 2. Then the staff profile and their cost rate. The password itself is never stored anywhere.
+      const newId = genId();
+      try { await writeRates(newId); }
+      catch(e){ console.error("Rates save error",e); }
+      setUsers(p=>[...p,{id:newId,name:form.name,email:form.email.trim(),role:form.role,
         dateOfJoining:form.dateOfJoining,
         billingRate:Number(form.billingRate),
         billingRateEffectiveDate:form.billingRateEffectiveDate||todayStr(),
-        actualRate:form.actualRate?Number(form.actualRate):null,
-        actualRateEffectiveDate:form.actualRateEffectiveDate||todayStr(),
         active:true}]);
-      // Create Firebase Auth account for new user
-      try {
-        await createUserWithEmailAndPassword(auth, form.email, form.password);
-      } catch(e){
-        if(e.code!=="auth/email-already-in-use") console.error("Auth create error",e);
-      }
-      fsSet("passwords", btoa(form.email), {email:form.email, pw:form.password});
       addAudit(user.id,user.name,"CREATE_USER",`Created ${form.email} as ${form.role}`);
+      setSaving(false);
+      if(alreadyHadLogin){
+        alert(`${form.email} already had a login from before, so the password you typed was NOT applied. Their old password still works. Use "Send password reset link" on their profile if they need a new one.`);
+      }
     }
     setSM(false);
   };
@@ -2611,7 +2618,6 @@ function UserManagement({ user, users=[], setUsers, isPartner=false }) {
     if(target.email===ADMIN_EMAIL){ alert("The Admin account cannot be deleted."); return; }
     if(!window.confirm(`Delete ${target.name}? Their timesheets will be kept for records but they will no longer be able to log in.`)) return;
     setUsers(p=>p.filter(u=>u.id!==id));
-    fsDel("passwords", btoa(target.email));
     addAudit(user.id,user.name,"DELETE_USER",`Deleted user ${target.email}`);
   };
 
@@ -2720,10 +2726,23 @@ function UserManagement({ user, users=[], setUsers, isPartner=false }) {
               </div>
               <div className="tx tsl mt4" style={{fontSize:11}}>Used for internal profitability calculation. Not visible to staff.</div>
             </div>
-            <div className="fg"><label className="fl">{editU?"New Password (blank = no change)":"Password *"}</label><input className="fi" type="password" placeholder="Set login password" value={form.password} onChange={e=>setF(f=>({...f,password:e.target.value}))}/></div>
+            {editU?(
+              <div className="fg">
+                <label className="fl">Password</label>
+                <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                  <button type="button" className="btn bgh bsm" onClick={()=>sendReset(editU.email)}><I n="send" s={13}/>Send password reset link</button>
+                  <span className="tx tsl">They set their own new password from the email. No one else sees it.</span>
+                </div>
+                {resetMsg&&<div className="al al-i" style={{marginTop:10,marginBottom:0}}><I n="info" s={14}/><div>{resetMsg}</div></div>}
+              </div>
+            ):(
+              <div className="fg"><label className="fl">Initial Password *</label><input className="fi" type="password" placeholder="Min 6 characters" value={form.password} onChange={e=>setF(f=>({...f,password:e.target.value}))}/>
+                <div className="tx tsl mt4">Share it with them privately. They should change it after first sign-in. It is not saved anywhere in the app.</div>
+              </div>
+            )}
             <div className="md-actions">
               <button className="btn bgh" onClick={()=>setSM(false)}>Cancel</button>
-              <button className="btn bp" onClick={save}><I n="check" s={15}/>{editU?"Save Changes":"Create Account"}</button>
+              <button className="btn bp" onClick={save} disabled={saving}><I n="check" s={15}/>{saving?"Saving...":editU?"Save Changes":"Create Account"}</button>
             </div>
           </div>
         </div>
@@ -4494,8 +4513,6 @@ function ChangePassword({ user, setTab }) {
       await reauthenticateWithCredential(auth.currentUser, credential);
       // Update password in Firebase Auth
       await updatePassword(auth.currentUser, newPw);
-      // Also keep Firestore passwords collection in sync
-      await fsSet("passwords", btoa(user.email), { email:user.email, pw:newPw });
       addAudit(user.id, user.name, "CHANGE_PASSWORD", `Password changed by ${user.email}`);
       setSuccess(true);
       setCurPw(""); setNewPw(""); setConfPw("");
@@ -5939,19 +5956,79 @@ function GoalSetting({ user, users=[], goals=[], setGoals }) {
 export default function App() {
   const [currentUser,setCU]=useState(null);
   const [tab,setTab]       =useState("dashboard");
-  useEffect(()=>{ initStorage().catch(console.error); },[]);
+
+  // ── Firebase Auth session: data listeners open only once someone is signed in ──
+  const [authUser,setAuthUser]=useState(null);
+  useEffect(()=>{
+    clearLegacyPasswordCache();
+    return onAuthStateChanged(auth, u=>setAuthUser(u));
+  },[]);
+  const signedIn  = !!authUser;
+  const isPartner = !!currentUser && currentUser.role==="partner";
+  const isAdminUser = !!currentUser && currentUser.email===ADMIN_EMAIL;
 
   // ── Load ALL data at root level from Firestore and pass down as props ──
-  const [users,   setUsers]    = useLS("users",    SEED_USERS);
-  const [projects,setProjects] = useLS("projects", []);
-  const [tss,     setTss]      = useLS("timesheets",[]);
-  const [locked,  setLocked]   = useLS("locked_months",[]);
-  const [audit]                = useLS("audit",    []);
-  const [leaves,  setLeaves]   = useLS("leaves",   []);
-  const [appraisals, setAppraisals] = useLS("appraisals", []);
-  const [goals, setGoals] = useLS("goals", []);
+  const [users,   setUsers, usersLoaded] = useLS("users", [], signedIn);
+  const [projects,setProjects] = useLS("projects", [], signedIn);
+  const [tss,     setTss]      = useLS("timesheets",[], signedIn);
+  const [locked,  setLocked]   = useLS("locked_months",[], signedIn);
+  const [audit]                = useLS("audit",    [], isPartner);
+  const [leaves,  setLeaves]   = useLS("leaves",   [], signedIn);
+  const [appraisals, setAppraisals] = useLS("appraisals", [], signedIn);
+  const [goals, setGoals] = useLS("goals", [], signedIn);
+  // Partner-only collections
+  const [rates, , ratesLoaded] = useLS("rates", [], isPartner);
+  const [roles, , rolesLoaded] = useLS("roles", [], isPartner);
 
-  const db_props = { users, setUsers, projects, setProjects, tss, setTss, locked, setLocked, audit, leaves, setLeaves, appraisals, setAppraisals, goals, setGoals };
+  // Partners see cost rates merged onto each user (from "rates"); everyone else never gets them.
+  const usersView = useMemo(()=>{
+    if(!isPartner) return users.map(stripRates);
+    return users.map(u=>{
+      const r = rates.find(x=>x.id===u.id);
+      return r ? { ...u, actualRate:r.actualRate??null, actualRateEffectiveDate:r.actualRateEffectiveDate??null } : u;
+    });
+  },[users,rates,isPartner]);
+
+  // ── Access list: roles/{email} mirrors every ACTIVE user. Security rules read it to decide who gets in.
+  // Kept in sync automatically whenever a partner has the app open. Deactivated or deleted staff drop off it.
+  useEffect(()=>{
+    if(!isPartner||!usersLoaded||!rolesLoaded) return;
+    const me = roleKey(currentUser.email);
+    const desired = {};
+    users.forEach(u=>{ if(u.active!==false && u.email) desired[roleKey(u.email)] = { role:u.role, userId:u.id }; });
+    if(!desired[me]) return; // safety: never touch the list if the signed-in partner isn't on it
+    Object.entries(desired).forEach(([email,v])=>{
+      const ex = roles.find(r=>r.id===email);
+      if(!ex || ex.role!==v.role || ex.userId!==v.userId) fsSet("roles", email, { email, role:v.role, userId:v.userId });
+    });
+    roles.forEach(r=>{ if(!desired[r.id] && r.id!==me) fsDel("roles", r.id); });
+  },[isPartner,usersLoaded,rolesLoaded,users,roles,currentUser]);
+
+  // ── One-time migration (Admin only): move cost rates off user docs into "rates" ──
+  // Copies first, then strips. Never overwrites a rate that already exists in "rates".
+  const rateMigrationRunning = useRef(false);
+  useEffect(()=>{
+    if(!isAdminUser||!usersLoaded||!ratesLoaded||rateMigrationRunning.current) return;
+    const pending = users.filter(hasRateFields);
+    if(!pending.length) return;
+    rateMigrationRunning.current = true;
+    (async()=>{
+      let moved = 0;
+      for(const u of pending){
+        try {
+          if(!rates.some(r=>r.id===u.id)){
+            await setDoc(doc(db,"rates",u.id), { actualRate:u.actualRate??null, actualRateEffectiveDate:u.actualRateEffectiveDate??null });
+          }
+          await setDoc(doc(db,"users",u.id), stripRates(u));
+          moved++;
+        } catch(e){ console.error("Rate migration error", u.id, e); break; }
+      }
+      if(moved) addAudit(currentUser.id,currentUser.name,"SECURITY_MIGRATION",`Moved cost rates of ${moved} staff to partner-only storage`);
+      rateMigrationRunning.current = false;
+    })();
+  },[isAdminUser,usersLoaded,ratesLoaded,users,rates,currentUser]);
+
+  const db_props = { users:usersView, setUsers, projects, setProjects, tss, setTss, locked, setLocked, audit, leaves, setLeaves, appraisals, setAppraisals, goals, setGoals };
 
   // ── Migration: fix existing pending intern entries on projects with no managers ──
   // These entries were stuck — no manager to approve them, not visible to partner either
