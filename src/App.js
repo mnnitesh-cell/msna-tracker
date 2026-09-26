@@ -5096,7 +5096,7 @@ function AppraisalForm({ user, users, req, existing, onSave, onBack }) {
               const { sum:hSum, max:hMax, pct:hPct } = calcAppraisalScore(h.metrics);
               return (
                 <div key={i} style={{marginTop:8,padding:"10px 12px",background:"var(--cream)",borderRadius:8,border:"1px solid var(--border)"}}>
-                  <div className="tx tsl">Replaced by {users.find(u=>u.id===h.replacedBy)?.name||"—"} on {fmtDate(h.replacedAt)} · previous score {h.notApplicable?"Not applicable":hMax?`${hSum}/${hMax} (${hPct}%)`:"All N/A"}</div>
+                  <div className="tx tsl">Replaced by {users.find(u=>u.id===h.replacedBy)?.name||"—"} on {fmtDate(h.replacedAt)} · previous score {h.notApplicable?"Not applicable":hMax?`${hSum}/${hMax} (${Math.round(hPct)}%)`:"All N/A"}</div>
                   {h.notApplicable && <div className="tx" style={{marginTop:6,fontSize:12}}><b>Reason:</b> {h.naReason||"—"}</div>}
                   {!h.notApplicable && APPRAISAL_METRICS.map(m => {
                     const v = h.metrics?.[m.key];
@@ -5165,7 +5165,7 @@ function AppraisalForm({ user, users, req, existing, onSave, onBack }) {
 
         <div className="fxb" style={{borderTop:"1px solid var(--border)",paddingTop:14,marginTop:4}}>
           <span className="ts tsl">Overall score</span>
-          <span style={{fontFamily:"'Playfair Display',serif",fontSize:22}}>{notApplicable?"Not applicable":max?`${sum}/${max} (${pct}%)`:"All N/A"}</span>
+          <span style={{fontFamily:"'Playfair Display',serif",fontSize:22}}>{notApplicable?"Not applicable":max?`${sum}/${max} (${Math.round(pct)}%)`:"All N/A"}</span>
         </div>
 
         {existing && (
@@ -5237,7 +5237,7 @@ function AppraisalListRow({ r, ex, onClick, actions }) {
         {actions}
       </div>
       <div style={{flexShrink:0}}>
-        {sc.kind==="score" ? <span className="bdg bac">{sc.pct}%</span>
+        {sc.kind==="score" ? <span className="bdg bac">{Math.round(sc.pct)}%</span>
           : sc.kind==="na" ? <span className="bdg bcl" title={ex?.naReason||"All metrics marked N/A"}>N/A · excluded</span>
           : ex?.status==="draft" ? <span className="bdg brs">Draft</span> : <span className="bdg bcl">Pending</span>}
       </div>
@@ -5256,7 +5256,7 @@ function quarterDisplay(fy, quarter, items, showAvg) {
   if(upcoming && s.scored===0) return { s, main:"Upcoming", muted:true, upcoming, provisional:false };
   if(s.total===0) return { s, main:"N/A", muted:true, provisional:false };
   if(!showAvg) return { s, main:`${s.total-s.pending}/${s.total}`, muted:s.pending===s.total, provisional:false };
-  if(s.avg!=null) return { s, main:`${s.avg}%`, muted:false, provisional };
+  if(s.avg!=null) return { s, main:`${Math.round(s.avg)}%`, muted:false, provisional };
   return { s, main: provisional ? "Pending" : "N/A", muted:true, provisional:false };
 }
 
@@ -5264,17 +5264,60 @@ const ProvisionalTag = ({ small }) => (
   <span className="bdg brs" style={small?{fontSize:9.5,padding:"1px 6px"}:{}} title="Some appraisals in this quarter are still open, so this average can change">Provisional</span>
 );
 
-// Compact Q1–Q4 strip on a staff card
-function QuarterStrip({ fy, items, showAvg }) {
+// ── Name-card quarter row: whole-number scores, coloured against the previous scored quarter ──
+const TREND_UP = "#15803d", TREND_DOWN = "#b91c1c", PROV_GOLD = "#d69e2e";
+function prevQuarterOf(fy, quarter) {
+  const i = GOAL_QUARTER_ORDER.indexOf(quarter);
+  if(i>0) return { fy, quarter:GOAL_QUARTER_ORDER[i-1] };
+  const y = Number(fy.split("-")[0])-1;
+  return { fy:`${y}-${String((y+1)%100).padStart(2,"0")}`, quarter:"Q4" };
+}
+// Rounded average of the most recent earlier quarter that has a score (crosses into the previous FY).
+function priorRoundedScore(fy, quarter, history) {
+  let cur = { fy, quarter };
+  for(let n=0; n<12; n++) {
+    cur = prevQuarterOf(cur.fy, cur.quarter);
+    if(quarterDateRange(cur.fy, cur.quarter)[1] < APPRAISAL_START_DATE) return null;
+    const s = quarterAverage(history.filter(i=>i.fy===cur.fy && i.quarter===cur.quarter));
+    if(s.avg!=null) return Math.round(s.avg);
+  }
+  return null;
+}
+const ProvDot = () => <span style={{display:"inline-block",width:5,height:5,borderRadius:"50%",background:PROV_GOLD,marginLeft:3,alignSelf:"flex-start",marginTop:3}}/>;
+
+function TrendLegend() {
+  const sw = c => <i style={{width:8,height:8,borderRadius:2,background:c,display:"inline-block"}}/>;
+  const item = { display:"inline-flex", alignItems:"center", gap:6 };
   return (
-    <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginTop:12}}>
+    <div style={{display:"flex",flexWrap:"wrap",gap:"6px 18px",fontSize:12,color:"var(--slate)",alignItems:"center",marginBottom:16}}>
+      <span style={item}>{sw(TREND_UP)}Improved on last quarter</span>
+      <span style={item}>{sw(TREND_DOWN)}Dipped</span>
+      <span style={item}>{sw("var(--navy)")}Unchanged / first score</span>
+      <span style={item}><i style={{width:5,height:5,borderRadius:"50%",background:PROV_GOLD,display:"inline-block"}}/>Provisional</span>
+      <span style={item}>— Not started</span>
+    </div>
+  );
+}
+
+function QuarterStrip({ fy, items, showAvg, history=[] }) {
+  return (
+    <div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",columnGap:10,marginTop:12,paddingTop:10,borderTop:"1px solid var(--border)"}}>
       {GOAL_QUARTER_ORDER.map(q=>{
         const d = quarterDisplay(fy, q, items, showAvg);
+        let cell;
+        if(d.upcoming && d.s.scored===0) cell = <span style={{color:"#b3bac6"}}>—</span>;
+        else if(showAvg && d.s.avg!=null) {
+          const cur = Math.round(d.s.avg);
+          const prev = priorRoundedScore(fy, q, history);
+          const color = prev==null || prev===cur ? "var(--navy)" : cur>prev ? TREND_UP : TREND_DOWN;
+          cell = <><span style={{color,fontWeight:600}}>{cur}%</span>{d.provisional && <ProvDot/>}</>;
+        }
+        else if(!showAvg && d.s.total>0) cell = <span style={{fontWeight:600,color:"var(--navy)"}}>{d.main}</span>;
+        else cell = <span style={{color:"#b3bac6",fontSize:12.5}}>{d.main}</span>;
         return (
-          <div key={q} title={quarterLabel(fy,q)} style={{background:"var(--cream)",border:`1px solid ${d.provisional?"#fcd34d":"var(--border)"}`,borderRadius:8,padding:"6px 4px",textAlign:"center"}}>
-            <div className="tx tsl" style={{fontSize:10.5,letterSpacing:.5}}>{q}</div>
-            <div style={{fontSize:13,fontWeight:600,marginTop:2,color:d.muted?"var(--slate)":"var(--navy)"}}>{d.main}</div>
-            {d.provisional && <div style={{fontSize:9.5,color:"#92400e",marginTop:1}}>Provisional</div>}
+          <div key={q} title={quarterLabel(fy,q)} style={{minWidth:0}}>
+            <div style={{fontSize:11,color:"var(--slate)",letterSpacing:.5}}>{q}</div>
+            <div style={{height:20,marginTop:3,display:"flex",alignItems:"baseline",whiteSpace:"nowrap",fontSize:14.5,fontVariantNumeric:"tabular-nums"}}>{cell}</div>
           </div>
         );
       })}
@@ -5332,7 +5375,7 @@ function QuarterAppraisalList({ fy, quarter, items, showAvg, onOpen, rowActions 
           </div>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             {s.avg!=null && (provisional ? <ProvisionalTag/> : <span className="bdg bac">Final</span>)}
-            <span style={{fontFamily:"'Playfair Display',serif",fontSize:24}}>{s.avg!=null?`${s.avg}%`:provisional?"Pending":"N/A"}</span>
+            <span style={{fontFamily:"'Playfair Display',serif",fontSize:24}}>{s.avg!=null?`${Math.round(s.avg)}%`:provisional?"Pending":"N/A"}</span>
           </div>
         </div>
       )}
@@ -5464,20 +5507,20 @@ function PerformanceAppraisal({ user, users=[], projects=[], setProjects, tss=[]
     );
   };
 
-  const staffCards = (items, showAvg, showRole) => {
+  const staffCards = (items, showAvg, showRole, history=[]) => {
     const staffIds = [...new Set(items.map(i=>i.r.staffId))];
     return (
-      <div className="g3">
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:14}}>
         {staffIds.map(sid=>{
           const u = users.find(x=>x.id===sid);
           const inactive = u?.active===false;
           const mine = items.filter(i=>i.r.staffId===sid);
           const done = mine.filter(i=>i.ex?.status==="submitted").length;
           return (
-            <div key={sid} className="card" style={{cursor:"pointer",opacity:inactive?.55:1}} onClick={()=>{setSelStaff(sid);setSelQuarter(null);}}>
-              <div className="fw6">{u?.name}{inactive&&<span className="bdg bcl" style={{marginLeft:8}}>Inactive</span>}</div>
-              <div className="tx tsl mt4">{showRole?`${u?.role} · `:""}{done}/{mine.length} complete</div>
-              <QuarterStrip fy={fy} items={mine} showAvg={showAvg}/>
+            <div key={sid} className="card" style={{cursor:"pointer",opacity:inactive?.55:1,padding:"16px 18px"}} onClick={()=>{setSelStaff(sid);setSelQuarter(null);}}>
+              <div className="fw6" style={{fontSize:15}}>{u?.name}{inactive&&<span className="bdg bcl" style={{marginLeft:8}}>Inactive</span>}</div>
+              <div className="tsl" style={{fontSize:12.5,marginTop:3}}>{showRole&&u?.role?`${u.role.charAt(0).toUpperCase()+u.role.slice(1)} · `:""}{done} of {mine.length} complete</div>
+              <QuarterStrip fy={fy} items={mine} showAvg={showAvg} history={history.filter(i=>i.r.staffId===sid)}/>
             </div>
           );
         })}
@@ -5490,9 +5533,11 @@ function PerformanceAppraisal({ user, users=[], projects=[], setProjects, tss=[]
     if(selStaff) return staffDrill(fyItems, true, "All staff");
     return (
       <div>
-        <FYSelector fy={fy} setFy={changeFy} options={fyList}/>
-        <p className="ts tsl mb8">Staff · quarter scores are the average across engagements appraised in that quarter (N/A excluded)</p>
-        {staffCards(fyItems, true, true)}
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",columnGap:16}}>
+          <FYSelector fy={fy} setFy={changeFy} options={fyList}/>
+          <TrendLegend/>
+        </div>
+        {staffCards(fyItems, true, true, allItems)}
       </div>
     );
   }
