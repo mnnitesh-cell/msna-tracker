@@ -211,15 +211,20 @@ function getRequiredAppraisals(users, projects, tss) {
 
     if(!isRetainer) {
       const staffBooked = [...new Set(projTs.map(t=>t.userId))];
-      const fy = fyOfDate(projTs.reduce((a,b)=>a.date<b.date?a:b).date);
+      // Mapped to the quarter of the first approved hours; managers/partners can push it to later quarters.
+      const firstDate = projTs.reduce((a,b)=>a.date<b.date?a:b).date;
+      const baseFy = fyOfDate(firstDate), baseQuarter = fyQuarterOfDate(firstDate);
+      const fy = p.appraisalQuarter?.fy || baseFy;
+      const quarter = p.appraisalQuarter?.quarter || baseQuarter;
+      const fxExtra = { quarter, baseFy, baseQuarter, pushes:p.appraisalPushes||[], managers };
       staffBooked.forEach(uid => {
         const u = users.find(x=>x.id===uid); if(!u) return;
         if(u.role==="partner") return; // partners are never appraised, regardless of project assignment arrays
         if(managers.includes(uid)) {
-          upsert(`fx-mgr-${p.id}-${uid}`, { type:"fixed", fy, projectId:p.id, projectName:p.name, projectCode:p.code, staffId:uid, appraiserRole:"partner", eligibleAppraisers:partners, primaryAppraiser:p.assignedPartnerId }, p.clientName);
+          upsert(`fx-mgr-${p.id}-${uid}`, { type:"fixed", fy, ...fxExtra, projectId:p.id, projectName:p.name, projectCode:p.code, staffId:uid, appraiserRole:"partner", eligibleAppraisers:partners, primaryAppraiser:p.assignedPartnerId }, p.clientName);
         } else {
           const appraisers = managers.length ? managers : partners;
-          upsert(`fx-staff-${p.id}-${uid}`, { type:"fixed", fy, projectId:p.id, projectName:p.name, projectCode:p.code, staffId:uid, appraiserRole: managers.length?"manager":"partner", eligibleAppraisers:appraisers, primaryAppraiser: managers[0]||p.assignedPartnerId }, p.clientName);
+          upsert(`fx-staff-${p.id}-${uid}`, { type:"fixed", fy, ...fxExtra, projectId:p.id, projectName:p.name, projectCode:p.code, staffId:uid, appraiserRole: managers.length?"manager":"partner", eligibleAppraisers:appraisers, primaryAppraiser: managers[0]||p.assignedPartnerId }, p.clientName);
         }
       });
     } else {
@@ -254,6 +259,53 @@ function findAppraisalFor(appraisals, req) {
     if(req.type==="fixed") return a.projectId===req.projectId;
     return a.fy===req.fy && a.quarter===req.quarter && req.eligibleAppraisers.includes(a.appraiserId);
   });
+}
+
+// ── APPRAISAL: quarter placement + quarter average (v30) ──
+// Retainer appraisals belong to their quarter. A fixed engagement sits in the quarter of its first approved
+// hours, or the later quarter it was pushed to while still running. A submitted appraisal is pinned to the
+// quarter it was submitted under, so a later push of the engagement never moves an existing score.
+function appraisalPeriod(req, ex) {
+  if(req.type==="retainer") return { fy:req.fy, quarter:req.quarter };
+  if(ex?.status==="submitted") {
+    if(ex.periodFy && ex.periodQuarter) return { fy:ex.periodFy, quarter:ex.periodQuarter };
+    return { fy:req.baseFy, quarter:req.baseQuarter }; // submitted before pushes existed
+  }
+  return { fy:req.fy, quarter:req.quarter };
+}
+function nextQuarterOf(fy, quarter) {
+  const i = GOAL_QUARTER_ORDER.indexOf(quarter);
+  if(i<3) return { fy, quarter:GOAL_QUARTER_ORDER[i+1] };
+  const y = Number(fy.split("-")[0])+1;
+  return { fy:`${y}-${String((y+1)%100).padStart(2,"0")}`, quarter:"Q1" };
+}
+// Score of one appraisal for averaging.
+//  kind "score"   → pct is the % over scored metrics only (per-metric N/A never pulls it down)
+//  kind "na"      → whole appraisal marked Not applicable, or every metric N/A: excluded from the average
+//  kind "pending" → not submitted yet: no score
+function appraisalScoreOf(ex) {
+  if(!ex || ex.status!=="submitted") return { kind:"pending", pct:null };
+  if(ex.notApplicable) return { kind:"na", pct:null };
+  const { pct } = calcAppraisalScore(ex.metrics);
+  return pct==null ? { kind:"na", pct:null } : { kind:"score", pct };
+}
+// Quarter average = sum of engagement scores ÷ number of engagements scored.
+// N/A engagements are left out of both numerator and denominator.
+function quarterAverage(items) {
+  const scores = items.map(i=>appraisalScoreOf(i.ex));
+  const scored = scores.filter(s=>s.kind==="score");
+  const total = scored.reduce((a,s)=>a+s.pct,0);
+  return {
+    avg: scored.length ? Math.round((total/scored.length)*10)/10 : null,
+    scored: scored.length,
+    na: scores.filter(s=>s.kind==="na").length,
+    pending: scores.filter(s=>s.kind==="pending").length,
+    total: items.length,
+  };
+}
+// Attach the record and its display quarter to each required slot.
+function appraisalItems(reqs, appraisals) {
+  return reqs.map(r => { const ex = findAppraisalFor(appraisals, r); return { r, ex, ...appraisalPeriod(r, ex) }; });
 }
 
 // ── GOAL SETTING ──
@@ -400,6 +452,7 @@ const I = ({ n, s=18 }) => {
     info:     "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z",
     star:     "M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z",
     arrowleft:"M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20z",
+    arrowright:"M4 11h12.17l-5.59-5.59L12 4l8 8-8 8-1.41-1.41L16.17 13H4z",
   };
   return <svg width={s} height={s} viewBox="0 0 24 24" fill="currentColor"><path d={paths[n]||""}/></svg>;
 };
@@ -4941,8 +4994,10 @@ function AppraisalForm({ user, users, req, existing, onSave, onBack }) {
   const staff = users.find(u=>u.id===(existing?existing.staffId:req.staffId));
 
   const blank = () => { const o={}; APPRAISAL_METRICS.forEach(m=>o[m.key]={score:null,na:false,remark:""}); return o; };
-  const [metrics, setMetrics] = useState(existing?existing.metrics:blank());
+  const [metrics, setMetrics] = useState(()=>({ ...blank(), ...(existing?.metrics||{}) }));
   const [valueAddition, setValueAddition] = useState(existing?.valueAddition?.remark || "");
+  const [notApplicable, setNotApplicable] = useState(!!existing?.notApplicable);
+  const [naReason, setNaReason] = useState(existing?.naReason || "");
   const [editUnlocked, setEditUnlocked] = useState(false);
   const [overrideMode, setOverrideMode] = useState(false);
   const [editNote, setEditNote] = useState("");
@@ -4962,16 +5017,25 @@ function AppraisalForm({ user, users, req, existing, onSave, onBack }) {
   const allScored = APPRAISAL_METRICS.every(m => metrics[m.key].na || metrics[m.key].score);
 
   const save = (status) => {
-    if(status==="submitted" && (!allScored || !allRemarksFilled)) { alert("Every metric needs a score (or N/A) and a mandatory remark, and Value Addition needs a note, before submitting."); return; }
+    if(status==="submitted" && notApplicable && !naReason.trim()) { alert("Give a reason for marking this appraisal as not applicable."); return; }
+    if(status==="submitted" && !notApplicable && (!allScored || !allRemarksFilled)) { alert("Every metric needs a score (or N/A) and a mandatory remark, and Value Addition needs a note, before submitting."); return; }
     const base = existing || { id:genId(), type:req.type, fy:req.fy, quarter:req.quarter||null, projectId:req.projectId||null, clientNames:req.clientNames||[], staffId:req.staffId, appraiserRole:req.appraiserRole, appraiserId:user.id, createdAt:new Date().toISOString() };
-    let rec = { ...base, metrics, valueAddition:{ remark:valueAddition }, status };
-    if(status==="submitted") rec.submittedAt = new Date().toISOString();
+    let rec = { ...base, metrics, valueAddition:{ remark:valueAddition }, notApplicable, naReason: notApplicable ? naReason.trim() : "", status };
+    if(status==="submitted") {
+      rec.submittedAt = new Date().toISOString();
+      // Pin a fixed appraisal to the quarter it is submitted under; edits/overrides and later pushes don't move it.
+      if(rec.type==="fixed") {
+        const wasSub = existing?.status==="submitted";
+        rec.periodFy = existing?.periodFy || (wasSub ? req.baseFy : req.fy);
+        rec.periodQuarter = existing?.periodQuarter || (wasSub ? req.baseQuarter : req.quarter);
+      }
+    }
     if(isPartnerViewer && overrideMode && existing) {
-      rec.overrideHistory = [...(existing.overrideHistory||[]), { metrics:existing.metrics, valueAddition:existing.valueAddition, replacedAt:new Date().toISOString(), replacedBy:existing.overriddenBy||existing.appraiserId }];
+      rec.overrideHistory = [...(existing.overrideHistory||[]), { metrics:existing.metrics, valueAddition:existing.valueAddition, notApplicable:!!existing.notApplicable, naReason:existing.naReason||"", replacedAt:new Date().toISOString(), replacedBy:existing.overriddenBy||existing.appraiserId }];
       rec.overriddenBy = user.id; rec.overriddenAt = new Date().toISOString();
     }
     if(isAppraiser && editUnlocked && existing) {
-      rec.editHistory = [...(existing.editHistory||[]), { metrics:existing.metrics, valueAddition:existing.valueAddition, replacedAt:new Date().toISOString() }];
+      rec.editHistory = [...(existing.editHistory||[]), { metrics:existing.metrics, valueAddition:existing.valueAddition, notApplicable:!!existing.notApplicable, naReason:existing.naReason||"", replacedAt:new Date().toISOString() }];
       rec.editRequestStatus = "used";
     }
     onSave(rec);
@@ -4981,8 +5045,9 @@ function AppraisalForm({ user, users, req, existing, onSave, onBack }) {
   const approveEdit = () => onSave({ ...existing, editRequestStatus:"approved", editApprovedBy:user.id, editApprovedAt:new Date().toISOString() });
   const denyEdit    = () => onSave({ ...existing, editRequestStatus:"denied" });
 
+  const fxPeriod = req ? appraisalPeriod(req, existing) : null;
   const scopeLabel = (req?.type||existing?.type)==="fixed"
-    ? "Fixed engagement"
+    ? `Fixed engagement${fxPeriod?` · ${fxPeriod.quarter} FY ${fxPeriod.fy}`:""}`
     : `Retainer · ${existing?.quarter||req?.quarter} FY ${existing?.fy||req?.fy}`;
 
   return (
@@ -5003,6 +5068,16 @@ function AppraisalForm({ user, users, req, existing, onSave, onBack }) {
           <span className={`bdg ${submitted?"bac":"brs"}`}>{submitted?"Submitted":"Draft"}</span>
         </div>
 
+        {(req?.pushes||[]).length>0 && (
+          <div style={{marginTop:14,padding:"10px 12px",background:"var(--cream)",borderRadius:8,border:"1px solid var(--border)"}}>
+            <div className="fw6" style={{fontSize:13}}>Quarter push history</div>
+            {req.pushes.map((h,i)=>(
+              <div key={i} className="tx mt4">
+                {h.action==="pullback"?"Pulled back":"Pushed"} {h.fromQuarter} FY {h.fromFy} → {h.toQuarter} FY {h.toFy} by {users.find(u=>u.id===h.by)?.name||"—"} on {fmtDate(h.at)}{h.reason?<span className="tsl"> · {h.reason}</span>:null}
+              </div>
+            ))}
+          </div>
+        )}
         {isPartnerViewer && !isAppraiser && submitted && (
           <div className="al al-i" style={{marginTop:14,flexWrap:"wrap"}}>
             <I n="info" s={16}/>
@@ -5021,8 +5096,9 @@ function AppraisalForm({ user, users, req, existing, onSave, onBack }) {
               const { sum:hSum, max:hMax, pct:hPct } = calcAppraisalScore(h.metrics);
               return (
                 <div key={i} style={{marginTop:8,padding:"10px 12px",background:"var(--cream)",borderRadius:8,border:"1px solid var(--border)"}}>
-                  <div className="tx tsl">Replaced by {users.find(u=>u.id===h.replacedBy)?.name||"—"} on {fmtDate(h.replacedAt)} · previous score {hMax?`${hSum}/${hMax} (${hPct}%)`:"All N/A"}</div>
-                  {APPRAISAL_METRICS.map(m => {
+                  <div className="tx tsl">Replaced by {users.find(u=>u.id===h.replacedBy)?.name||"—"} on {fmtDate(h.replacedAt)} · previous score {h.notApplicable?"Not applicable":hMax?`${hSum}/${hMax} (${hPct}%)`:"All N/A"}</div>
+                  {h.notApplicable && <div className="tx" style={{marginTop:6,fontSize:12}}><b>Reason:</b> {h.naReason||"—"}</div>}
+                  {!h.notApplicable && APPRAISAL_METRICS.map(m => {
                     const v = h.metrics?.[m.key];
                     return (
                       <div key={m.key} style={{marginTop:6}}>
@@ -5031,10 +5107,10 @@ function AppraisalForm({ user, users, req, existing, onSave, onBack }) {
                       </div>
                     );
                   })}
-                  <div style={{marginTop:6}}>
+                  {!h.notApplicable && <div style={{marginTop:6}}>
                     <div className="tx" style={{fontWeight:600,fontSize:12}}>Value addition</div>
                     <div className="tx tsl" style={{fontSize:12}}>{h.valueAddition?.remark||"—"}</div>
-                  </div>
+                  </div>}
                 </div>
               );
             })}
@@ -5062,21 +5138,34 @@ function AppraisalForm({ user, users, req, existing, onSave, onBack }) {
           {!existing && !canEditNow && (
             <div className="al al-i"><I n="info" s={16}/><div>Not given yet. This appraisal will appear here once your {req.appraiserRole==="partner"?"partner":"manager"} submits it.</div></div>
           )}
-          {APPRAISAL_METRICS.map(m => (
+          {(canEditNow || notApplicable) && (
+            <div style={{padding:"12px 14px",marginBottom:4,borderRadius:10,border:`1.5px solid ${notApplicable?"var(--gold)":"var(--border)"}`,background:notApplicable?"var(--gold-pale)":"transparent"}}>
+              <label style={{display:"flex",alignItems:"center",gap:8,fontSize:13,fontWeight:600,cursor:locked?"default":"pointer"}}>
+                <input type="checkbox" checked={notApplicable} disabled={locked} onChange={e=>setNotApplicable(e.target.checked)}/>
+                Appraisal not applicable for this {(req?.type||existing?.type)==="fixed"?"engagement":"quarter"}
+              </label>
+              <div className="tx tsl mt4">Counts as complete, but is left out of the quarter average score.</div>
+              {notApplicable && (
+                <textarea className="fta" style={{marginTop:8,minHeight:52}} disabled={locked} value={naReason} onChange={e=>setNaReason(e.target.value)}
+                  placeholder="Reason — e.g. only a few hours booked, not enough exposure to assess (mandatory)"/>
+              )}
+            </div>
+          )}
+          {!notApplicable && APPRAISAL_METRICS.map(m => (
             <AppraisalMetricInput key={m.key} m={m} value={metrics[m.key]} disabled={locked}
               onChange={v=>setMetrics(prev=>({...prev,[m.key]:v}))}/>
           ))}
-          <div style={{padding:"14px 0"}}>
+          {!notApplicable && <div style={{padding:"14px 0"}}>
             <div className="fw6" style={{fontSize:14}}>Value addition</div>
             <div className="tx tsl mt4">Standout feature in this engagement — descriptive, not scored</div>
             <textarea className="fta" style={{marginTop:8}} disabled={locked} value={valueAddition} onChange={e=>setValueAddition(e.target.value)}
               placeholder="What stood out — an effort, piece of work, or trait that benefited both the client and the firm (mandatory)"/>
-          </div>
+          </div>}
         </div>
 
         <div className="fxb" style={{borderTop:"1px solid var(--border)",paddingTop:14,marginTop:4}}>
           <span className="ts tsl">Overall score</span>
-          <span style={{fontFamily:"'Playfair Display',serif",fontSize:22}}>{max?`${sum}/${max} (${pct}%)`:"All N/A"}</span>
+          <span style={{fontFamily:"'Playfair Display',serif",fontSize:22}}>{notApplicable?"Not applicable":max?`${sum}/${max} (${pct}%)`:"All N/A"}</span>
         </div>
 
         {existing && (
@@ -5126,8 +5215,8 @@ function FYSelector({ fy, setFy, options }) {
   );
 }
 
-function AppraisalListRow({ r, ex, onClick }) {
-  const { pct } = ex ? calcAppraisalScore(ex.metrics) : {};
+function AppraisalListRow({ r, ex, onClick, actions }) {
+  const sc = appraisalScoreOf(ex);
   const isFixed = r.type==="fixed";
   const label = isFixed ? (r.clientNames||[]).join(", ") : `${(r.clientNames||[]).join(", ")} · ${r.quarter}`;
   // Fixed-fee: a client can have several engagements, so show which one this appraisal is for.
@@ -5145,29 +5234,198 @@ function AppraisalListRow({ r, ex, onClick }) {
           </div>
         )}
         <div className="tx tsl mt4">{isFixed?"Fixed engagement":"Retainer"} · {r.appraiserRole==="partner"?"Partner appraisal":"Manager appraisal"}</div>
+        {actions}
       </div>
       <div style={{flexShrink:0}}>
-        {ex?.status==="submitted" ? <span className="bdg bac">{pct}%</span> : ex?.status==="draft" ? <span className="bdg brs">Draft</span> : <span className="bdg bcl">Pending</span>}
+        {sc.kind==="score" ? <span className="bdg bac">{sc.pct}%</span>
+          : sc.kind==="na" ? <span className="bdg bcl" title={ex?.naReason||"All metrics marked N/A"}>N/A · excluded</span>
+          : ex?.status==="draft" ? <span className="bdg brs">Draft</span> : <span className="bdg bcl">Pending</span>}
       </div>
     </div>
   );
 }
 
-function PerformanceAppraisal({ user, users=[], projects=[], tss=[], appraisals=[], setAppraisals }) {
+// What to show for one quarter: the average (partners / own view), or progress (manager's team view).
+// A quarter stays Provisional while any appraisal in it is still open — even after the quarter has ended.
+function quarterDisplay(fy, quarter, items, showAvg) {
+  const qItems = items.filter(i=>i.fy===fy && i.quarter===quarter);
+  const s = quarterAverage(qItems);
+  const [qStart] = quarterDateRange(fy, quarter);
+  const upcoming = qStart>todayStr();
+  const provisional = s.pending>0;
+  if(upcoming && s.scored===0) return { s, main:"Upcoming", muted:true, upcoming, provisional:false };
+  if(s.total===0) return { s, main:"N/A", muted:true, provisional:false };
+  if(!showAvg) return { s, main:`${s.total-s.pending}/${s.total}`, muted:s.pending===s.total, provisional:false };
+  if(s.avg!=null) return { s, main:`${s.avg}%`, muted:false, provisional };
+  return { s, main: provisional ? "Pending" : "N/A", muted:true, provisional:false };
+}
+
+const ProvisionalTag = ({ small }) => (
+  <span className="bdg brs" style={small?{fontSize:9.5,padding:"1px 6px"}:{}} title="Some appraisals in this quarter are still open, so this average can change">Provisional</span>
+);
+
+// Compact Q1–Q4 strip on a staff card
+function QuarterStrip({ fy, items, showAvg }) {
+  return (
+    <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginTop:12}}>
+      {GOAL_QUARTER_ORDER.map(q=>{
+        const d = quarterDisplay(fy, q, items, showAvg);
+        return (
+          <div key={q} title={quarterLabel(fy,q)} style={{background:"var(--cream)",border:`1px solid ${d.provisional?"#fcd34d":"var(--border)"}`,borderRadius:8,padding:"6px 4px",textAlign:"center"}}>
+            <div className="tx tsl" style={{fontSize:10.5,letterSpacing:.5}}>{q}</div>
+            <div style={{fontSize:13,fontWeight:600,marginTop:2,color:d.muted?"var(--slate)":"var(--navy)"}}>{d.main}</div>
+            {d.provisional && <div style={{fontSize:9.5,color:"#92400e",marginTop:1}}>Provisional</div>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Four quarter cards inside a staff member; click one to see its engagements
+function QuarterTiles({ fy, items, showAvg, onPick }) {
+  return (
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:14}}>
+      {GOAL_QUARTER_ORDER.map(q=>{
+        const d = quarterDisplay(fy, q, items, showAvg);
+        const { s } = d;
+        const clickable = s.total>0;
+        const parts = [];
+        if(s.total>0) {
+          if(d.upcoming && s.scored===0) parts.push(`${s.total} engagement${s.total>1?"s":""} pushed here`);
+          else if(showAvg) {
+            parts.push(`${s.scored} scored`);
+            if(s.na) parts.push(`${s.na} N/A`);
+            if(s.pending) parts.push(`${s.pending} open`);
+          } else parts.push(`${s.total-s.pending} of ${s.total} submitted`);
+        }
+        return (
+          <div key={q} className="card" onClick={clickable?()=>onPick(q):undefined}
+            style={{cursor:clickable?"pointer":"default",opacity:clickable?1:.7}}>
+            <div className="fxb" style={{alignItems:"baseline"}}>
+              <span className="fw6" style={{fontSize:15}}>{q}</span>
+              <span className="tx tsl">{quarterLabel(fy,q)}</span>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginTop:10}}>
+              <span style={{fontFamily:"'Playfair Display',serif",fontSize:28,color:d.muted?"var(--slate)":"var(--navy)"}}>{d.main}</span>
+              {d.provisional && <ProvisionalTag/>}
+            </div>
+            <div className="tx tsl mt4">{showAvg && s.avg!=null ? "Average score" : ""}{showAvg && s.avg!=null && parts.length ? " · " : ""}{parts.join(" · ") || (d.upcoming ? "Quarter not started" : "No appraisals this quarter")}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function QuarterAppraisalList({ fy, quarter, items, showAvg, onOpen, rowActions }) {
+  const qItems = items.filter(i=>i.fy===fy && i.quarter===quarter);
+  const s = quarterAverage(qItems);
+  const provisional = s.pending>0;
+  return (
+    <div>
+      {showAvg && (
+        <div className="card" style={{marginBottom:12,padding:"14px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:16,flexWrap:"wrap"}}>
+          <div>
+            <div className="ts tsl">{quarter} average score</div>
+            <div className="tx tsl mt4">Sum of engagement scores ÷ engagements scored ({s.scored}). N/A engagements{s.na?` (${s.na})`:""} are left out of both.{provisional?` ${s.pending} still open, so this can change.`:""}</div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            {s.avg!=null && (provisional ? <ProvisionalTag/> : <span className="bdg bac">Final</span>)}
+            <span style={{fontFamily:"'Playfair Display',serif",fontSize:24}}>{s.avg!=null?`${s.avg}%`:provisional?"Pending":"N/A"}</span>
+          </div>
+        </div>
+      )}
+      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+        {qItems.map(i=><AppraisalListRow key={i.r.key} r={i.r} ex={i.ex} onClick={()=>onOpen(i.r)} actions={rowActions?rowActions(i):null}/>)}
+        {qItems.length===0 && <div className="es">No appraisals in this quarter.</div>}
+      </div>
+    </div>
+  );
+}
+
+function PerformanceAppraisal({ user, users=[], projects=[], setProjects, tss=[], appraisals=[], setAppraisals }) {
   const isP = user.role==="partner";
   const isMgr = user.role==="manager";
   const rawRequired = useMemo(()=>getRequiredAppraisals(users, projects, tss), [users, projects, tss]);
   const required = useMemo(()=>gateInactiveAppraisals(rawRequired, appraisals, users), [rawRequired, appraisals, users]);
+  const allItems = useMemo(()=>appraisalItems(required, appraisals), [required, appraisals]);
 
-  const fyList = [...new Set([currentFY(), ...required.map(r=>r.fy)])].sort().reverse();
+  const fyList = [...new Set([currentFY(), ...allItems.map(i=>i.fy)])].sort().reverse();
   const [fy, setFy] = useState(currentFY());
   const [subView, setSubView] = useState("received");
   const [selStaff, setSelStaff] = useState(null);
+  const [selQuarter, setSelQuarter] = useState(null);
   const [selReq, setSelReq] = useState(null);
+  const [pushM, setPushM] = useState(null);   // { r } — engagement being pushed
+  const [pushReason, setPushReason] = useState("");
 
-  const visibleReceived  = required.filter(r => r.fy===fy && r.staffId===user.id);
-  const visibleGivenReqs = required.filter(r => r.fy===fy && r.staffId!==user.id && r.eligibleAppraisers.includes(user.id));
+  // ── Push a running fixed engagement to the next quarter (whole engagement, all staff on it) ──
+  const canPush = r => r.type==="fixed" && (isP || (r.managers||[]).includes(user.id));
+  const openOnEngagement = pid => allItems.filter(i=>i.r.type==="fixed" && i.r.projectId===pid && i.ex?.status!=="submitted");
+  const doPush = () => {
+    const r = pushM.r; const reason = pushReason.trim(); if(!reason) return;
+    const to = nextQuarterOf(r.fy, r.quarter);
+    setProjects(ps=>ps.map(p=>p.id!==r.projectId?p:{...p, appraisalQuarter:to,
+      appraisalPushes:[...(p.appraisalPushes||[]), { action:"push", fromFy:r.fy, fromQuarter:r.quarter, toFy:to.fy, toQuarter:to.quarter, reason, by:user.id, at:new Date().toISOString() }]}));
+    addAudit(user.id, user.name, "APPRAISAL_PUSH", `${r.projectCode||r.projectName}: ${r.quarter} FY ${r.fy} → ${to.quarter} FY ${to.fy} · ${reason}`);
+    setPushM(null); setPushReason(""); setSelQuarter(null);
+  };
+  const doPullBack = r => {
+    const last = [...(r.pushes||[])].reverse().find(h=>h.action==="push" && h.toFy===r.fy && h.toQuarter===r.quarter);
+    if(!last) return;
+    if(!window.confirm(`Move ${r.projectCode||r.projectName} back to ${last.fromQuarter} FY ${last.fromFy}? This applies to every staff member on the engagement.`)) return;
+    setProjects(ps=>ps.map(p=>p.id!==r.projectId?p:{...p, appraisalQuarter:{fy:last.fromFy, quarter:last.fromQuarter},
+      appraisalPushes:[...(p.appraisalPushes||[]), { action:"pullback", fromFy:r.fy, fromQuarter:r.quarter, toFy:last.fromFy, toQuarter:last.fromQuarter, by:user.id, at:new Date().toISOString() }]}));
+    addAudit(user.id, user.name, "APPRAISAL_PULLBACK", `${r.projectCode||r.projectName}: ${r.quarter} FY ${r.fy} → ${last.fromQuarter} FY ${last.fromFy}`);
+    setSelQuarter(null);
+  };
+  const rowActions = i => {
+    const r = i.r;
+    if(!canPush(r) || i.ex?.status==="submitted") return null;
+    const pushedHere = (r.pushes||[]).some(h=>h.action==="push" && h.toFy===r.fy && h.toQuarter===r.quarter) && !(r.fy===r.baseFy && r.quarter===r.baseQuarter);
+    const nq = nextQuarterOf(r.fy, r.quarter);
+    const stop = fn => e => { e.stopPropagation(); fn(); };
+    return (
+      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginTop:8}}>
+        <button className="btn bgh bxs" onClick={stop(()=>{setPushM({r});setPushReason("");})} title="Engagement still running? Move its appraisals to the next quarter">
+          <I n="arrowright" s={11}/>Push to {nq.quarter}{nq.fy!==r.fy?` FY ${nq.fy}`:""}
+        </button>
+        {pushedHere && <button className="btn bgh bxs" onClick={stop(()=>doPullBack(r))}>Pull back</button>}
+        {pushedHere && <span className="tx tsl">Pushed here from an earlier quarter</span>}
+      </div>
+    );
+  };
+  const pushModal = pushM && (() => {
+    const r = pushM.r; const to = nextQuarterOf(r.fy, r.quarter);
+    const moving = openOnEngagement(r.projectId);
+    const names = [...new Set(moving.map(i=>users.find(u=>u.id===i.r.staffId)?.name).filter(Boolean))];
+    const stayCount = allItems.filter(i=>i.r.type==="fixed" && i.r.projectId===r.projectId && i.ex?.status==="submitted").length;
+    return (
+      <div className="mo" onClick={()=>setPushM(null)}>
+        <div className="md" onClick={e=>e.stopPropagation()} style={{maxWidth:460}}>
+          <div className="md-title">Push engagement to {to.quarter} FY {to.fy}</div>
+          <div className="al al-i mb16"><I n="info" s={14}/><div>
+            <strong>{r.projectName}</strong>{r.projectCode?` (${r.projectCode})`:""} moves from {r.quarter} FY {r.fy} to {to.quarter} FY {to.fy} for every staff member still to be appraised: {names.join(", ")||"—"}.
+            {stayCount>0 && ` ${stayCount} appraisal${stayCount>1?"s":""} already submitted stay in the quarter they were submitted under.`}
+          </div></div>
+          <div className="fg"><label className="fl">Reason (mandatory)</label>
+            <textarea className="fta" placeholder="e.g. Fieldwork continues till mid-November" value={pushReason} onChange={e=>setPushReason(e.target.value)}/>
+          </div>
+          <div className="md-actions">
+            <button className="btn bgh" onClick={()=>setPushM(null)}>Cancel</button>
+            <button className="btn bp" disabled={!pushReason.trim()} onClick={doPush}><I n="arrowright" s={14}/>Push to {to.quarter}</button>
+          </div>
+        </div>
+      </div>
+    );
+  })();
 
+  const fyItems = allItems.filter(i=>i.fy===fy);
+  const receivedItems = fyItems.filter(i=>i.r.staffId===user.id);
+  const givenItems = fyItems.filter(i=>i.r.staffId!==user.id && i.r.eligibleAppraisers.includes(user.id));
+
+  const changeFy = v => { setFy(v); setSelStaff(null); setSelQuarter(null); };
   const onSave = (rec) => {
     setAppraisals(prev => prev.some(a=>a.id===rec.id) ? prev.map(a=>a.id===rec.id?rec:a) : [...prev, rec]);
     setSelReq(null);
@@ -5178,85 +5436,94 @@ function PerformanceAppraisal({ user, users=[], projects=[], tss=[], appraisals=
     return <AppraisalForm user={user} users={users} req={selReq} existing={existing} onSave={onSave} onBack={()=>setSelReq(null)}/>;
   }
 
-  if(isP) {
-    const staffIds = [...new Set(required.filter(r=>r.fy===fy).map(r=>r.staffId))];
-    if(!selStaff) {
-      return (
-        <div>
-          <FYSelector fy={fy} setFy={setFy} options={fyList}/>
-          <p className="ts tsl mb8">Staff</p>
-          <div className="g3">
-            {staffIds.map(sid=>{
-              const u = users.find(x=>x.id===sid);
-              const inactive = u?.active===false;
-              const recs = required.filter(r=>r.fy===fy&&r.staffId===sid);
-              const done = recs.filter(r=>findAppraisalFor(appraisals,r)?.status==="submitted").length;
-              return (
-                <div key={sid} className="card" style={{cursor:"pointer",opacity:inactive?.55:1}} onClick={()=>setSelStaff(sid)}>
-                  <div className="fw6">{u?.name}{inactive&&<span className="bdg bcl" style={{marginLeft:8}}>Inactive</span>}</div>
-                  <div className="tx tsl mt4">{u?.role} · {done}/{recs.length} complete</div>
-                </div>
-              );
-            })}
-            {staffIds.length===0 && <div className="es">No appraisals required yet for this financial year.</div>}
-          </div>
-        </div>
-      );
-    }
+  // Breadcrumb: FY › Staff › Quarter
+  const Crumbs = ({ staffName, rootLabel }) => (
+    <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:16}}>
+      <button className="btn bgh bsm" onClick={()=>{ if(selQuarter) setSelQuarter(null); else setSelStaff(null); }}><I n="arrowleft" s={13}/>Back</button>
+      <span className="ts tsl" style={{cursor:"pointer"}} onClick={()=>{setSelStaff(null);setSelQuarter(null);}}>{rootLabel} · FY {fy}</span>
+      {staffName && <><span className="ts tsl">›</span><span className="ts" style={{cursor:selQuarter?"pointer":"default",fontWeight:selQuarter?400:600}} onClick={()=>setSelQuarter(null)}>{staffName}</span></>}
+      {selQuarter && <><span className="ts tsl">›</span><span className="ts fw6">{selQuarter} · {quarterLabel(fy,selQuarter)}</span></>}
+    </div>
+  );
+
+  // Staff → quarters → appraisals (used by partners, and by managers for their team without averages)
+  const staffDrill = (items, showAvg, rootLabel) => {
     const u = users.find(x=>x.id===selStaff);
     const inactive = u?.active===false;
-    const recs = required.filter(r=>r.fy===fy&&r.staffId===selStaff);
+    const mine = items.filter(i=>i.r.staffId===selStaff);
     return (
       <div>
-        <button className="btn bgh bsm mb16" onClick={()=>setSelStaff(null)}><I n="arrowleft" s={13}/>All staff</button>
-        <p className="card-title mb16">{u?.name}{inactive&&<span className="bdg bcl" style={{marginLeft:8}}>Inactive</span>} — FY {fy}</p>
-        <div style={{display:"flex",flexDirection:"column",gap:8,opacity:inactive?.6:1}}>
-          {recs.map(r=><AppraisalListRow key={r.key} r={r} ex={findAppraisalFor(appraisals,r)} onClick={()=>setSelReq(r)}/>)}
+        <Crumbs staffName={<>{u?.name}{inactive&&<span className="bdg bcl" style={{marginLeft:8}}>Inactive</span>}</>} rootLabel={rootLabel}/>
+        <div style={{opacity:inactive?.6:1}}>
+          {!selQuarter
+            ? <QuarterTiles fy={fy} items={mine} showAvg={showAvg} onPick={setSelQuarter}/>
+            : <QuarterAppraisalList fy={fy} quarter={selQuarter} items={mine} showAvg={showAvg} onOpen={setSelReq} rowActions={rowActions}/>}
         </div>
+        {pushModal}
+      </div>
+    );
+  };
+
+  const staffCards = (items, showAvg, showRole) => {
+    const staffIds = [...new Set(items.map(i=>i.r.staffId))];
+    return (
+      <div className="g3">
+        {staffIds.map(sid=>{
+          const u = users.find(x=>x.id===sid);
+          const inactive = u?.active===false;
+          const mine = items.filter(i=>i.r.staffId===sid);
+          const done = mine.filter(i=>i.ex?.status==="submitted").length;
+          return (
+            <div key={sid} className="card" style={{cursor:"pointer",opacity:inactive?.55:1}} onClick={()=>{setSelStaff(sid);setSelQuarter(null);}}>
+              <div className="fw6">{u?.name}{inactive&&<span className="bdg bcl" style={{marginLeft:8}}>Inactive</span>}</div>
+              <div className="tx tsl mt4">{showRole?`${u?.role} · `:""}{done}/{mine.length} complete</div>
+              <QuarterStrip fy={fy} items={mine} showAvg={showAvg}/>
+            </div>
+          );
+        })}
+        {staffIds.length===0 && <div className="es">{isP?"No appraisals required yet for this financial year.":"You have no team appraisals to give this financial year."}</div>}
+      </div>
+    );
+  };
+
+  if(isP) {
+    if(selStaff) return staffDrill(fyItems, true, "All staff");
+    return (
+      <div>
+        <FYSelector fy={fy} setFy={changeFy} options={fyList}/>
+        <p className="ts tsl mb8">Staff · quarter scores are the average across engagements appraised in that quarter (N/A excluded)</p>
+        {staffCards(fyItems, true, true)}
       </div>
     );
   }
 
+  if(isMgr && subView==="given" && selStaff) return staffDrill(givenItems, false, "My team");
+
   return (
     <div>
-      <FYSelector fy={fy} setFy={setFy} options={fyList}/>
+      <FYSelector fy={fy} setFy={changeFy} options={fyList}/>
       {isMgr && (
         <div className="tabs">
-          <div className={`tab ${subView==="received"?"active":""}`} onClick={()=>{setSubView("received");setSelStaff(null);}}>Feedback I've received</div>
-          <div className={`tab ${subView==="given"?"active":""}`} onClick={()=>{setSubView("given");setSelStaff(null);}}>Feedback I've given</div>
+          <div className={`tab ${subView==="received"?"active":""}`} onClick={()=>{setSubView("received");setSelStaff(null);setSelQuarter(null);}}>Feedback I've received</div>
+          <div className={`tab ${subView==="given"?"active":""}`} onClick={()=>{setSubView("given");setSelStaff(null);setSelQuarter(null);}}>Feedback I've given</div>
         </div>
       )}
       {subView==="received" && (
-        <div style={{display:"flex",flexDirection:"column",gap:8}}>
-          {visibleReceived.map(r=><AppraisalListRow key={r.key} r={r} ex={findAppraisalFor(appraisals,r)} onClick={()=>setSelReq(r)}/>)}
-          {visibleReceived.length===0 && <div className="es">No appraisals for this financial year yet.</div>}
-        </div>
-      )}
-      {isMgr && subView==="given" && (
-        !selStaff ? (
-          <div className="g3">
-            {[...new Set(visibleGivenReqs.map(r=>r.staffId))].map(sid=>{
-              const u = users.find(x=>x.id===sid);
-              const mine = visibleGivenReqs.filter(r=>r.staffId===sid);
-              const done = mine.filter(r=>findAppraisalFor(appraisals,r)?.status==="submitted").length;
-              return (
-                <div key={sid} className="card" style={{cursor:"pointer"}} onClick={()=>setSelStaff(sid)}>
-                  <div className="fw6">{u?.name}</div>
-                  <div className="tx tsl mt4">{done}/{mine.length} complete</div>
-                </div>
-              );
-            })}
-            {visibleGivenReqs.length===0 && <div className="es">You have no team appraisals to give this financial year.</div>}
-          </div>
+        !selQuarter ? (
+          receivedItems.length===0
+            ? <div className="es">No appraisals for this financial year yet.</div>
+            : <QuarterTiles fy={fy} items={receivedItems} showAvg={true} onPick={setSelQuarter}/>
         ) : (
           <div>
-            <button className="btn bgh bsm mb16" onClick={()=>setSelStaff(null)}><I n="arrowleft" s={13}/>My team</button>
-            <div style={{display:"flex",flexDirection:"column",gap:8}}>
-              {visibleGivenReqs.filter(r=>r.staffId===selStaff).map(r=><AppraisalListRow key={r.key} r={r} ex={findAppraisalFor(appraisals,r)} onClick={()=>setSelReq(r)}/>)}
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16}}>
+              <button className="btn bgh bsm" onClick={()=>setSelQuarter(null)}><I n="arrowleft" s={13}/>All quarters</button>
+              <span className="ts fw6">{selQuarter} · {quarterLabel(fy,selQuarter)}</span>
             </div>
+            <QuarterAppraisalList fy={fy} quarter={selQuarter} items={receivedItems} showAvg={true} onOpen={setSelReq}/>
           </div>
         )
       )}
+      {isMgr && subView==="given" && staffCards(givenItems, false, false)}
     </div>
   );
 }
@@ -5697,7 +5964,7 @@ export default function App() {
   // Appraisals this user still needs to GIVE, current FY, not yet submitted
   const appraisalPendingCount = currentUser ? (() => {
     const required = getRequiredAppraisals(users, projects, tss);
-    return required.filter(r => r.fy===currentFY() && r.eligibleAppraisers.includes(currentUser.id) && findAppraisalFor(appraisals,r)?.status!=="submitted").length;
+    return required.filter(r => { if(!r.eligibleAppraisers.includes(currentUser.id)) return false; const ex=findAppraisalFor(appraisals,r); if(ex?.status==="submitted") return false; const per=appraisalPeriod(r,ex); return quarterDateRange(per.fy,per.quarter)[0]<=todayStr(); }).length;
   })() : 0;
 
   // Goals/self-assessment this user still needs to act on, current FY (partners have no badge — firm-wide would be noisy)
