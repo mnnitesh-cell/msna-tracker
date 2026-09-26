@@ -5274,11 +5274,13 @@ function prevQuarterOf(fy, quarter) {
 }
 // Rounded average of the most recent earlier quarter that has a score (crosses into the previous FY).
 function priorRoundedScore(fy, quarter, history) {
+  const byQ = {};
+  history.forEach(i => { const k = `${i.fy}|${i.quarter}`; (byQ[k] = byQ[k] || []).push(i); });
   let cur = { fy, quarter };
   for(let n=0; n<12; n++) {
     cur = prevQuarterOf(cur.fy, cur.quarter);
     if(quarterDateRange(cur.fy, cur.quarter)[1] < APPRAISAL_START_DATE) return null;
-    const s = quarterAverage(history.filter(i=>i.fy===cur.fy && i.quarter===cur.quarter));
+    const s = quarterAverage(byQ[`${cur.fy}|${cur.quarter}`] || []);
     if(s.avg!=null) return Math.round(s.avg);
   }
   return null;
