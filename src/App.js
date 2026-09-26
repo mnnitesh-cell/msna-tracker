@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { initializeApp } from "firebase/app";
-import { getFirestore, collection, doc, onSnapshot, setDoc, deleteDoc, getDocs } from "firebase/firestore";
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, terminate, clearIndexedDbPersistence, waitForPendingWrites, collection, doc, onSnapshot, setDoc, deleteDoc, getDocs, query, where } from "firebase/firestore";
 import { getAuth, signInWithEmailAndPassword, signOut, updatePassword, reauthenticateWithCredential, EmailAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, sendPasswordResetEmail } from "firebase/auth";
 
 // ── FIREBASE CONFIG ──
@@ -14,7 +14,12 @@ const firebaseConfig = {
   measurementId: "G-Z9ZCXNGYRC"
 };
 const firebaseApp = initializeApp(firebaseConfig);
-const db = getFirestore(firebaseApp);
+// v35: keep a local copy of the data in the browser (shared by all open tabs).
+// A reload or a second tab then only fetches what changed, instead of re-reading every document.
+// The copy is wiped on Sign Out (see clearLocalDataAndReload).
+const db = initializeFirestore(firebaseApp, {
+  localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+});
 const auth = getAuth(firebaseApp);
 // Second, independent Auth instance used ONLY to create new staff accounts,
 // so the partner creating the account stays signed in as themselves.
@@ -58,11 +63,71 @@ const hasRateFields = u => RATE_FIELDS.some(f => f in u);
 const roleKey = email => (email||"").trim().toLowerCase();
 
 // ── FIRESTORE REAL-TIME HOOK ──
+// Listens to one or more queries and merges the results (deduped by id).
+// emit(docs, fromServer): fromServer is true once every listener has confirmed data from the server
+// (not just the local cache), so one-time jobs never act on stale cached data.
+function listenMerged(targets, emit, label) {
+  const parts = targets.map(() => null);
+  const fromServer = targets.map(() => false);
+  const unsubs = targets.map((q, i) => onSnapshot(q, { includeMetadataChanges: true },
+    snap => {
+      parts[i] = snap.docs.map(d => ({ ...d.data(), id: d.id }));
+      if (!snap.metadata.fromCache) fromServer[i] = true;
+      if (parts.some(x => x === null)) return;
+      const merged = new Map();
+      parts.forEach(list => list.forEach(d => merged.set(d.id, d)));
+      emit([...merged.values()], fromServer.every(Boolean));
+    },
+    err => console.error("onSnapshot error", label, err)
+  ));
+  return () => unsubs.forEach(u => u());
+}
+const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
+
+// v35: interns only need (a) their own entries and (b) all entries on the engagements they work on
+// (for budget bars and appraisal quarters). Instead of the whole firm's timesheets, load exactly that.
+// Engagements = currently assigned + any engagement they have ever booked time to.
+function internTimesheetScope(myId, assignedIds) {
+  return (colName, emit) => {
+    const col = collection(db, colName);
+    let own = null, ownServer = false, team = null, teamServer = false, stopTeam = null;
+    const push = () => {
+      if (own === null) return;
+      const merged = new Map();
+      own.forEach(d => merged.set(d.id, d));
+      (team || []).forEach(d => merged.set(d.id, d));
+      emit([...merged.values()], ownServer && (team !== null && teamServer));
+    };
+    const stopOwn = listenMerged(
+      [query(col, where("userId", "==", myId)), query(col, where("filedById", "==", myId))],
+      (docs, server) => {
+        own = docs; ownServer = server;
+        if (!stopTeam) {
+          const ids = [...new Set([...assignedIds, ...docs.map(t => t.projectId).filter(Boolean)])];
+          if (!ids.length) { team = []; teamServer = true; }
+          else {
+            stopTeam = listenMerged(
+              chunk(ids, 30).map(part => query(col, where("projectId", "in", part))),
+              (tdocs, tserver) => { team = tdocs; teamServer = tserver; push(); },
+              colName + " (engagements)"
+            );
+          }
+        }
+        push();
+      },
+      colName + " (own)"
+    );
+    return () => { stopOwn(); if (stopTeam) stopTeam(); };
+  };
+}
+
 // enabled=false → no listener (e.g. before sign-in, or a partner-only collection for non-partners).
 // A Firestore listener that is refused by security rules dies permanently, so we only
 // open it once the user is signed in, and re-open it whenever "enabled" flips on.
-// Returns [data, set, loaded] — loaded is true once the first snapshot has arrived.
-function useLS(colName, fallback=[], enabled=true) {
+// scope: optional (colName, emit) => unsubscribe, to load only part of a collection;
+// scopeKey must change whenever the scope's inputs change.
+// Returns [data, set, loaded] — loaded is true once the server (not just the cache) has answered.
+function useLS(colName, fallback=[], enabled=true, scope=null, scopeKey="all") {
   const [data, setData] = useState(fallback);
   const [loaded, setLoaded] = useState(false);
   const isArr = Array.isArray(fallback);
@@ -73,18 +138,13 @@ function useLS(colName, fallback=[], enabled=true) {
   useEffect(() => {
     if (!isArr) return;
     if (!enabled) { dataRef.current = fallback; setData(fallback); setLoaded(false); return; }
-    const unsub = onSnapshot(
-      collection(db, colName),
-      snap => {
-        const docs = snap.docs.map(d => ({ ...d.data(), id: d.id }));
-        dataRef.current = docs;
-        setData(docs);
-        setLoaded(true);
-      },
-      err => console.error("onSnapshot error", colName, err)
-    );
-    return unsub;
-  }, [colName, isArr, enabled]); // eslint-disable-line react-hooks/exhaustive-deps
+    const emit = (docs, fromServer) => {
+      dataRef.current = docs;
+      setData(docs);
+      if (fromServer) setLoaded(true);
+    };
+    return scope ? scope(colName, emit) : listenMerged([collection(db, colName)], emit, colName);
+  }, [colName, isArr, enabled, scopeKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Write to Firestore FIRST, then update local state
   // This avoids calling fsSet inside a state updater
@@ -5964,13 +6024,30 @@ export default function App() {
     return onAuthStateChanged(auth, u=>setAuthUser(u));
   },[]);
   const signedIn  = !!authUser;
+  // Sign Out: finish pending saves, sign out, wipe the browser's copy of firm data, reload.
+  const clearLocalDataAndReload = async () => {
+    try { await Promise.race([waitForPendingWrites(db), new Promise(r=>setTimeout(r,4000))]); } catch(e) {}
+    try { await signOut(auth); } catch(e) {}
+    setCU(null);
+    try { await terminate(db); await clearIndexedDbPersistence(db); } catch(e) { console.error("Cache clear error", e); }
+    window.location.reload();
+  };
   const isPartner = !!currentUser && currentUser.role==="partner";
   const isAdminUser = !!currentUser && currentUser.email===ADMIN_EMAIL;
 
   // ── Load ALL data at root level from Firestore and pass down as props ──
   const [users,   setUsers, usersLoaded] = useLS("users", [], signedIn);
-  const [projects,setProjects] = useLS("projects", [], signedIn);
-  const [tss,     setTss]      = useLS("timesheets",[], signedIn);
+  const [projects,setProjects, projectsLoaded] = useLS("projects", [], signedIn);
+  // Timesheets: partners and managers load the full set (approvals, compliance, profitability need it).
+  // Interns load only their own entries plus the engagements they work on (v35).
+  const isInternUser = !!currentUser && currentUser.role==="intern";
+  const internAssignedIds = useMemo(()=> isInternUser
+    ? projects.filter(p=>[...(p.assignedStaff||[]),...(p.assignedManagers||[]),...(p.assignedPartners||[])].includes(currentUser.id)).map(p=>p.id).sort()
+    : [], [isInternUser, projects, currentUser]);
+  const tsScopeKey = isInternUser ? `intern:${currentUser.id}:${internAssignedIds.join(",")}` : "all";
+  const tsEnabled  = signedIn && !!currentUser && (!isInternUser || projectsLoaded);
+  const [tss,     setTss]      = useLS("timesheets",[], tsEnabled,
+    isInternUser ? internTimesheetScope(currentUser.id, internAssignedIds) : null, tsScopeKey);
   const [locked,  setLocked]   = useLS("locked_months",[], signedIn);
   const [audit]                = useLS("audit",    [], isPartner);
   const [leaves,  setLeaves]   = useLS("leaves",   [], signedIn);
@@ -6117,7 +6194,7 @@ export default function App() {
     <>
       <style>{CSS}</style>
       <div className="app">
-        <Sidebar user={currentUser} tab={tab} setTab={setTab} onLogout={()=>{signOut(auth);setCU(null);}} pendingCount={pendingCount}
+        <Sidebar user={currentUser} tab={tab} setTab={setTab} onLogout={clearLocalDataAndReload} pendingCount={pendingCount}
           leavePendingCount={leaves.filter(l=>{
             if(currentUser.role==="manager") return l.status==="pending_manager"&&(l.approverManagers||[]).includes(currentUser.id)&&!(l.managerApprovals||[]).includes(currentUser.id);
             if(currentUser.role==="partner") return l.status==="pending_partner"&&(l.approverPartners||[]).includes(currentUser.id)&&!(l.partnerApprovals||[]).includes(currentUser.id);
