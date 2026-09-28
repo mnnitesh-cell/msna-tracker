@@ -484,6 +484,7 @@ const I = ({ n, s=18 }) => {
     star:     "M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z",
     arrowleft:"M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20z",
     arrowright:"M4 11h12.17l-5.59-5.59L12 4l8 8-8 8-1.41-1.41L16.17 13H4z",
+    task:     "M19 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.11 0 2-.9 2-2V5c0-1.1-.89-2-2-2zm-9 14l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z",
   };
   return <svg width={s} height={s} viewBox="0 0 24 24" fill="currentColor"><path d={paths[n]||""}/></svg>;
 };
@@ -556,6 +557,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--cream);color:var(--navy);
 .ni:hover{background:rgba(255,255,255,.07);color:rgba(255,255,255,.85);}
 .ni.active{background:rgba(201,168,76,.14);color:var(--gold-light);}
 .nb{position:absolute;right:10px;background:var(--gold);color:var(--navy);font-size:11px;font-weight:700;border-radius:20px;padding:1px 8px;min-width:20px;text-align:center;}
+.nb3{position:absolute;right:10px;background:#dc2626;color:#fff;font-size:11px;font-weight:700;border-radius:20px;padding:1px 8px;min-width:20px;text-align:center;}
 .nb2{position:absolute;right:10px;background:#6d28d9;color:#fff;font-size:11px;font-weight:700;border-radius:20px;padding:1px 8px;min-width:20px;text-align:center;}
 .sb-ft{padding:14px 10px;border-top:1px solid rgba(255,255,255,.08);}
 .sb-section-label{font-size:10px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:rgba(255,255,255,.22);padding:10px 12px 3px;margin-top:2px;}
@@ -715,7 +717,7 @@ function Login({ onLogin }) {
 // ══════════════════════════════════════════════════════════════
 // SIDEBAR
 // ══════════════════════════════════════════════════════════════
-function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=0, projPendingCount=0, projClosurePendingCount=0, appraisalPendingCount=0, goalPendingCount=0 }) {
+function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=0, projPendingCount=0, projClosurePendingCount=0, appraisalPendingCount=0, goalPendingCount=0, paOverdueCount=0 }) {
   const isAdmin = user.email===ADMIN_EMAIL;
   const role = user.role; // "partner" | "manager" | "intern"
 
@@ -753,6 +755,13 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=
         { id:"reports",       icon:"chart",  label:"Reports" },
         { id:"profitability", icon:"target", label:"Profitability" },
         { id:"productivity",  icon:"chart",  label:"Productivity" },
+      ]
+    },
+    {
+      label: "Partners",
+      roles: ["partner"], // partner-only: actionables from partners' meetings (v37)
+      items: [
+        { id:"partneractions", icon:"task", label:"Partner Actionables", paBadge:true },
       ]
     },
     {
@@ -833,6 +842,7 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=
                 {n.projBadge  && projClosurePendingCount>0  && <span className="nb2" title="Pending closure requests">{projClosurePendingCount}</span>}
                 {n.appraisalBadge && appraisalPendingCount>0 && <span className="nb">{appraisalPendingCount}</span>}
                 {n.goalBadge && goalPendingCount>0 && <span className="nb">{goalPendingCount}</span>}
+                {n.paBadge && paOverdueCount>0 && <span className="nb3" title="Your overdue actionables">{paOverdueCount}</span>}
               </div>
             ))}
           </div>
@@ -845,7 +855,7 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=
 // ══════════════════════════════════════════════════════════════
 // DASHBOARD
 // ══════════════════════════════════════════════════════════════
-function Dashboard({ user, users=[], projects=[], tss=[] }) {
+function Dashboard({ user, users=[], projects=[], tss=[], paActions=[], onOpenActions }) {
   const isP=user.role==="partner";
   const mySheets = isP?tss:tss.filter(t=>t.userId===user.id);
   const approved = mySheets.filter(t=>t.status==="approved");
@@ -908,6 +918,7 @@ function Dashboard({ user, users=[], projects=[], tss=[] }) {
         {user.role!=="intern"&&<div className="sc"><div className="sv" style={{color:"var(--gold)"}}>{fmtCurrency(billVal)}</div><div className="sl">Billing Value</div></div>}
         <div className="sc"><div className="sv" style={{color:pending>0?"var(--amber)":"var(--green)"}}>{pending}</div><div className="sl">{user.role==="intern"?"Pending Entries":"Pending Approvals"}</div></div>
       </div>
+      {isP&&<PADashboardCard user={user} actions={paActions} onOpen={onOpenActions}/>}
       <div className="card">
         <div className="card-title mb16">Recent Activity</div>
         {recent.length===0?<div className="es"><div className="es-icon"><I n="clock" s={40}/></div>No entries yet.</div>:(
@@ -6017,6 +6028,733 @@ function GoalSetting({ user, users=[], goals=[], setGoals }) {
   );
 }
 
+// ══════════════════════════════════════════════════════════════
+// PARTNER ACTIONABLES (v37): partners only
+// Meetings amongst partners → actionables, each with one owner, tracked to closure.
+// Data: "partner_meetings" and "partner_actions" (partner-only in Firestore rules).
+// ══════════════════════════════════════════════════════════════
+const PA_CATEGORIES = ["Staffing","Business Development","Client","Operations","Finance","Risk & Compliance","Other"];
+const PA_PRIORITIES = ["High","Medium","Low"];
+const PA_STATUSES = ["open","in_progress","done","dropped"];
+const PA_STATUS_LABEL = { open:"Open", in_progress:"In progress", done:"Done", dropped:"Dropped" };
+const PA_STATUS_CLASS = { open:"bp2", in_progress:"bac", done:"ba", dropped:"bcl" };
+const PA_CAT_STYLE = {
+  "Staffing":             { background:"#e0e7ff", color:"#3730a3" },
+  "Business Development": { background:"#fef3c7", color:"#92400e" },
+  "Client":               { background:"#dbeafe", color:"#1e40af" },
+  "Operations":           { background:"#f1f5f9", color:"#475569" },
+  "Finance":              { background:"#d1fae5", color:"#065f46" },
+  "Risk & Compliance":    { background:"#fee2e2", color:"#991b1b" },
+  "Other":                { background:"#f3e8ff", color:"#6d28d9" },
+};
+const PA_PRIO_COLOR = { High:"#b91c1c", Medium:"#b45309", Low:"#64748b" };
+const PA_DUE_COLOR  = { over:"#b91c1c", soon:"#b45309", ok:"var(--navy)", closed:"var(--slate)" };
+
+const paIsOpen = a => a.status==="open" || a.status==="in_progress";
+const paDayDiff = (from, to) => {
+  const [y1,m1,d1] = from.split("-").map(Number); const [y2,m2,d2] = to.split("-").map(Number);
+  return Math.round((Date.UTC(y2,m2-1,d2) - Date.UTC(y1,m1-1,d1)) / 86400000);
+};
+const paIsOverdue = a => paIsOpen(a) && !!a.dueDate && a.dueDate < todayStr();
+function paDueInfo(a) {
+  if(!paIsOpen(a)) {
+    const when = a.closedAt ? fmtDate(a.closedAt.slice(0,10)) : "";
+    return { kind:"closed", sub: a.status==="done" ? `Closed ${when}` : `Dropped ${when}` };
+  }
+  if(!a.dueDate) return { kind:"ok", sub:"No due date" };
+  const d = paDayDiff(todayStr(), a.dueDate);
+  if(d<0)  return { kind:"over", sub:`${-d} day${d===-1?"":"s"} overdue` };
+  if(d===0) return { kind:"soon", sub:"Due today" };
+  if(d<=7) return { kind:"soon", sub:`Due in ${d} day${d===1?"":"s"}` };
+  return { kind:"ok", sub:`In ${d} days` };
+}
+const paRank = a => { const k = paDueInfo(a).kind; return k==="over"?0 : k==="soon"?1 : 2; };
+const paSort = (a,b) => paRank(a)-paRank(b) || (a.dueDate||"9999").localeCompare(b.dueDate||"9999");
+const paBlankRow = () => ({ key:genId(), title:"", category:"", ownerId:"", supportIds:[], dueDate:"", priority:"Medium" });
+const paFirstName = n => (n||"").split(" ")[0];
+// Overdue items the partner OWNS: drives the sidebar badge
+const paMyOverdueCount = (actions, userId) => actions.filter(a=>a.ownerId===userId && paIsOverdue(a)).length;
+
+const PA_CSS = `
+.pa-row{display:grid;grid-template-columns:minmax(0,2.4fr) 150px 130px 125px 110px minmax(0,1.4fr) 84px;gap:14px;align-items:center;padding:13px 18px;border-bottom:1px solid var(--border);}
+.pa-row:last-child{border-bottom:none;}
+.pa-row.hd{background:var(--cream);padding-top:10px;padding-bottom:10px;}
+.pa-hd{font-size:11px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--slate);}
+.pa-chip{display:inline-flex;padding:3px 10px;border-radius:20px;font-size:11.5px;font-weight:500;white-space:nowrap;}
+.pa-you{font-size:11px;font-weight:600;color:#7a5a12;background:var(--gold-pale);padding:1px 7px;border-radius:20px;}
+.pa-drawer-bg{position:fixed;inset:0;background:rgba(15,32,68,.45);z-index:1000;}
+.pa-drawer{position:fixed;right:0;top:0;bottom:0;width:600px;max-width:100vw;background:#fff;box-shadow:-12px 0 40px rgba(15,32,68,.2);padding:26px 30px;display:flex;flex-direction:column;gap:18px;overflow-y:auto;z-index:1001;}
+.pa-seg{display:flex;gap:3px;background:var(--cream);border-radius:10px;padding:4px;border:1px solid var(--border);}
+.pa-seg button{flex:1;padding:9px 10px;border-radius:7px;border:none;font-family:inherit;font-size:13px;font-weight:500;cursor:pointer;background:transparent;color:var(--slate);}
+.pa-seg button.on{background:#fff;color:var(--navy);box-shadow:var(--sh);}
+.pa-grid{display:grid;grid-template-columns:24px minmax(0,1fr) 165px 135px 200px 145px 100px 28px;gap:8px;align-items:center;}
+.pa-grid .fi,.pa-grid .fs{padding:8px 10px;font-size:13px;}
+.pa-pchip{padding:5px 9px;border-radius:20px;font-size:11.5px;font-weight:500;cursor:pointer;border:1.5px solid var(--border);background:#fff;color:var(--slate);font-family:inherit;}
+.pa-pchip.on{background:var(--navy);color:#fff;border-color:var(--navy);}
+.pa-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px 18px;background:var(--cream);border:1px solid var(--border);border-radius:12px;padding:16px 18px;}
+.pa-k{font-size:11px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--slate);}
+.pa-v{font-size:13.5px;margin-top:4px;}
+.pa-mi{display:grid;grid-template-columns:minmax(0,1fr) 150px 120px 125px 110px;gap:14px;align-items:center;padding:10px 0;border-bottom:1px solid var(--cream);cursor:pointer;}
+.pa-mi:hover{background:#fcfcfc;}
+.pa-ri{display:grid;grid-template-columns:minmax(0,1fr) 150px 135px 110px 300px;gap:14px;align-items:center;padding:12px 20px;border-bottom:1px solid var(--cream);}
+.pa-ri:last-child{border-bottom:none;}
+`;
+
+function PACatChip({ cat }) {
+  return <span className="pa-chip" style={PA_CAT_STYLE[cat]||PA_CAT_STYLE.Other}>{cat||"—"}</span>;
+}
+function PAStatusBadge({ status }) {
+  return <span className={`bdg ${PA_STATUS_CLASS[status]||"bcl"}`}>{PA_STATUS_LABEL[status]||status}</span>;
+}
+function PADue({ a }) {
+  const info = paDueInfo(a);
+  const c = PA_DUE_COLOR[info.kind];
+  return <div>
+    <div style={{fontSize:13,fontWeight:info.kind==="over"||info.kind==="soon"?600:400,color:c}}>{a.dueDate?fmtDate(a.dueDate):"—"}</div>
+    <div style={{fontSize:11.5,color:info.kind==="ok"?"var(--slate)":c}}>{info.sub}</div>
+  </div>;
+}
+// Toggle chips for picking supporting partners (owner is excluded)
+function PASupportPicker({ partners, ownerId, value=[], onChange }) {
+  const opts = partners.filter(p=>p.id!==ownerId);
+  if(!opts.length) return <span className="tx tsl">—</span>;
+  return <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+    {opts.map(p=>{
+      const on = value.includes(p.id);
+      return <button key={p.id} type="button" className={`pa-pchip ${on?"on":""}`} aria-pressed={on}
+        onClick={()=>onChange(on?value.filter(x=>x!==p.id):[...value,p.id])}>{paFirstName(p.name)}</button>;
+    })}
+  </div>;
+}
+
+// ── Log / edit meeting ──────────────────────────────────────────
+function PAMeetingModal({ partners, existing, onClose, onSave }) {
+  const isEdit = !!existing;
+  const [date,setDate]       = useState(existing?.date || todayStr());
+  const [title,setTitle]     = useState(existing?.title || "Partners' meeting");
+  const [attendees,setAtt]   = useState(existing?.attendees || partners.map(p=>p.id));
+  const [notes,setNotes]     = useState(existing?.notes || "");
+  const [rows,setRows]       = useState([paBlankRow(),paBlankRow(),paBlankRow()]);
+  const [err,setErr]         = useState("");
+
+  const setRow = (key, patch) => setRows(rs=>rs.map(r=>r.key===key?{...r,...patch}:r));
+  const addRow = () => setRows(rs=>[...rs,paBlankRow()]);
+  const removeRow = key => setRows(rs=>rs.length>1?rs.filter(r=>r.key!==key):[paBlankRow()]);
+  const isBlank = r => !r.title.trim() && !r.ownerId && !r.dueDate && !r.category;
+  const filled = rows.filter(r=>!isBlank(r));
+
+  const save = () => {
+    setErr("");
+    if(!date){ setErr("Meeting date is required."); return; }
+    if(!title.trim()){ setErr("Meeting title is required."); return; }
+    if(!isEdit){
+      for(let i=0;i<rows.length;i++){
+        const r = rows[i]; if(isBlank(r)) continue;
+        const miss = [!r.title.trim()&&"actionable",!r.category&&"category",!r.ownerId&&"owner",!r.dueDate&&"due date"].filter(Boolean);
+        if(miss.length){ setErr(`Row ${i+1} needs: ${miss.join(", ")}.`); return; }
+      }
+    }
+    onSave({ date, title:title.trim(), attendees, notes:notes.trim() }, isEdit?[]:filled);
+  };
+
+  return (
+    <div className="mo" onClick={onClose}>
+      <div className="md" onClick={e=>e.stopPropagation()} style={{maxWidth:isEdit?620:1240}}>
+        <div className="md-title">{isEdit?"Edit meeting":"Log partners' meeting"}</div>
+        {!isEdit&&<div className="ts tsl" style={{marginTop:-12,marginBottom:18}}>Record the meeting once, then add every actionable in one go.</div>}
+        {err&&<div className="err">{err}</div>}
+        <div style={{display:"grid",gridTemplateColumns:isEdit?"1fr 1fr":"180px 300px minmax(0,1fr)",gap:16}}>
+          <div className="fg"><label className="fl" htmlFor="pa-md">Meeting date</label><input id="pa-md" type="date" className="fi" value={date} max={todayStr()} onChange={e=>setDate(e.target.value)}/></div>
+          <div className="fg"><label className="fl" htmlFor="pa-mt">Title</label><input id="pa-mt" className="fi" value={title} onChange={e=>setTitle(e.target.value)}/></div>
+          <div className="fg" style={isEdit?{gridColumn:"1 / -1"}:undefined}>
+            <div className="fl">Present</div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              {partners.map(p=>{
+                const on = attendees.includes(p.id);
+                return <button key={p.id} type="button" aria-pressed={on} className={`pa-pchip ${on?"on":""}`} style={{padding:"8px 14px",fontSize:13}}
+                  onClick={()=>setAtt(a=>on?a.filter(x=>x!==p.id):[...a,p.id])}>{p.name}</button>;
+              })}
+            </div>
+          </div>
+        </div>
+        <div className="fg"><label className="fl" htmlFor="pa-mn">Short notes (optional)</label>
+          <textarea id="pa-mn" className="fta" style={{minHeight:56}} placeholder="Topics discussed..." value={notes} onChange={e=>setNotes(e.target.value)}/>
+        </div>
+
+        {!isEdit&&(
+          <div style={{borderTop:"1.5px solid var(--border)",paddingTop:16}}>
+            <div className="fxb mb8">
+              <div className="fw6" style={{fontSize:15}}>Actionables <span className="tsl" style={{fontWeight:500}}>({filled.length})</span></div>
+              <div className="tx tsl">Each needs an actionable, category, one owner and a due date. Blank rows are ignored.</div>
+            </div>
+            <div className="pa-grid" style={{marginBottom:6}}>
+              <div className="pa-hd">#</div><div className="pa-hd">Actionable</div><div className="pa-hd">Category</div><div className="pa-hd">Owner</div><div className="pa-hd">Supporting</div><div className="pa-hd">Due date</div><div className="pa-hd">Priority</div><div/>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {rows.map((r,idx)=>(
+                <div key={r.key} className="pa-grid">
+                  <div className="ts tsl fw6">{idx+1}</div>
+                  <input className="fi" aria-label={`Actionable ${idx+1}`} placeholder="What needs to happen?" value={r.title}
+                    onChange={e=>setRow(r.key,{title:e.target.value})}
+                    onKeyDown={e=>{ if(e.key==="Enter"){ e.preventDefault(); if(idx===rows.length-1) addRow(); } }}/>
+                  <select className="fs" aria-label="Category" value={r.category} onChange={e=>setRow(r.key,{category:e.target.value})}>
+                    <option value="">Select</option>{PA_CATEGORIES.map(c=><option key={c}>{c}</option>)}
+                  </select>
+                  <select className="fs" aria-label="Owner" value={r.ownerId} onChange={e=>setRow(r.key,{ownerId:e.target.value,supportIds:r.supportIds.filter(x=>x!==e.target.value)})}>
+                    <option value="">Select</option>{partners.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                  <PASupportPicker partners={partners} ownerId={r.ownerId} value={r.supportIds} onChange={v=>setRow(r.key,{supportIds:v})}/>
+                  <input type="date" className="fi" aria-label="Due date" value={r.dueDate} onChange={e=>setRow(r.key,{dueDate:e.target.value})}/>
+                  <select className="fs" aria-label="Priority" value={r.priority} onChange={e=>setRow(r.key,{priority:e.target.value})}>
+                    {PA_PRIORITIES.map(p=><option key={p}>{p}</option>)}
+                  </select>
+                  <button type="button" className="btn bgh bic bsm" aria-label="Remove row" title="Remove row" onClick={()=>removeRow(r.key)}><I n="x" s={13}/></button>
+                </div>
+              ))}
+            </div>
+            <button type="button" className="btn bsm" onClick={addRow} style={{marginTop:10,background:"transparent",border:"1.5px dashed var(--gold)",color:"var(--navy)"}}><I n="plus" s={13}/>Add another row</button>
+            <div className="tx tsl mt8">Tip: press Enter in the last row's actionable box to add a new row.</div>
+          </div>
+        )}
+
+        <div className="md-actions" style={{justifyContent:"space-between",alignItems:"center"}}>
+          <div className="tx tsl">{isEdit?"Actionables are edited individually from their own panel.":"Open items from earlier meetings stay on the Meeting Review list. No need to re-enter them."}</div>
+          <div className="fx g8">
+            <button className="btn bgh" onClick={onClose}>Cancel</button>
+            <button className="btn bp" onClick={save}><I n="check" s={15}/>{isEdit?"Save meeting":`Save meeting${filled.length?` and ${filled.length} actionable${filled.length===1?"":"s"}`:""}`}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Quick add: one actionable, optionally linked to a meeting ──
+function PAQuickAddModal({ partners, meetings, defaultMeetingId, defaultOwnerId, onClose, onSave }) {
+  const [r,setR] = useState({ ...paBlankRow(), ownerId:defaultOwnerId||"" });
+  const [meetingId,setMeetingId] = useState(defaultMeetingId||"");
+  const [err,setErr] = useState("");
+  const save = () => {
+    const miss = [!r.title.trim()&&"actionable",!r.category&&"category",!r.ownerId&&"owner",!r.dueDate&&"due date"].filter(Boolean);
+    if(miss.length){ setErr(`Please fill in: ${miss.join(", ")}.`); return; }
+    onSave(r, meetingId||null);
+  };
+  return (
+    <div className="mo" onClick={onClose}>
+      <div className="md" onClick={e=>e.stopPropagation()} style={{maxWidth:600}}>
+        <div className="md-title">Add actionable</div>
+        {err&&<div className="err">{err}</div>}
+        <div className="fg"><label className="fl" htmlFor="pa-qt">Actionable</label>
+          <textarea id="pa-qt" className="fta" style={{minHeight:60}} placeholder="What needs to happen?" value={r.title} onChange={e=>setR(x=>({...x,title:e.target.value}))}/>
+        </div>
+        <div className="g2">
+          <div className="fg"><label className="fl" htmlFor="pa-qc">Category</label>
+            <select id="pa-qc" className="fs" value={r.category} onChange={e=>setR(x=>({...x,category:e.target.value}))}><option value="">Select</option>{PA_CATEGORIES.map(c=><option key={c}>{c}</option>)}</select>
+          </div>
+          <div className="fg"><label className="fl" htmlFor="pa-qp">Priority</label>
+            <select id="pa-qp" className="fs" value={r.priority} onChange={e=>setR(x=>({...x,priority:e.target.value}))}>{PA_PRIORITIES.map(p=><option key={p}>{p}</option>)}</select>
+          </div>
+          <div className="fg"><label className="fl" htmlFor="pa-qo">Owner</label>
+            <select id="pa-qo" className="fs" value={r.ownerId} onChange={e=>setR(x=>({...x,ownerId:e.target.value,supportIds:x.supportIds.filter(s=>s!==e.target.value)}))}><option value="">Select</option>{partners.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select>
+          </div>
+          <div className="fg"><label className="fl" htmlFor="pa-qd">Due date</label>
+            <input id="pa-qd" type="date" className="fi" value={r.dueDate} onChange={e=>setR(x=>({...x,dueDate:e.target.value}))}/>
+          </div>
+        </div>
+        <div className="fg"><div className="fl">Supporting partners (optional)</div>
+          <PASupportPicker partners={partners} ownerId={r.ownerId} value={r.supportIds} onChange={v=>setR(x=>({...x,supportIds:v}))}/>
+        </div>
+        <div className="fg"><label className="fl" htmlFor="pa-qm">From meeting</label>
+          <select id="pa-qm" className="fs" value={meetingId} onChange={e=>setMeetingId(e.target.value)}>
+            <option value="">Not from a meeting</option>
+            {meetings.map(m=><option key={m.id} value={m.id}>{m.title} · {fmtDate(m.date)}</option>)}
+          </select>
+        </div>
+        <div className="md-actions">
+          <button className="btn bgh" onClick={onClose}>Cancel</button>
+          <button className="btn bp" onClick={save}><I n="check" s={15}/>Add actionable</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Detail drawer: update status, add a note, revise due date, edit details ──
+function PADetailDrawer({ user, a, users, partners, meeting, canDelete, onClose, onSave, onDelete }) {
+  const [status,setStatus] = useState(a.status);
+  const [note,setNote]     = useState("");
+  const [due,setDue]       = useState(a.dueDate||"");
+  const [editing,setEditing] = useState(false);
+  const [d,setD] = useState({ title:a.title, category:a.category, ownerId:a.ownerId, supportIds:a.supportIds||[], priority:a.priority||"Medium" });
+  const [err,setErr] = useState("");
+  const nameOf = id => users.find(u=>u.id===id)?.name || "—";
+  const info = paDueInfo(a);
+  const willBeOpen = status==="open"||status==="in_progress";
+  const ownerOptions = partners.some(p=>p.id===a.ownerId) ? partners : [...partners, users.find(u=>u.id===a.ownerId)].filter(Boolean);
+
+  const save = () => {
+    setErr("");
+    const changes = [];
+    if(status!==a.status) changes.push(`${PA_STATUS_LABEL[a.status]} → ${PA_STATUS_LABEL[status]}`);
+    const newDue = willBeOpen ? due : a.dueDate;
+    if(willBeOpen && !due){ setErr("Due date is required."); return; }
+    if(newDue!==a.dueDate) changes.push(`Due ${fmtDate(a.dueDate)} → ${fmtDate(newDue)}`);
+    let details = {};
+    if(editing){
+      if(!d.title.trim()){ setErr("Actionable text is required."); return; }
+      if(!d.category||!d.ownerId){ setErr("Category and owner are required."); return; }
+      const sup = d.supportIds.filter(x=>x!==d.ownerId);
+      if(d.title.trim()!==a.title) changes.push("Text edited");
+      if(d.category!==a.category) changes.push(`Category ${a.category} → ${d.category}`);
+      if(d.ownerId!==a.ownerId) changes.push(`Owner ${nameOf(a.ownerId)} → ${nameOf(d.ownerId)}`);
+      if([...sup].sort().join()!==[...(a.supportIds||[])].sort().join()) changes.push(`Supporting: ${sup.length?sup.map(nameOf).join(", "):"none"}`);
+      if(d.priority!==(a.priority||"Medium")) changes.push(`Priority ${a.priority||"Medium"} → ${d.priority}`);
+      details = { title:d.title.trim(), category:d.category, ownerId:d.ownerId, supportIds:sup, priority:d.priority };
+    }
+    if(status==="dropped" && a.status!=="dropped" && !note.trim()){ setErr("A reason is required to drop an actionable."); return; }
+    if(!changes.length && !note.trim()){ setErr("Nothing to save. Change the status, add a note or revise the due date."); return; }
+    const now = new Date().toISOString();
+    const wasOpen = paIsOpen(a);
+    const closedAt = willBeOpen ? null : (wasOpen || status!==a.status ? now : (a.closedAt||now));
+    const entry = { at:now, byId:user.id, byName:user.name, type:changes.length?"update":"note", change:changes.join(" · ")||"Note", note:note.trim() };
+    onSave({ ...a, ...details, status, dueDate:newDue, closedAt, updatedAt:now, updatedBy:user.id, history:[...(a.history||[]), entry] }, entry.change);
+  };
+
+  const noteLabel = status==="dropped"&&a.status!=="dropped" ? "Reason for dropping (required)" : status==="done"&&a.status!=="done" ? "Closure note (optional)" : "Update note";
+  const notePh = status==="dropped" ? "Why is this no longer needed?" : status==="done" ? "What was the outcome?" : "What has happened since the last update?";
+  const history = (a.history||[]).slice().reverse();
+  const dotColor = h => h.type==="created" ? "#94a3b8" : /→ Done/.test(h.change) ? "var(--green)" : /→ Dropped/.test(h.change) ? "var(--slate)" : /Due /.test(h.change) ? "var(--amber)" : h.type==="note" ? "var(--gold)" : "#1e40af";
+
+  return (
+    <>
+      <div className="pa-drawer-bg" onClick={onClose}/>
+      <div className="pa-drawer" role="dialog" aria-label="Actionable details">
+        <div className="fxb">
+          <div className="fx g8" style={{flexWrap:"wrap"}}>
+            <PACatChip cat={a.category}/>
+            <PAStatusBadge status={a.status}/>
+            {info.kind==="over"&&<span className="pa-chip" style={{background:"#fee2e2",color:"#b91c1c",fontWeight:600}}>{info.sub}</span>}
+          </div>
+          <button className="btn bgh bic bsm" aria-label="Close" onClick={onClose}><I n="x" s={16}/></button>
+        </div>
+        {!editing
+          ? <div style={{fontFamily:"'Playfair Display',serif",fontSize:23,lineHeight:1.3}}>{a.title}</div>
+          : <div className="fg" style={{marginBottom:0}}><label className="fl" htmlFor="pa-et">Actionable</label><textarea id="pa-et" className="fta" style={{minHeight:60}} value={d.title} onChange={e=>setD(x=>({...x,title:e.target.value}))}/></div>}
+
+        {!editing?(
+          <div className="pa-meta">
+            <div><div className="pa-k">Owner</div><div className="pa-v fw6">{nameOf(a.ownerId)}</div></div>
+            <div><div className="pa-k">Supporting</div><div className="pa-v" style={{color:(a.supportIds||[]).length?"var(--navy)":"var(--slate)"}}>{(a.supportIds||[]).length?(a.supportIds||[]).map(nameOf).join(", "):"None"}</div></div>
+            <div><div className="pa-k">Priority</div><div className="pa-v fw6" style={{color:PA_PRIO_COLOR[a.priority]||"var(--slate)"}}>{a.priority||"Medium"}</div></div>
+            <div><div className="pa-k">Due</div><div className="pa-v fw6" style={{color:PA_DUE_COLOR[info.kind]}}>{a.dueDate?fmtDate(a.dueDate):"—"}</div>
+              {a.originalDueDate&&a.originalDueDate!==a.dueDate&&<div className="tx tsl">Originally {fmtDate(a.originalDueDate)}</div>}</div>
+            <div><div className="pa-k">Raised in</div><div className="pa-v">{meeting?`${meeting.title}, ${fmtDate(meeting.date)}`:"Not from a meeting"}</div></div>
+            <div><div className="pa-k">Created by</div><div className="pa-v">{a.createdByName||nameOf(a.createdBy)}</div></div>
+          </div>
+        ):(
+          <div className="pa-meta" style={{gridTemplateColumns:"1fr 1fr"}}>
+            <div><label className="fl" htmlFor="pa-ec">Category</label><select id="pa-ec" className="fs" value={d.category} onChange={e=>setD(x=>({...x,category:e.target.value}))}>{PA_CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></div>
+            <div><label className="fl" htmlFor="pa-ep">Priority</label><select id="pa-ep" className="fs" value={d.priority} onChange={e=>setD(x=>({...x,priority:e.target.value}))}>{PA_PRIORITIES.map(p=><option key={p}>{p}</option>)}</select></div>
+            <div><label className="fl" htmlFor="pa-eo">Owner</label><select id="pa-eo" className="fs" value={d.ownerId} onChange={e=>setD(x=>({...x,ownerId:e.target.value,supportIds:x.supportIds.filter(s=>s!==e.target.value)}))}>{ownerOptions.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></div>
+            <div><div className="fl">Supporting</div><PASupportPicker partners={partners} ownerId={d.ownerId} value={d.supportIds} onChange={v=>setD(x=>({...x,supportIds:v}))}/></div>
+          </div>
+        )}
+        <div className="fx g8">
+          <button className="btn bgh bsm" onClick={()=>{setEditing(e=>!e);setD({ title:a.title, category:a.category, ownerId:a.ownerId, supportIds:a.supportIds||[], priority:a.priority||"Medium" });}}><I n="edit" s={13}/>{editing?"Cancel editing details":"Edit details"}</button>
+          {canDelete&&<button className="btn bd bsm" onClick={()=>onDelete(a)}><I n="trash" s={13}/>Delete</button>}
+        </div>
+
+        <div style={{display:"flex",flexDirection:"column",gap:14,border:"1.5px solid var(--border)",borderRadius:12,padding:18}}>
+          <div className="fw6" style={{fontSize:14.5}}>Add an update</div>
+          {err&&<div className="err" style={{marginBottom:0}}>{err}</div>}
+          <div>
+            <div className="fl">Status</div>
+            <div className="pa-seg" role="group" aria-label="Status">
+              {PA_STATUSES.map(s=><button key={s} type="button" className={status===s?"on":""} aria-pressed={status===s} onClick={()=>setStatus(s)}>{PA_STATUS_LABEL[s]}</button>)}
+            </div>
+          </div>
+          <div>
+            <label className="fl" htmlFor="pa-note">{noteLabel}</label>
+            <textarea id="pa-note" className="fta" placeholder={notePh} value={note} onChange={e=>setNote(e.target.value)}/>
+          </div>
+          {willBeOpen&&(
+            <div style={{display:"grid",gridTemplateColumns:"190px minmax(0,1fr)",gap:12,alignItems:"end"}}>
+              <div><label className="fl" htmlFor="pa-due">Due date</label><input id="pa-due" type="date" className="fi" value={due} onChange={e=>setDue(e.target.value)}/></div>
+              <div className="tx tsl" style={{paddingBottom:12}}>Changing it keeps the original date in the history, so repeated slips stay visible.</div>
+            </div>
+          )}
+          <div className="fx g8" style={{justifyContent:"flex-end"}}>
+            <button className="btn bgh" onClick={onClose}>Cancel</button>
+            <button className="btn bp" onClick={save}><I n="check" s={15}/>Save update</button>
+          </div>
+        </div>
+
+        <div>
+          <div className="fw6" style={{fontSize:14.5,marginBottom:12}}>History</div>
+          {history.map((h,i)=>(
+            <div key={i} style={{display:"flex",gap:14}}>
+              <div style={{display:"flex",flexDirection:"column",alignItems:"center",width:12}}>
+                <div style={{width:12,height:12,borderRadius:"50%",flexShrink:0,background:dotColor(h)}}/>
+                {i<history.length-1&&<div style={{width:2,flexGrow:1,background:"var(--border)",margin:"4px 0"}}/>}
+              </div>
+              <div style={{paddingBottom:16,flex:1}}>
+                <div className="ts"><strong>{h.byName}</strong> <span className="tsl">· {fmtDate(h.at.slice(0,10))} at {new Date(h.at).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})}</span></div>
+                {h.change&&h.change!=="Note"&&<div style={{fontSize:12.5,color:"var(--navy-mid)",fontWeight:600,marginTop:3}}>{h.change}</div>}
+                {h.note&&<div className="ts" style={{color:"#334155",marginTop:3,lineHeight:1.45,whiteSpace:"pre-wrap"}}>{h.note}</div>}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── Main page ──────────────────────────────────────────────────
+function PartnerActions({ user, users=[], meetings=[], setMeetings, actions=[], setActions, loaded=true }) {
+  const [tab,setTab]         = useState("mine");
+  const [fOwner,setFOwner]   = useState("");
+  const [fCat,setFCat]       = useState("");
+  const [fStatus,setFStatus] = useState("open");
+  const [meetingM,setMeetingM] = useState(null); // null | {existing?}
+  const [quickM,setQuickM]   = useState(null);   // null | {meetingId}
+  const [detailId,setDetailId] = useState(null);
+  const isAdmin = user.email===ADMIN_EMAIL;
+
+  const partners = users.filter(u=>u.role==="partner"&&u.active!==false).slice().sort((a,b)=>a.name.localeCompare(b.name));
+  const nameOf = id => users.find(u=>u.id===id)?.name || "—";
+  const meetingOf = id => meetings.find(m=>m.id===id);
+  const meetingsSorted = meetings.slice().sort((a,b)=>(b.date||"").localeCompare(a.date||"")||(b.createdAt||"").localeCompare(a.createdAt||""));
+  const lastMeeting = meetingsSorted[0];
+
+  const openAll   = actions.filter(paIsOpen).sort(paSort);
+  const mineOwned = openAll.filter(a=>a.ownerId===user.id);
+  const mineSupp  = openAll.filter(a=>a.ownerId!==user.id&&(a.supportIds||[]).includes(user.id));
+  const mine      = [...mineOwned,...mineSupp].sort(paSort);
+  const myOverdue = mineOwned.filter(paIsOverdue).length;
+  const firmOverdue = openAll.filter(paIsOverdue).length;
+
+  const allFiltered = actions.filter(a=>{
+    if(fOwner&&a.ownerId!==fOwner) return false;
+    if(fCat&&a.category!==fCat) return false;
+    if(fStatus==="open"&&!paIsOpen(a)) return false;
+    if(fStatus==="overdue"&&!paIsOverdue(a)) return false;
+    if(fStatus==="done"&&a.status!=="done") return false;
+    if(fStatus==="dropped"&&a.status!=="dropped") return false;
+    return true;
+  }).sort((a,b)=>paIsOpen(a)!==paIsOpen(b)?(paIsOpen(a)?-1:1):paIsOpen(a)?paSort(a,b):(b.closedAt||"").localeCompare(a.closedAt||""));
+
+  const raisedLabel = a => { const m=meetingOf(a.meetingId); return m?`Raised ${fmtDate(m.date)}`:`Added ${fmtDate((a.createdAt||"").slice(0,10))}`; };
+  const latestNote = a => {
+    const h = a.history||[]; const last = h[h.length-1];
+    if(!last||last.type==="created") return "No update yet";
+    return `${fmtDate(last.at.slice(0,10))}: ${last.note||last.change}`;
+  };
+
+  // ── writes ──
+  const newAction = (r, meetingId, now) => ({
+    id:genId(), meetingId:meetingId||null, title:r.title.trim(), category:r.category,
+    ownerId:r.ownerId, supportIds:(r.supportIds||[]).filter(x=>x!==r.ownerId),
+    dueDate:r.dueDate, originalDueDate:r.dueDate, priority:r.priority||"Medium",
+    status:"open", closedAt:null,
+    createdBy:user.id, createdByName:user.name, createdAt:now, updatedAt:now, updatedBy:user.id,
+    history:[{ at:now, byId:user.id, byName:user.name, type:"created",
+      change: meetingId?"Created from partners' meeting":"Created",
+      note:`Owner ${nameOf(r.ownerId)} · due ${fmtDate(r.dueDate)} · ${r.priority||"Medium"} priority` }],
+  });
+  const saveMeeting = (m, rows) => {
+    const now = new Date().toISOString();
+    if(meetingM?.existing){
+      const id = meetingM.existing.id;
+      setMeetings(prev=>prev.map(x=>x.id===id?{...x,...m,updatedAt:now,updatedBy:user.id}:x));
+      addAudit(user.id,user.name,"PA_EDIT_MEETING",`Edited partners' meeting of ${m.date}`);
+    } else {
+      const mid = genId();
+      setMeetings(prev=>[...prev,{ id:mid, ...m, createdBy:user.id, createdByName:user.name, createdAt:now }]);
+      if(rows.length) setActions(prev=>[...prev,...rows.map(r=>newAction(r,mid,now))]);
+      addAudit(user.id,user.name,"PA_LOG_MEETING",`Logged partners' meeting of ${m.date} with ${rows.length} actionable(s)`);
+      setTab("meet");
+    }
+    setMeetingM(null);
+  };
+  const saveQuick = (r, meetingId) => {
+    const now = new Date().toISOString();
+    setActions(prev=>[...prev,newAction(r,meetingId,now)]);
+    addAudit(user.id,user.name,"PA_ADD_ACTION",`Added actionable for ${nameOf(r.ownerId)}: ${r.title.trim()}`);
+    setQuickM(null);
+  };
+  const saveDetail = (updated, summary) => {
+    setActions(prev=>prev.map(x=>x.id===updated.id?updated:x));
+    addAudit(user.id,user.name,"PA_UPDATE_ACTION",`${updated.title}: ${summary}`);
+    setDetailId(null);
+  };
+  const deleteAction = a => {
+    if(!window.confirm(`Delete this actionable permanently?\n\n"${a.title}"\n\nUse "Dropped" instead if it is simply no longer needed.`)) return;
+    setActions(prev=>prev.filter(x=>x.id!==a.id));
+    addAudit(user.id,user.name,"PA_DELETE_ACTION",`Deleted actionable: ${a.title}`);
+    setDetailId(null);
+  };
+  const deleteMeeting = m => {
+    const linked = actions.filter(a=>a.meetingId===m.id);
+    if(!window.confirm(`Delete the meeting of ${fmtDate(m.date)}${linked.length?` and its ${linked.length} actionable${linked.length===1?"":"s"}`:""}? This cannot be undone.`)) return;
+    setMeetings(prev=>prev.filter(x=>x.id!==m.id));
+    if(linked.length) setActions(prev=>prev.filter(a=>a.meetingId!==m.id));
+    addAudit(user.id,user.name,"PA_DELETE_MEETING",`Deleted partners' meeting of ${m.date} with ${linked.length} actionable(s)`);
+  };
+  const markDone = a => {
+    if(!window.confirm(`Mark as done?\n\n"${a.title}"`)) return;
+    const now = new Date().toISOString();
+    setActions(prev=>prev.map(x=>x.id===a.id?{...x,status:"done",closedAt:now,updatedAt:now,updatedBy:user.id,
+      history:[...(x.history||[]),{at:now,byId:user.id,byName:user.name,type:"update",change:`${PA_STATUS_LABEL[x.status]} → Done`,note:"Closed during meeting review"}]}:x));
+    addAudit(user.id,user.name,"PA_UPDATE_ACTION",`${a.title}: marked done in meeting review`);
+  };
+
+  const detail = detailId ? actions.find(a=>a.id===detailId) : null;
+
+  // ── pieces ──
+  const Row = ({ a }) => {
+    const role = a.ownerId===user.id ? "Owner" : (a.supportIds||[]).includes(user.id) ? "Supporting" : "";
+    return (
+      <div className="pa-row">
+        <div style={{minWidth:0}}>
+          <div className="fw6" style={{fontSize:14,lineHeight:1.35}}>{a.title}</div>
+          <div className="fxc g8 mt4" style={{flexWrap:"wrap"}}>
+            <span style={{fontSize:11,fontWeight:700,color:PA_PRIO_COLOR[a.priority]||"var(--slate)"}}>{a.priority||"Medium"}</span>
+            <span className="tx tsl">{raisedLabel(a)}</span>
+            {role&&<span className="pa-you">You: {role}</span>}
+          </div>
+        </div>
+        <div><PACatChip cat={a.category}/></div>
+        <div>
+          <div style={{fontWeight:500,fontSize:13.5}}>{nameOf(a.ownerId)}</div>
+          {(a.supportIds||[]).length>0&&<div className="tx tsl">+ {(a.supportIds||[]).map(id=>paFirstName(nameOf(id))).join(", ")}</div>}
+        </div>
+        <PADue a={a}/>
+        <div><PAStatusBadge status={a.status}/></div>
+        <div className="tx tsl" style={{lineHeight:1.4,overflow:"hidden",display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical"}}>{latestNote(a)}</div>
+        <div><button className="btn bgh bsm" onClick={()=>setDetailId(a.id)}>Update</button></div>
+      </div>
+    );
+  };
+  const Table = ({ list, empty }) => (
+    <div className="card" style={{padding:0,overflow:"hidden"}}>
+      {list.length===0 ? <div className="es"><div className="es-icon"><I n="task" s={36}/></div>{empty}</div> : <>
+        <div className="pa-row hd"><div className="pa-hd">Actionable</div><div className="pa-hd">Category</div><div className="pa-hd">Owner</div><div className="pa-hd">Due</div><div className="pa-hd">Status</div><div className="pa-hd">Latest update</div><div/></div>
+        {list.map(a=><Row key={a.id} a={a}/>)}
+      </>}
+    </div>
+  );
+
+  const tabs = [
+    ["mine",`My Actionables (${mine.length})`],
+    ["all",`All (${openAll.length} open)`],
+    ["meet","By Meeting"],
+    ["review","Meeting Review"],
+  ];
+
+  // Review groups: open items by owner, overdue first
+  const ownerIds = [...new Set(openAll.map(a=>a.ownerId))].sort((x,y)=>nameOf(x).localeCompare(nameOf(y)));
+  const groups = ownerIds.map(id=>({ id, items:openAll.filter(a=>a.ownerId===id) }));
+  const closedSince = lastMeeting ? actions.filter(a=>!paIsOpen(a)&&a.closedAt&&a.closedAt.slice(0,10)>=lastMeeting.date).sort((a,b)=>(b.closedAt||"").localeCompare(a.closedAt||"")) : [];
+  const unlinked = actions.filter(a=>!a.meetingId||!meetingOf(a.meetingId));
+
+  const MeetingCard = ({ m, items, title, sub }) => {
+    const done = items.filter(a=>a.status==="done").length;
+    const dropped = items.filter(a=>a.status==="dropped").length;
+    const closed = done+dropped; const open = items.length-closed;
+    const pct = items.length ? Math.round(closed/items.length*100) : 0;
+    const sorted = items.slice().sort((a,b)=>paIsOpen(a)!==paIsOpen(b)?(paIsOpen(a)?-1:1):paSort(a,b));
+    const canDel = m && (isAdmin || m.createdBy===user.id);
+    return (
+      <div className="card" style={{display:"flex",flexDirection:"column",gap:14}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:20}}>
+          <div style={{minWidth:0}}>
+            <div style={{fontFamily:"'Playfair Display',serif",fontSize:19}}>{title}</div>
+            <div className="ts tsl mt4">{sub}</div>
+            {m?.notes&&<div className="ts" style={{color:"#334155",marginTop:8,maxWidth:760,lineHeight:1.5,whiteSpace:"pre-wrap"}}>{m.notes}</div>}
+            {m&&<div className="fx g8" style={{marginTop:10}}>
+              <button className="btn bgh bxs" onClick={()=>setQuickM({meetingId:m.id})}><I n="plus" s={12}/>Add actionable</button>
+              <button className="btn bgh bxs" onClick={()=>setMeetingM({existing:m})}><I n="edit" s={12}/>Edit meeting</button>
+              {canDel&&<button className="btn bgh bxs" style={{color:"var(--red)"}} onClick={()=>deleteMeeting(m)}><I n="trash" s={12}/>Delete</button>}
+            </div>}
+          </div>
+          <div style={{width:220,flexShrink:0,textAlign:"right"}}>
+            <div className="ts fw6">{closed} of {items.length} closed</div>
+            <div className="pbw" style={{marginTop:7}}><div className="pbf pbok" style={{width:Math.max(pct,items.length?2:0)+"%"}}/></div>
+            <div className="tx tsl mt4">{open} open · {done} done · {dropped} dropped</div>
+          </div>
+        </div>
+        {sorted.length>0&&<div style={{borderTop:"1px solid var(--border)"}}>
+          {sorted.map(a=>(
+            <div key={a.id} className="pa-mi" role="button" tabIndex={0} onClick={()=>setDetailId(a.id)} onKeyDown={e=>{if(e.key==="Enter")setDetailId(a.id);}}>
+              <div style={{fontSize:13.5,fontWeight:500}}>{a.title}</div>
+              <div><PACatChip cat={a.category}/></div>
+              <div className="ts">{nameOf(a.ownerId)}</div>
+              <PADue a={a}/>
+              <div><PAStatusBadge status={a.status}/></div>
+            </div>
+          ))}
+        </div>}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:18}}>
+      <style>{PA_CSS}</style>
+
+      <div className="sh" style={{marginBottom:0}}>
+        <div>
+          <div className="card-title">Decisions from partners' meetings, tracked to closure</div>
+          <div className="card-sub mt4 ts">
+            {lastMeeting?`Last meeting: ${fmtDate(lastMeeting.date)} · ${actions.filter(a=>a.meetingId===lastMeeting.id).length} actionables raised`:"No meetings logged yet"}
+            <span style={{marginLeft:10}} className="pa-you"><I n="lock" s={10}/> Visible to partners only</span>
+          </div>
+        </div>
+        <div className="fxc g8">
+          <button className="btn bgh" onClick={()=>setQuickM({meetingId:""})}><I n="plus" s={15}/>Quick add</button>
+          <button className="btn bp" onClick={()=>setMeetingM({})}><I n="calendar" s={15}/>Log meeting</button>
+        </div>
+      </div>
+
+      <div className="sg" style={{marginBottom:0}}>
+        <div className="sc"><div className="sv">{mineOwned.length}</div><div className="sl">My open{mineSupp.length?` · +${mineSupp.length} supporting`:""}</div></div>
+        <div className="sc" style={myOverdue?{borderColor:"#fecaca"}:undefined}><div className="sv" style={{color:myOverdue?"#b91c1c":"var(--green)"}}>{myOverdue}</div><div className="sl">My overdue</div></div>
+        <div className="sc"><div className="sv">{openAll.length}</div><div className="sl">Firm-wide open</div></div>
+        <div className="sc"><div className="sv" style={{color:firmOverdue?"#b45309":"var(--green)"}}>{firmOverdue}</div><div className="sl">Firm-wide overdue</div></div>
+      </div>
+
+      <div className="tabs" style={{marginBottom:0,alignSelf:"flex-start"}}>
+        {tabs.map(([id,label])=><div key={id} className={`tab ${tab===id?"active":""}`} role="button" tabIndex={0} onClick={()=>setTab(id)} onKeyDown={e=>{if(e.key==="Enter")setTab(id);}}>{label}</div>)}
+      </div>
+
+      {!loaded&&<div className="al al-i"><I n="info" s={15}/><div>Loading actionables...</div></div>}
+
+      {tab==="mine"&&<>
+        <div className="ts tsl">Items you own or support. Overdue first.</div>
+        <Table list={mine} empty="Nothing open on your plate."/>
+      </>}
+
+      {tab==="all"&&<>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+          <select className="fs" aria-label="Owner" style={{width:"auto",fontSize:13,padding:"8px 12px"}} value={fOwner} onChange={e=>setFOwner(e.target.value)}>
+            <option value="">All partners</option>{[...new Set([...partners.map(p=>p.id),...actions.map(a=>a.ownerId)])].map(id=><option key={id} value={id}>{nameOf(id)}</option>)}
+          </select>
+          <select className="fs" aria-label="Category" style={{width:"auto",fontSize:13,padding:"8px 12px"}} value={fCat} onChange={e=>setFCat(e.target.value)}>
+            <option value="">All categories</option>{PA_CATEGORIES.map(c=><option key={c}>{c}</option>)}
+          </select>
+          <select className="fs" aria-label="Status" style={{width:"auto",fontSize:13,padding:"8px 12px"}} value={fStatus} onChange={e=>setFStatus(e.target.value)}>
+            <option value="open">Open + In progress</option><option value="overdue">Overdue only</option><option value="done">Done</option><option value="dropped">Dropped</option><option value="all">All statuses</option>
+          </select>
+          {(fOwner||fCat||fStatus!=="open")&&<button className="btn bgh bsm" onClick={()=>{setFOwner("");setFCat("");setFStatus("open");}}>✕ Clear</button>}
+          <span className="tx tsl" style={{marginLeft:"auto",fontSize:12}}>{allFiltered.length} actionable{allFiltered.length===1?"":"s"}</span>
+        </div>
+        <Table list={allFiltered} empty="No actionables match these filters."/>
+      </>}
+
+      {tab==="meet"&&<div style={{display:"flex",flexDirection:"column",gap:14}}>
+        {meetingsSorted.length===0&&unlinked.length===0&&<div className="card"><div className="es"><div className="es-icon"><I n="calendar" s={36}/></div>No meetings logged yet. Use "Log meeting" after your next partners' meeting.</div></div>}
+        {meetingsSorted.map(m=><MeetingCard key={m.id} m={m} items={actions.filter(a=>a.meetingId===m.id)}
+          title={m.title} sub={`${fmtDate(m.date)} · Present: ${(m.attendees||[]).map(nameOf).join(", ")||"—"}`}/>)}
+        {unlinked.length>0&&<MeetingCard m={null} items={unlinked} title="Not from a meeting" sub="Added directly with Quick add"/>}
+      </div>}
+
+      {tab==="review"&&<div style={{display:"flex",flexDirection:"column",gap:14}}>
+        <div style={{background:"var(--navy)",color:"#fff",borderRadius:"var(--rl)",padding:"18px 22px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:20}}>
+          <div>
+            <div style={{fontFamily:"'Playfair Display',serif",fontSize:20,color:"var(--gold-light)"}}>Review list for the next partners' meeting</div>
+            <div style={{fontSize:13,color:"rgba(255,255,255,.75)",marginTop:4}}>Everything still open, grouped by owner, overdue first. Go through this at the start of the meeting.</div>
+          </div>
+          <div style={{textAlign:"right",fontSize:13,color:"rgba(255,255,255,.8)",flexShrink:0}}>
+            <div><strong style={{color:"#fff"}}>{openAll.length}</strong> open · <strong style={{color:"#fca5a5"}}>{firmOverdue}</strong> overdue</div>
+            {lastMeeting&&<div style={{marginTop:4}}>{closedSince.length} closed since {fmtDate(lastMeeting.date)}</div>}
+          </div>
+        </div>
+        {groups.length===0&&<div className="card"><div className="es"><div className="es-icon"><I n="check" s={36}/></div>All clear. Nothing open.</div></div>}
+        {groups.map(g=>{
+          const over = g.items.filter(paIsOverdue).length;
+          const nm = nameOf(g.id);
+          return (
+            <div key={g.id} className="card" style={{padding:0,overflow:"hidden"}}>
+              <div className="fxc g12" style={{padding:"14px 20px",background:"var(--cream)",borderBottom:"1px solid var(--border)"}}>
+                <div style={{width:34,height:34,borderRadius:"50%",background:"var(--gold-pale)",color:"#7a5a12",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:13}}>{nm.split(" ").map(x=>x[0]).join("").slice(0,2).toUpperCase()}</div>
+                <div className="fw6" style={{fontSize:14.5}}>{nm}</div>
+                <div className="ts tsl">{g.items.length} open{over?` · ${over} overdue`:""}</div>
+              </div>
+              {g.items.map(a=>(
+                <div key={a.id} className="pa-ri">
+                  <div style={{minWidth:0}}>
+                    <div className="fw6" style={{fontSize:13.5}}>{a.title}</div>
+                    <div className="tx tsl mt4">{latestNote(a)}</div>
+                  </div>
+                  <div><PACatChip cat={a.category}/></div>
+                  <PADue a={a}/>
+                  <div><PAStatusBadge status={a.status}/></div>
+                  <div className="fx g8" style={{justifyContent:"flex-end"}}>
+                    <button className="btn bsc bsm" onClick={()=>markDone(a)}><I n="check" s={12}/>Done</button>
+                    <button className="btn bgh bsm" onClick={()=>setDetailId(a.id)}>Update or new date</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        })}
+        {closedSince.length>0&&(
+          <div className="card">
+            <div className="card-title mb8">Closed since the last meeting</div>
+            {closedSince.map(a=>(
+              <div key={a.id} className="pa-mi" role="button" tabIndex={0} onClick={()=>setDetailId(a.id)} onKeyDown={e=>{if(e.key==="Enter")setDetailId(a.id);}}>
+                <div style={{fontSize:13.5,fontWeight:500}}>{a.title}</div>
+                <div><PACatChip cat={a.category}/></div>
+                <div className="ts">{nameOf(a.ownerId)}</div>
+                <PADue a={a}/>
+                <div><PAStatusBadge status={a.status}/></div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>}
+
+      {meetingM&&<PAMeetingModal partners={partners} existing={meetingM.existing} onClose={()=>setMeetingM(null)} onSave={saveMeeting}/>}
+      {quickM&&<PAQuickAddModal partners={partners} meetings={meetingsSorted} defaultMeetingId={quickM.meetingId} defaultOwnerId={user.id} onClose={()=>setQuickM(null)} onSave={saveQuick}/>}
+      {detail&&<PADetailDrawer key={detail.id} user={user} a={detail} users={users} partners={partners} meeting={meetingOf(detail.meetingId)}
+        canDelete={isAdmin||detail.createdBy===user.id} onClose={()=>setDetailId(null)} onSave={saveDetail} onDelete={deleteAction}/>}
+    </div>
+  );
+}
+
+// Dashboard card: the signed-in partner's own open actionables
+function PADashboardCard({ user, actions=[], onOpen }) {
+  const mine = actions.filter(a=>paIsOpen(a)&&a.ownerId===user.id).sort(paSort);
+  if(!mine.length) return null;
+  const over = mine.filter(paIsOverdue).length;
+  return (
+    <div className="card mb22">
+      <style>{PA_CSS}</style>
+      <div className="fxb mb8">
+        <div className="fxc g8">
+          <div className="card-title">My Partner Actionables</div>
+          {over>0&&<span className="pa-chip" style={{background:"#fee2e2",color:"#b91c1c",fontWeight:600}}>{over} overdue</span>}
+          <span className="pa-chip" style={{background:"var(--cream)",color:"var(--slate)"}}>{mine.length} open</span>
+        </div>
+        <button className="btn bgh bsm" onClick={onOpen}>View all <I n="arrowright" s={13}/></button>
+      </div>
+      {mine.slice(0,5).map(a=>{
+        const info = paDueInfo(a);
+        return (
+          <div key={a.id} style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) 170px 130px",gap:14,alignItems:"center",padding:"10px 0",borderTop:"1px solid var(--cream)"}}>
+            <div style={{fontSize:13.5,fontWeight:500}}>{a.title}</div>
+            <div className="tx tsl">{a.category}</div>
+            <div style={{fontSize:12.5,fontWeight:600,textAlign:"right",color:info.kind==="ok"?"var(--slate)":PA_DUE_COLOR[info.kind]}}>{info.sub}</div>
+          </div>
+        );
+      })}
+      {mine.length>5&&<div className="tx tsl mt8">+ {mine.length-5} more</div>}
+    </div>
+  );
+}
+
+
 // ROOT
 // ══════════════════════════════════════════════════════════════
 export default function App() {
@@ -6062,6 +6800,9 @@ export default function App() {
   // Partner-only collections
   const [rates, , ratesLoaded] = useLS("rates", [], isPartner);
   const [roles, , rolesLoaded] = useLS("roles", [], isPartner);
+  // v37: Partner Actionables (meetings amongst partners and their action items). Partner-only.
+  const [paMeetings, setPaMeetings] = useLS("partner_meetings", [], isPartner);
+  const [paActions, setPaActions, paActionsLoaded] = useLS("partner_actions", [], isPartner);
 
   // Partners see cost rates merged onto each user (from "rates"); everyone else never gets them.
   const usersView = useMemo(()=>{
@@ -6192,7 +6933,8 @@ export default function App() {
     return cnt;
   })() : 0;
 
-  const titles={dashboard:"Dashboard",week:"My Week",timesheets:"Timesheets",projects:"Projects",approvals:"Approvals",reports:"Reports",profitability:"Profitability",productivity:"Productivity Dashboard",compliance:"Compliance",leave:"Leave",appraisal:"Performance Appraisal",goals:"Goal Setting",audit:"Audit Trail",users:"User Management",changepassword:"Change Password"};
+  const titles={dashboard:"Dashboard",week:"My Week",timesheets:"Timesheets",projects:"Projects",approvals:"Approvals",reports:"Reports",profitability:"Profitability",productivity:"Productivity Dashboard",compliance:"Compliance",leave:"Leave",appraisal:"Performance Appraisal",goals:"Goal Setting",audit:"Audit Trail",users:"User Management",changepassword:"Change Password",partneractions:"Partner Actionables"};
+  const paOverdueCount = (isPartner && currentUser) ? paMyOverdueCount(paActions, currentUser.id) : 0;
 
   if(!currentUser) return <><style>{CSS}</style><Login onLogin={u=>{setCU(u);setTab("dashboard");}}/></>;
 
@@ -6209,7 +6951,8 @@ export default function App() {
           projPendingCount={currentUser.role==="partner" ? projects.filter(p=>p.status==="pending_approval").length : 0}
           projClosurePendingCount={currentUser.role==="partner" ? projects.filter(p=>p.status==="pending_closure").length : 0}
           appraisalPendingCount={appraisalPendingCount}
-          goalPendingCount={goalPendingCount}/>
+          goalPendingCount={goalPendingCount}
+          paOverdueCount={paOverdueCount}/>
         <div className="main">
           <div className="topbar">
             <div className="tb-title">{titles[tab]}</div>
@@ -6219,7 +6962,8 @@ export default function App() {
             </div>
           </div>
           <div className="content">
-            {tab==="dashboard"  &&<Dashboard    user={currentUser} {...db_props}/>}
+            {tab==="dashboard"  &&<Dashboard    user={currentUser} {...db_props} paActions={isPartner?paActions:[]} onOpenActions={()=>setTab("partneractions")}/>}
+            {tab==="partneractions"&&isPartner&&<PartnerActions user={currentUser} users={usersView} meetings={paMeetings} setMeetings={setPaMeetings} actions={paActions} setActions={setPaActions} loaded={paActionsLoaded}/>}
             {tab==="week"       &&<WeekView     user={currentUser} {...db_props}/>}
             {tab==="timesheets" &&<Timesheets   user={currentUser} {...db_props}/>}
             {tab==="projects"   &&<Projects     user={currentUser} {...db_props}/>}
