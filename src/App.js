@@ -1570,7 +1570,7 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
   const [showM,setSM]         =useState(false);
   const [editP,setEditP]      =useState(null); // project being edited
   const [assignM,setAM]       =useState(null);
-  const [projTab,setProjTab]  =useState("active"); // active, pending, approved, rejected
+  const [projTab,setProjTab]  =useState("active"); // active, closed, pending, closure, rejected, all
   const [rejectM,setRejectM]  =useState(null);
   const [rejectReason,setRR]  =useState("");
   const [closeRejectM,setCRM] =useState(null); // project being rejected at closure stage
@@ -1683,7 +1683,8 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
   // Filter by tab
   const allVisible = isP?projects:projects.filter(p=>p.status==="active"&&[...(p.assignedStaff||[]),...(p.assignedManagers||[]),...(p.assignedPartners||[])].includes(user.id));
   const tabFiltered = isP ? (
-    projTab==="active"    ? allVisible.filter(p=>["active","closed"].includes(p.status)) :
+    projTab==="active"    ? allVisible.filter(p=>p.status==="active") :
+    projTab==="closed"    ? allVisible.filter(p=>p.status==="closed") :
     projTab==="pending"   ? allVisible.filter(p=>p.status==="pending_approval") :
     projTab==="closure"   ? allVisible.filter(p=>p.status==="pending_closure") :
     projTab==="rejected"  ? allVisible.filter(p=>p.status==="rejected") :
@@ -1730,7 +1731,12 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
       {/* Tabs — partners only */}
       {isP&&(
         <div className="tabs">
-          <div className={`tab ${projTab==="active"?"active":""}`} onClick={()=>{setProjTab("active");setPage(1);}}>Active & Closed</div>
+          <div className={`tab ${projTab==="active"?"active":""}`} onClick={()=>{setProjTab("active");setPage(1);}}>
+            Active<span style={{marginLeft:5,fontSize:11,background:"var(--border)",borderRadius:20,padding:"1px 6px"}}>{projects.filter(p=>p.status==="active").length}</span>
+          </div>
+          <div className={`tab ${projTab==="closed"?"active":""}`} onClick={()=>{setProjTab("closed");setPage(1);}}>
+            Closed<span style={{marginLeft:5,fontSize:11,background:"var(--border)",borderRadius:20,padding:"1px 6px"}}>{projects.filter(p=>p.status==="closed").length}</span>
+          </div>
           <div className={`tab ${projTab==="pending"?"active":""}`} onClick={()=>{setProjTab("pending");setPage(1);}}>
             Pending Approval{pendingCount>0&&<span style={{background:"var(--amber)",color:"#fff",borderRadius:20,padding:"1px 7px",fontSize:10,marginLeft:5}}>{pendingCount}</span>}
           </div>
