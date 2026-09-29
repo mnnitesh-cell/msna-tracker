@@ -222,8 +222,10 @@ function calcAppraisalScore(metrics={}) {
 
 // ── APPRAISAL: eligibility engine ──
 // Trigger = staff allotted to a project code AND has at least one approved hour booked on it (on/after APPRAISAL_START_DATE).
-// Returns a flat list of "required appraisal slots" — deduped/merged so a resource under one manager
-// across several retainer clients in the same quarter gets ONE slot, not one per client.
+// Returns a flat list of "required appraisal slots".
+//  Fixed:    one slot per staff per engagement.
+//  Retainer: one slot per staff per retainer engagement per quarter (v40). Any assigned manager
+//            (or partner, for managers / engagements with no manager) can complete it, same as fixed.
 function getRequiredAppraisals(users, projects, tss) {
   const approvedTs = tss.filter(t => t.status==="approved" && !t.isInternal && t.projectId && t.hours>0 && t.date>=APPRAISAL_START_DATE);
   const merged = {};
@@ -269,12 +271,12 @@ function getRequiredAppraisals(users, projects, tss) {
           if(u.role==="partner") return; // partners are never appraised, regardless of project assignment arrays
           if(isStaffInactiveForQuarter(u, fy, quarter)) return;
           if(isGraceExcludedQuarter(fy, quarter, effectiveJoinDate(u))) return;
+          const rtExtra = { type:"retainer", fy, quarter, projectId:p.id, projectName:p.name, projectCode:p.code, staffId:uid };
           if(managers.includes(uid)) {
-            upsert(`rt-mgr-${uid}-${fy}-${quarter}`, { type:"retainer", fy, quarter, staffId:uid, appraiserRole:"partner", eligibleAppraisers:partners, primaryAppraiser:p.assignedPartnerId }, p.clientName);
+            upsert(`rt-mgr-${p.id}-${uid}-${fy}-${quarter}`, { ...rtExtra, appraiserRole:"partner", eligibleAppraisers:partners, primaryAppraiser:p.assignedPartnerId }, p.clientName);
           } else {
-            managers.forEach(mgrId => {
-              upsert(`rt-staff-${uid}-${mgrId}-${fy}-${quarter}`, { type:"retainer", fy, quarter, staffId:uid, appraiserRole:"manager", eligibleAppraisers:[mgrId], primaryAppraiser:mgrId }, p.clientName);
-            });
+            const appraisers = managers.length ? managers : partners;
+            upsert(`rt-staff-${p.id}-${uid}-${fy}-${quarter}`, { ...rtExtra, appraiserRole: managers.length?"manager":"partner", eligibleAppraisers:appraisers, primaryAppraiser: managers[0]||p.assignedPartnerId }, p.clientName);
           }
         });
       });
@@ -283,13 +285,18 @@ function getRequiredAppraisals(users, projects, tss) {
 
   return Object.entries(merged).map(([key, v]) => ({ key, ...v }));
 }
-// Find an already-created appraisal record matching a required slot
+// Find an already-created appraisal record matching a required slot.
+// Retainer records from before v40 have no projectId (they were one per manager); they match the
+// slot for their client. If several records match, a submitted one wins, then a draft.
 function findAppraisalFor(appraisals, req) {
-  return appraisals.find(a => {
+  const matches = appraisals.filter(a => {
     if(a.type!==req.type || a.staffId!==req.staffId || a.appraiserRole!==req.appraiserRole) return false;
     if(req.type==="fixed") return a.projectId===req.projectId;
-    return a.fy===req.fy && a.quarter===req.quarter && req.eligibleAppraisers.includes(a.appraiserId);
+    if(a.fy!==req.fy || a.quarter!==req.quarter) return false;
+    if(a.projectId) return a.projectId===req.projectId;
+    return (a.clientNames||[]).includes((req.clientNames||[])[0]);
   });
+  return matches.find(a=>a.status==="submitted") || matches.find(a=>a.status==="draft") || matches[0];
 }
 
 // ── APPRAISAL: quarter placement + quarter average (v30) ──
@@ -5347,15 +5354,15 @@ function AppraisalListRow({ r, ex, onClick, actions }) {
   const sc = appraisalScoreOf(ex);
   const isFixed = r.type==="fixed";
   const label = isFixed ? (r.clientNames||[]).join(", ") : `${(r.clientNames||[]).join(", ")} · ${r.quarter}`;
-  // Fixed-fee: a client can have several engagements, so show which one this appraisal is for.
-  const engName = isFixed ? (r.projectName||"").trim() : "";
-  const engCode = isFixed ? (r.projectCode||"") : "";
+  // A client can have several engagements, so show which one this appraisal is for.
+  const engName = (r.projectName||"").trim();
+  const engCode = r.projectCode||"";
   const showEngName = !!engName && !(r.clientNames||[]).some(c=>(c||"").trim().toLowerCase()===engName.toLowerCase());
   return (
     <div className="card" style={{cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",gap:16,padding:"14px 18px"}} onClick={onClick}>
       <div style={{minWidth:0}}>
         <div className="fw6" style={{fontSize:14}}>{label}</div>
-        {isFixed && (showEngName || engCode) && (
+        {(showEngName || engCode) && (
           <div style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:8,marginTop:4}}>
             {showEngName && <span style={{fontSize:13,color:"var(--navy-mid)"}}>{engName}</span>}
             {engCode && <span className="mono" style={{fontSize:11,color:"var(--slate)",background:"var(--cream)",border:"1px solid var(--border)",borderRadius:5,padding:"1px 6px"}}>{engCode}</span>}
