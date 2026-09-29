@@ -3024,7 +3024,6 @@ function Profitability({ users=[], projects=[], tss=[] }) {
       if(col==="cost") return cost||0;
       if(col==="margin") return margin||0;
       if(col==="margin_pct") return mp??-999;
-      if(col==="created") return d.p.createdAt||"";
       return mp??-999;
     };
     const va=getVal(a,profSortCol), vb=getVal(b,profSortCol);
@@ -3184,7 +3183,6 @@ function Profitability({ users=[], projects=[], tss=[] }) {
               <div className="tw"><table>
                 <thead><tr>
                   <th style={{width:32}}>#</th>
-                  <th style={{cursor:"pointer",whiteSpace:"nowrap"}} onClick={()=>toggleProfSort("created")}>Created{profSortIcon("created")}</th>
                   <th style={{cursor:"pointer"}} onClick={()=>toggleProfSort("code")}>Code{profSortIcon("code")}</th>
                   <th style={{cursor:"pointer"}} onClick={()=>toggleProfSort("client")}>Client{profSortIcon("client")}</th>
                   <th style={{cursor:"pointer"}} onClick={()=>toggleProfSort("fee")}>Fee{profSortIcon("fee")}</th>
@@ -3202,7 +3200,6 @@ function Profitability({ users=[], projects=[], tss=[] }) {
                   return (
                     <tr key={p.id} style={{cursor:"pointer"}} onClick={()=>{setSelected(p.id);setStaffBreakdownMonth("all");}}>
                       <td className="tx tsl" style={{fontSize:12}}>{(profPage-1)*PROF_PAGE+idx+1}</td>
-                      <td className="tx tsl" style={{fontSize:12,whiteSpace:"nowrap"}}>{p.createdAt?fmtDate(p.createdAt.slice(0,10)):"—"}</td>
                       <td><span className="fw6 mono">{p.code}</span></td>
                       <td>{p.clientName}<div className="tx tsl">{p.name}</div></td>
                       <td className="fw6">{totalFee>0?fmtCurrency(totalFee):<span className="tsl tx">Not set</span>}
@@ -3213,7 +3210,7 @@ function Profitability({ users=[], projects=[], tss=[] }) {
                       <td className={margin>=0?"tsc fw6":"tdn fw6"}>{totalFee>0?fmtCurrency(margin):"—"}</td>
                       <td>{mp!=null?<span className={margin<0?"tdn":mp<20?"tam":"tsc"}>{mp}%</span>:<span className="tsl tx">—</span>}</td>
                       <td><span className={`bdg ${p.status==="active"?"bac":"bcl"}`}>{p.status}</span></td>
-                      <td><span className={sigClass(profView==="actual"?signalActual:signalBilling)}>{sigLabel(profView==="actual"?signalActual:signalBilling)}</span></td>
+                      <td style={{whiteSpace:"nowrap"}}><span className={sigClass(profView==="actual"?signalActual:signalBilling)}>{sigLabel(profView==="actual"?signalActual:signalBilling)}</span></td>
                       <td><button className="btn bgh bxs" onClick={e=>{e.stopPropagation();setSelected(p.id);setStaffBreakdownMonth("all");}}>Detail →</button></td>
                     </tr>
                   );
