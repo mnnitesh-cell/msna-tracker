@@ -2329,8 +2329,31 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
 // ══════════════════════════════════════════════════════════════
 // REPORTS
 // ══════════════════════════════════════════════════════════════
+// v38: engagement type filter (All · Fixed · Retainer), shared by Profitability and Reports > By Engagement.
+// Anything not marked "retainer" is treated as fixed fee (older codes may have no feeType).
+const engTypeOf = p => p?.feeType==="retainer" ? "retainer" : "fixed";
+function TypePills({ value, onChange, counts }) {
+  const opts = [["","All"],["fixed","Fixed"],["retainer","Retainer"]];
+  return (
+    <div style={{display:"inline-flex",background:"var(--cream)",borderRadius:10,padding:3,border:"1px solid var(--border)",flexShrink:0}}>
+      {opts.map(([v,l])=>{
+        const on = value===v;
+        return (
+          <button key={l} type="button" onClick={()=>onChange(v)}
+            style={{padding:"6px 14px",borderRadius:8,border:"none",cursor:"pointer",fontSize:13,fontWeight:500,fontFamily:"'DM Sans',sans-serif",display:"inline-flex",alignItems:"center",gap:6,transition:"all .15s",
+              background:on?"var(--navy)":"transparent",color:on?"#fff":"var(--slate)"}}>
+            {l}
+            {counts&&<span style={{fontSize:11,borderRadius:20,padding:"0 6px",background:on?"rgba(255,255,255,.18)":"var(--border)",color:on?"#fff":"var(--slate)"}}>{counts[v]??0}</span>}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function Reports({ user, users=[], projects=[], tss=[], locked:lockedMonths=[], setLocked, audit=[] }) {
   const [tab,setTab]=useState("engagement");
+  const [engType,setEngType]=useState(""); // v38: By Engagement tab only
   const [dlgOpen,setDlgOpen]=useState(false);
   // Date range filters
   const firstDay = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0,10);
@@ -2350,6 +2373,8 @@ function Reports({ user, users=[], projects=[], tss=[], locked:lockedMonths=[], 
     const val=s.filter(t=>t.billable).reduce((a,t)=>a+t.hours*(users.find(u=>u.id===t.userId)?.billingRate||0),0);
     return {p,totalH,billH,val,n:s.length};
   }).filter(d=>d.n>0);
+  const engTypeCounts = { "":engData.length, fixed:engData.filter(d=>engTypeOf(d.p)==="fixed").length, retainer:engData.filter(d=>engTypeOf(d.p)==="retainer").length };
+  const engRows = engType ? engData.filter(d=>engTypeOf(d.p)===engType) : engData;
 
   const staffData=users.map(u=>{
     const s=approved.filter(t=>t.userId===u.id);
@@ -2450,10 +2475,16 @@ function Reports({ user, users=[], projects=[], tss=[], locked:lockedMonths=[], 
       </div>
 
       <div className="card">
-        {tab==="engagement"&&(engData.length===0?<div className="es">No approved data in this date range.</div>:(
+        {tab==="engagement"&&(engData.length===0?<div className="es">No approved data in this date range.</div>:(<>
+          <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:14,flexWrap:"wrap"}}>
+            <span style={{fontSize:11,fontWeight:600,letterSpacing:"0.8px",textTransform:"uppercase",color:"var(--slate)"}}>Type</span>
+            <TypePills value={engType} onChange={setEngType} counts={engTypeCounts}/>
+            <span className="tx tsl" style={{fontSize:12,marginLeft:"auto"}}>{engRows.length} engagement{engRows.length!==1?"s":""}</span>
+          </div>
+          {engRows.length===0?<div className="es">No {engType==="retainer"?"retainer":"fixed fee"} engagements in this date range.</div>:
           <div className="tw"><table>
             <thead><tr><th>Code</th><th>Engagement</th><th>Client</th><th>Status</th><th>Total Hrs</th><th>Billable Hrs</th><th>Budget</th><th>Billing Value</th></tr></thead>
-            <tbody>{engData.map(d=>{
+            <tbody>{engRows.map(d=>{
               const pct=d.p.budgetHours?Math.min(Math.round(d.totalH/d.p.budgetHours*100),100):null;
               return <tr key={d.p.id}>
                 <td className="fw6 mono">{d.p.code}</td><td>{d.p.name}</td><td>{d.p.clientName}</td>
@@ -2463,8 +2494,8 @@ function Reports({ user, users=[], projects=[], tss=[], locked:lockedMonths=[], 
                 <td className="fw6 tgo">{fmtCurrency(d.val)}</td>
               </tr>;
             })}</tbody>
-          </table></div>
-        ))}
+          </table></div>}
+        </>))}
         {tab==="staff"&&(staffData.length===0?<div className="es">No approved data in this date range.</div>:(
           <div className="tw"><table>
             <thead><tr><th>Staff</th><th>Role</th><th>Rate/hr</th><th>Total Hrs</th><th>Billable Hrs</th><th>Billing Value</th></tr></thead>
@@ -2895,6 +2926,7 @@ function Profitability({ users=[], projects=[], tss=[] }) {
   const [profSearch, setProfSearch] = useState("");
   const [profFilterStatus, setProfFilterStatus] = useState("");
   const [profFilterSignal, setProfFilterSignal] = useState("");
+  const [profFilterType, setProfFilterType] = useState(""); // v38: narrows the table only, not the firm-wide cards
   const [profSortCol, setProfSortCol] = useState("margin_pct");
   const [profSortDir, setProfSortDir] = useState("desc");
   const [staffBreakdownMonth, setStaffBreakdownMonth] = useState("all"); // "all" or "YYYY-MM"
@@ -3013,6 +3045,10 @@ function Profitability({ users=[], projects=[], tss=[] }) {
   const firmMarginPct    = firmFee>0 ? Math.round((firmMargin/firmFee)*100) : 0;
   const hasAnyActual     = users.some(u=>u.actualRate&&u.actualRate>0);
 
+  // v38: type filter applies to the engagement table only; firm-wide cards above keep using allProfit.
+  const profTypeCounts = { "":allProfit.length, fixed:allProfit.filter(d=>engTypeOf(d.p)==="fixed").length, retainer:allProfit.filter(d=>engTypeOf(d.p)==="retainer").length };
+  const profRows = profFilterType ? allProfit.filter(d=>engTypeOf(d.p)===profFilterType) : allProfit;
+
   const selData = selected ? allProfit.find(d=>d.p.id===selected) : null;
 
   return (
@@ -3119,8 +3155,9 @@ function Profitability({ users=[], projects=[], tss=[] }) {
         {/* Search + Filters */}
         <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",marginBottom:12}}>
           <input className="fi" placeholder="Search code, client, engagement..." value={profSearch}
-            style={{flex:1,minWidth:200,padding:"8px 12px",fontSize:13}}
+            style={{flex:"0 1 300px",minWidth:180,padding:"8px 12px",fontSize:13}}
             onChange={e=>{setProfSearch(e.target.value);setProfPage(1);}}/>
+          <TypePills value={profFilterType} onChange={v=>{setProfFilterType(v);setProfPage(1);}} counts={profTypeCounts}/>
           <select className="fs" style={{width:"auto",fontSize:13,padding:"8px 12px"}} value={profFilterStatus} onChange={e=>{setProfFilterStatus(e.target.value);setProfPage(1);}}>
             <option value="">All Statuses</option>
             <option value="active">Active</option>
@@ -3133,15 +3170,15 @@ function Profitability({ users=[], projects=[], tss=[] }) {
             <option value="loss">Loss Making</option>
             <option value="nofee">No Fee Set</option>
           </select>
-          {(profSearch||profFilterStatus||profFilterSignal)&&
-            <button className="btn bgh bsm" onClick={()=>{setProfSearch("");setProfFilterStatus("");setProfFilterSignal("");setProfPage(1);}}>✕ Clear</button>}
-          <span className="tx tsl" style={{fontSize:12}}>{allProfit.length} engagement{allProfit.length!==1?"s":""}</span>
+          {(profSearch||profFilterStatus||profFilterSignal||profFilterType)&&
+            <button className="btn bgh bsm" onClick={()=>{setProfSearch("");setProfFilterStatus("");setProfFilterSignal("");setProfFilterType("");setProfPage(1);}}>✕ Clear</button>}
+          <span className="tx tsl" style={{fontSize:12,marginLeft:"auto"}}>{profRows.length} engagement{profRows.length!==1?"s":""}</span>
         </div>
 
         <div className="card">
           {allProfitRaw.length===0
             ? <div className="es"><div className="es-icon"><I n="target" s={36}/></div>No engagement data yet.</div>
-            : allProfit.length===0
+            : profRows.length===0
             ? <div className="es">No engagements match your filters.</div>
             : <>
               <div className="tw"><table>
@@ -3157,7 +3194,7 @@ function Profitability({ users=[], projects=[], tss=[] }) {
                   <th style={{cursor:"pointer"}} onClick={()=>toggleProfSort("margin_pct")}>Margin %{profSortIcon("margin_pct")}</th>
                   <th>Status</th><th>Signal</th><th></th>
                 </tr></thead>
-                <tbody>{allProfit.slice((profPage-1)*PROF_PAGE, profPage*PROF_PAGE).map(({p,totalFee,staffCostActual,staffCostBilling,marginActual,marginBilling,marginPctActual,marginPctBilling,signal,signalActual,signalBilling},idx)=>{
+                <tbody>{profRows.slice((profPage-1)*PROF_PAGE, profPage*PROF_PAGE).map(({p,totalFee,staffCostActual,staffCostBilling,marginActual,marginBilling,marginPctActual,marginPctBilling,signal,signalActual,signalBilling},idx)=>{
                   const cost=profView==="actual"?staffCostActual:staffCostBilling;
                   const otherCost=profView==="actual"?staffCostBilling:staffCostActual;
                   const margin=profView==="actual"?marginActual:marginBilling;
@@ -3182,11 +3219,11 @@ function Profitability({ users=[], projects=[], tss=[] }) {
                   );
                 })}</tbody>
               </table></div>
-              {Math.ceil(allProfit.length/PROF_PAGE)>1&&(
+              {Math.ceil(profRows.length/PROF_PAGE)>1&&(
                 <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginTop:12,paddingTop:12,borderTop:"1px solid var(--border)"}}>
                   <button className="btn bgh bsm" disabled={profPage===1} onClick={()=>setProfPage(p=>p-1)}>← Prev</button>
-                  <span className="ts tsl">Page {profPage} of {Math.ceil(allProfit.length/PROF_PAGE)} · {allProfit.length} engagements</span>
-                  <button className="btn bgh bsm" disabled={profPage===Math.ceil(allProfit.length/PROF_PAGE)} onClick={()=>setProfPage(p=>p+1)}>Next →</button>
+                  <span className="ts tsl">Page {profPage} of {Math.ceil(profRows.length/PROF_PAGE)} · {profRows.length} engagements</span>
+                  <button className="btn bgh bsm" disabled={profPage===Math.ceil(profRows.length/PROF_PAGE)} onClick={()=>setProfPage(p=>p+1)}>Next →</button>
                 </div>
               )}
             </>}
