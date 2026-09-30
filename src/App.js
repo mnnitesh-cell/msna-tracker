@@ -5644,24 +5644,45 @@ function PerformanceAppraisal({ user, users=[], projects=[], setProjects, tss=[]
     );
   };
 
+  // v41: cards split into Managers and Interns & others, each sorted A–Z by name, separated by a line.
   const staffCards = (items, showAvg, showRole, history=[]) => {
-    const staffIds = [...new Set(items.map(i=>i.r.staffId))];
+    const nameOf = sid => users.find(x=>x.id===sid)?.name || "";
+    const staffIds = [...new Set(items.map(i=>i.r.staffId))].sort((a,b)=>nameOf(a).localeCompare(nameOf(b), undefined, {sensitivity:"base"}));
+    const groups = [
+      { key:"mgr",   label:"Managers",          ids: staffIds.filter(sid=>users.find(x=>x.id===sid)?.role==="manager") },
+      { key:"other", label:"Interns & others",  ids: staffIds.filter(sid=>users.find(x=>x.id===sid)?.role!=="manager") },
+    ].filter(g=>g.ids.length>0);
+    const showHeaders = groups.length>1 || showRole;
+    const card = sid => {
+      const u = users.find(x=>x.id===sid);
+      const inactive = u?.active===false;
+      const mine = items.filter(i=>i.r.staffId===sid);
+      const done = mine.filter(i=>i.ex?.status==="submitted").length;
+      return (
+        <div key={sid} className="card" style={{cursor:"pointer",opacity:inactive?.55:1,padding:"16px 18px"}} onClick={()=>{setSelStaff(sid);setSelQuarter(null);}}>
+          <div className="fw6" style={{fontSize:15}}>{u?.name}{inactive&&<span className="bdg bcl" style={{marginLeft:8}}>Inactive</span>}</div>
+          <div className="tsl" style={{fontSize:12.5,marginTop:3}}>{showRole&&u?.role?`${u.role.charAt(0).toUpperCase()+u.role.slice(1)} · `:""}{done} of {mine.length} complete</div>
+          <QuarterStrip fy={fy} items={mine} showAvg={showAvg} history={history.filter(i=>i.r.staffId===sid)}/>
+        </div>
+      );
+    };
+    if(staffIds.length===0) return <div className="es">{isP?"No appraisals required yet for this financial year.":"You have no team appraisals to give this financial year."}</div>;
     return (
-      <div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:14}}>
-        {staffIds.map(sid=>{
-          const u = users.find(x=>x.id===sid);
-          const inactive = u?.active===false;
-          const mine = items.filter(i=>i.r.staffId===sid);
-          const done = mine.filter(i=>i.ex?.status==="submitted").length;
-          return (
-            <div key={sid} className="card" style={{cursor:"pointer",opacity:inactive?.55:1,padding:"16px 18px"}} onClick={()=>{setSelStaff(sid);setSelQuarter(null);}}>
-              <div className="fw6" style={{fontSize:15}}>{u?.name}{inactive&&<span className="bdg bcl" style={{marginLeft:8}}>Inactive</span>}</div>
-              <div className="tsl" style={{fontSize:12.5,marginTop:3}}>{showRole&&u?.role?`${u.role.charAt(0).toUpperCase()+u.role.slice(1)} · `:""}{done} of {mine.length} complete</div>
-              <QuarterStrip fy={fy} items={mine} showAvg={showAvg} history={history.filter(i=>i.r.staffId===sid)}/>
+      <div>
+        {groups.map((g,gi)=>(
+          <div key={g.key}>
+            {gi>0 && <div style={{height:1,background:"var(--border)",margin:"26px 0 20px"}}/>}
+            {showHeaders && (
+              <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:12}}>
+                <span style={{fontSize:11,fontWeight:600,letterSpacing:"1px",textTransform:"uppercase",color:"var(--slate)"}}>{g.label}</span>
+                <span className="tx tsl">{g.ids.length}</span>
+              </div>
+            )}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:14}}>
+              {g.ids.map(card)}
             </div>
-          );
-        })}
-        {staffIds.length===0 && <div className="es">{isP?"No appraisals required yet for this financial year.":"You have no team appraisals to give this financial year."}</div>}
+          </div>
+        ))}
       </div>
     );
   };
