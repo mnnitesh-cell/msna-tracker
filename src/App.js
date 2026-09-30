@@ -898,7 +898,8 @@ function Dashboard({ user, users=[], projects=[], tss=[], paActions=[], onOpenAc
     : user.role==="manager"
     ? tss.filter(t=>["pending","resubmitted"].includes(t.status)&&users.find(u=>u.id===t.userId)?.role==="intern").length
     : mySheets.filter(t=>t.status==="pending").length;
-  const activeP  = projects.filter(p=>p.status==="active").length;
+  // v43: non-partners count only the active engagements they are assigned to
+  const activeP  = projects.filter(p=>p.status==="active"&&(isP||[...(p.assignedStaff||[]),...(p.assignedManagers||[]),...(p.assignedPartners||[])].includes(user.id))).length;
 
   const budgetAlerts = isP?projects.filter(p=>{
     if(p.status!=="active"||!p.budgetHours) return false;
@@ -1134,6 +1135,12 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
   const totalTsPages = Math.max(1,Math.ceil(filtered.length/TS_PAGE));
   const paginated = filtered.slice((tsPage-1)*TS_PAGE, tsPage*TS_PAGE);
   const hasFilters = filterStaff||filterProj||filterCat||filterBill||filterFrom||filterTo;
+  // v43: the project filter lists every code only for partners. Everyone else sees only engagements
+  // they are assigned to, plus any engagement that already appears in their own entries.
+  const filterProjects = isP ? projects : projects.filter(p=>
+    [...(p.assignedStaff||[]),...(p.assignedManagers||[]),...(p.assignedPartners||[])].includes(user.id) ||
+    mine.some(t=>t.projectId===p.id)
+  );
 
   const openAdd = (behalf=false, internal=false) => {
     setOB(behalf);
@@ -1288,7 +1295,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
         </select>}
         <select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={filterProj} onChange={e=>{setFProj(e.target.value);setTsPage(1);}}>
           <option value="">All Projects</option>
-          {projects.slice().sort((a,b)=>a.code.localeCompare(b.code)).map(p=><option key={p.id} value={p.id}>{p.code} — {p.clientName}</option>)}
+          {filterProjects.slice().sort((a,b)=>a.code.localeCompare(b.code)).map(p=><option key={p.id} value={p.id}>{p.code} — {p.clientName}</option>)}
         </select>
         <select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={filterCat} onChange={e=>{setFCat(e.target.value);setTsPage(1);}}>
           <option value="">All Categories</option>
@@ -6961,7 +6968,9 @@ export default function App() {
 
   // ── Migration: fix existing pending intern entries on projects with no managers ──
   // These entries were stuck — no manager to approve them, not visible to partner either
+  // v43: partners only. Other roles may not edit other people's entries under the tighter rules.
   useEffect(() => {
+    if(!isPartner) return;
     if(!tss.length||!projects.length) return;
     const toFix = tss.filter(t => {
       if(!["pending","resubmitted"].includes(t.status)) return false;
@@ -6982,7 +6991,7 @@ export default function App() {
       if(t.noManagerProject) return t; // already flagged
       return {...t, noManagerProject: true};
     }));
-  }, [tss.length, projects.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tss.length, projects.length, isPartner]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Helper: exact same logic as Approvals tab pending filter
   const calcPendingCount = (cu) => {
