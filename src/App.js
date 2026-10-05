@@ -898,8 +898,7 @@ function Dashboard({ user, users=[], projects=[], tss=[], paActions=[], onOpenAc
     : user.role==="manager"
     ? tss.filter(t=>["pending","resubmitted"].includes(t.status)&&users.find(u=>u.id===t.userId)?.role==="intern").length
     : mySheets.filter(t=>t.status==="pending").length;
-  // v43: non-partners count only the active engagements they are assigned to
-  const activeP  = projects.filter(p=>p.status==="active"&&(isP||[...(p.assignedStaff||[]),...(p.assignedManagers||[]),...(p.assignedPartners||[])].includes(user.id))).length;
+  const activeP  = projects.filter(p=>p.status==="active").length;
 
   const budgetAlerts = isP?projects.filter(p=>{
     if(p.status!=="active"||!p.budgetHours) return false;
@@ -1135,12 +1134,6 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
   const totalTsPages = Math.max(1,Math.ceil(filtered.length/TS_PAGE));
   const paginated = filtered.slice((tsPage-1)*TS_PAGE, tsPage*TS_PAGE);
   const hasFilters = filterStaff||filterProj||filterCat||filterBill||filterFrom||filterTo;
-  // v43: the project filter lists every code only for partners. Everyone else sees only engagements
-  // they are assigned to, plus any engagement that already appears in their own entries.
-  const filterProjects = isP ? projects : projects.filter(p=>
-    [...(p.assignedStaff||[]),...(p.assignedManagers||[]),...(p.assignedPartners||[])].includes(user.id) ||
-    mine.some(t=>t.projectId===p.id)
-  );
 
   const openAdd = (behalf=false, internal=false) => {
     setOB(behalf);
@@ -1295,7 +1288,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
         </select>}
         <select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={filterProj} onChange={e=>{setFProj(e.target.value);setTsPage(1);}}>
           <option value="">All Projects</option>
-          {filterProjects.slice().sort((a,b)=>a.code.localeCompare(b.code)).map(p=><option key={p.id} value={p.id}>{p.code} — {p.clientName}</option>)}
+          {projects.slice().sort((a,b)=>a.code.localeCompare(b.code)).map(p=><option key={p.id} value={p.id}>{p.code} — {p.clientName}</option>)}
         </select>
         <select className="fs" style={{fontSize:12,padding:"7px 10px",width:"auto"}} value={filterCat} onChange={e=>{setFCat(e.target.value);setTsPage(1);}}>
           <option value="">All Categories</option>
@@ -6089,35 +6082,52 @@ function GoalSetting({ user, users=[], goals=[], setGoals }) {
       return goals.some(g=>g.fy===fy && g.staffId===u.id); // no quarter left this FY, but keep if a record exists (historical)
     });
     if(!selStaff) {
+      // v43: same arrangement as Performance Appraisal: Managers, then Interns & others,
+      // each sorted A–Z, 4 cards per row, separated by a line.
+      const byName = (a,b) => (a.name||"").localeCompare(b.name||"", undefined, {sensitivity:"base"});
+      const groups = [
+        { key:"mgr",   label:"Managers",         list: staffList.filter(u=>u.role==="manager").sort(byName) },
+        { key:"other", label:"Interns & others", list: staffList.filter(u=>u.role!=="manager").sort(byName) },
+      ].filter(g=>g.list.length>0);
+      const recentQs = twoRecentQuartersForFY(fy);
+      const card = u => {
+        const inactive = u.active===false;
+        return (
+          <div key={u.id} className="card" style={{cursor:"pointer",opacity:inactive?.55:1,padding:"16px 18px",minWidth:0}} onClick={()=>setSelStaff(u.id)}>
+            <div className="fw6" style={{fontSize:15}}>{u.name}{inactive&&<span className="bdg bcl" style={{marginLeft:8}}>Inactive</span>}</div>
+            <div className="tsl" style={{fontSize:12.5,marginTop:3}}>{u.role?u.role.charAt(0).toUpperCase()+u.role.slice(1):""}</div>
+            <div style={{marginTop:12,paddingTop:10,borderTop:"1px solid var(--border)",display:"flex",flexDirection:"column",gap:7}}>
+              {recentQs.length===0
+                ? <div className="tx tsl">Not started yet</div>
+                : recentQs.map(q => {
+                    const st = goalQuarterStatus(fy, q, u.id, goals, users);
+                    return (
+                      <div key={q} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,minWidth:0}}>
+                        <span style={{fontSize:11,color:"var(--slate)",letterSpacing:.5,flexShrink:0}} title={quarterLabel(fy,q)}>{q}</span>
+                        <span className={`bdg ${st.cls}`} title={st.label} style={{minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{st.label}</span>
+                      </div>
+                    );
+                  })}
+            </div>
+          </div>
+        );
+      };
       return (
         <div>
           <FYSelector fy={fy} setFy={setFy} options={fyList}/>
-          <p className="ts tsl mb8">Staff</p>
-          <div className="g3">
-            {staffList.map(u=>{
-              const recentQs = twoRecentQuartersForFY(fy);
-              return (
-                <div key={u.id} className="card" style={{cursor:"pointer",opacity:u.active===false?.55:1}} onClick={()=>setSelStaff(u.id)}>
-                  <div className="fw6">{u.name}{u.active===false&&<span className="bdg bcl" style={{marginLeft:8}}>Inactive</span>}</div>
-                  <div className="tx tsl mt4 mb8">{u.role}</div>
-                  {recentQs.length===0
-                    ? <div className="tx tsl">Not started yet</div>
-                    : <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                        {recentQs.map(q => {
-                          const st = goalQuarterStatus(fy, q, u.id, goals, users);
-                          return (
-                            <div key={q} className="fxb">
-                              <span className="tx tsl" style={{fontSize:12}}>{q}</span>
-                              <span className={`bdg ${st.cls}`}>{st.label}</span>
-                            </div>
-                          );
-                        })}
-                      </div>}
-                </div>
-              );
-            })}
-            {staffList.length===0 && <div className="es">No staff yet.</div>}
-          </div>
+          {staffList.length===0 && <div className="es">No staff yet.</div>}
+          {groups.map((g,gi)=>(
+            <div key={g.key}>
+              {gi>0 && <div style={{height:1,background:"var(--border)",margin:"26px 0 20px"}}/>}
+              <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:12}}>
+                <span style={{fontSize:11,fontWeight:600,letterSpacing:"1px",textTransform:"uppercase",color:"var(--slate)"}}>{g.label}</span>
+                <span className="tx tsl">{g.list.length}</span>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:14}}>
+                {g.list.map(card)}
+              </div>
+            </div>
+          ))}
         </div>
       );
     }
@@ -6968,9 +6978,7 @@ export default function App() {
 
   // ── Migration: fix existing pending intern entries on projects with no managers ──
   // These entries were stuck — no manager to approve them, not visible to partner either
-  // v43: partners only. Other roles may not edit other people's entries under the tighter rules.
   useEffect(() => {
-    if(!isPartner) return;
     if(!tss.length||!projects.length) return;
     const toFix = tss.filter(t => {
       if(!["pending","resubmitted"].includes(t.status)) return false;
@@ -6991,7 +6999,7 @@ export default function App() {
       if(t.noManagerProject) return t; // already flagged
       return {...t, noManagerProject: true};
     }));
-  }, [tss.length, projects.length, isPartner]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tss.length, projects.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Helper: exact same logic as Approvals tab pending filter
   const calcPendingCount = (cu) => {
