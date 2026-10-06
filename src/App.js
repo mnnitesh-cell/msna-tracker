@@ -5811,7 +5811,13 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
   const isFilled = g => !!(g.desc||"").trim() && !!(g.steps||"").trim();
   const isBlank  = g => !(g.desc||"").trim() && !(g.steps||"").trim();
 
-  useEffect(()=>{ setGoals(rec.goals); setAssess(rec.assess); setGoalErr(""); }, [record]); // eslint-disable-line react-hooks/exhaustive-deps
+  // v45: reset local edits only when the SAVED content of this card changes. The Firestore listener hands back
+  // new objects on every snapshot (anyone's save, metadata updates), and resetting on object identity was wiping
+  // text people were still typing. Goals and self-assessment are tracked separately so one doesn't reset the other.
+  const savedGoalsKey = JSON.stringify(rec.goals||[]);
+  const savedAssessKey = JSON.stringify(rec.assess||[]);
+  useEffect(()=>{ setGoals(rec.goals); setGoalErr(""); }, [savedGoalsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(()=>{ setAssess(rec.assess); }, [savedAssessKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if(!started) {
     return (
