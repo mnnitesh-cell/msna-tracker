@@ -393,6 +393,14 @@ function isQuarterInGoalScheme(fy, quarter) {
   const startQIdx = GOAL_QUARTER_ORDER.indexOf(GOAL_SCHEME_START_QUARTER);
   return fyYear>startFyYear || (fyYear===startFyYear && qIdx>=startQIdx);
 }
+// v44: from Q3 FY 2026-27, goals 1 and 2 are mandatory and goal 3 is optional (earlier quarters: all 3 mandatory).
+// A blank optional goal is dropped from the record on submission, so it is never reviewed or self-assessed.
+const GOAL_OPTIONAL_THIRD_FROM = { fy:"2026-27", quarter:"Q3" };
+function isQuarterOnOrAfter(fy, quarter, ref) {
+  const a = Number(fy.split("-")[0]), b = Number(ref.fy.split("-")[0]);
+  return a>b || (a===b && GOAL_QUARTER_ORDER.indexOf(quarter)>=GOAL_QUARTER_ORDER.indexOf(ref.quarter));
+}
+function requiredGoalCount(fy, quarter) { return isQuarterOnOrAfter(fy, quarter, GOAL_OPTIONAL_THIRD_FROM) ? 2 : 3; }
 function blankGoalRecord(fy, quarter, staffId) {
   return {
     id:`goal-${staffId}-${fy}-${quarter}`, fy, quarter, staffId,
@@ -5797,8 +5805,13 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
   const [assessRejectNotes, setAssessRejectNotes] = useState({});
   const [goalChanging, setGoalChanging] = useState({});
   const [assessChanging, setAssessChanging] = useState({});
+  const [goalErr, setGoalErr] = useState("");
+  const reqGoals = requiredGoalCount(fy, quarter);
+  const hasOptionalGoal = reqGoals<3;
+  const isFilled = g => !!(g.desc||"").trim() && !!(g.steps||"").trim();
+  const isBlank  = g => !(g.desc||"").trim() && !(g.steps||"").trim();
 
-  useEffect(()=>{ setGoals(rec.goals); setAssess(rec.assess); }, [record]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(()=>{ setGoals(rec.goals); setAssess(rec.assess); setGoalErr(""); }, [record]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if(!started) {
     return (
@@ -5809,9 +5822,19 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
   }
 
   const submitInitialGoals = (status) => {
-    if(status==="submitted" && goals.some(g=>!g.desc.trim()||!g.steps.trim())) { alert("All 3 goals need a description and steps before submitting."); return; }
-    const nextGoals = status==="submitted" ? goals.map(g=>({...g, reviewStatus:"pending", reviewRemark:null})) : goals;
-    onSave({ ...rec, goals:nextGoals, goalStatus:status, goalSubmittedAt: status==="submitted" ? new Date().toISOString() : rec.goalSubmittedAt });
+    setGoalErr("");
+    if(status==="submitted") {
+      const missing = goals.filter(g=>g.sl<=reqGoals && !isFilled(g)).map(g=>g.sl);
+      if(missing.length) { setGoalErr(`Goal ${missing.join(" and ")} ${missing.length>1?"need":"needs"} a description and steps before submitting.`); return; }
+      const partial = goals.filter(g=>g.sl>reqGoals && !isFilled(g) && !isBlank(g)).map(g=>g.sl);
+      if(partial.length) { setGoalErr(`Goal ${partial.join(", ")} is optional. Fill in both the goal and its steps, or clear it completely.`); return; }
+    }
+    // Blank optional goals are dropped on submission (and their self-assessment slots with them).
+    const kept = status==="submitted" ? goals.filter(g=>g.sl<=reqGoals || isFilled(g)) : goals;
+    const nextGoals = status==="submitted" ? kept.map(g=>({...g, reviewStatus:"pending", reviewRemark:null})) : kept;
+    const keptSl = nextGoals.map(g=>g.sl);
+    const nextAssess = status==="submitted" ? (rec.assess||[]).filter(a=>keptSl.includes(a.sl)) : rec.assess;
+    onSave({ ...rec, goals:nextGoals, assess:nextAssess, goalStatus:status, goalSubmittedAt: status==="submitted" ? new Date().toISOString() : rec.goalSubmittedAt });
   };
   const resubmitGoal = (sl) => {
     const item = goals.find(g=>g.sl===sl);
@@ -5866,31 +5889,52 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
 
       {isPartnerViewer && !goalSubmitted && <p className="tx tsl mb8">Waiting for {users.find(u=>u.id===rec.staffId)?.name} to set and submit these goals.</p>}
 
+      {isSelf && !goalSubmitted && hasOptionalGoal && (
+        <div className="al al-i">
+          <I n="info" s={15}/>
+          <div><strong>Tip:</strong> Goals 1 and 2 are mandatory. Goal 3 is optional: fill in both the goal and its steps, or leave it fully blank.</div>
+        </div>
+      )}
       {!goalSubmitted && (
         <div className="tw">
           <table>
-            <thead><tr><th style={{width:30}}>#</th><th>Goal</th><th>Steps to achieve it</th></tr></thead>
+            <thead><tr><th style={{width:36}}>#</th><th>Goal</th><th>Steps to achieve it</th></tr></thead>
             <tbody>
-              {goals.map(g=>(
+              {goals.map(g=>{
+                const optional = g.sl>reqGoals;
+                return (
                 <tr key={g.sl}>
-                  <td style={{verticalAlign:"top"}}>{g.sl}</td>
+                  <td style={{verticalAlign:"top",paddingTop:16}}>
+                    {g.sl}{hasOptionalGoal&&!optional&&<span className="tdn" title="Mandatory"> *</span>}
+                    {optional&&<div className="tx tsl" style={{fontSize:10,marginTop:2}}>Optional</div>}
+                  </td>
                   <td>{isSelf
-                    ? <textarea className="fta" style={{minHeight:44}} value={g.desc} onChange={e=>setGoals(prev=>prev.map(x=>x.sl===g.sl?{...x,desc:e.target.value}:x))}/>
-                    : <div style={{padding:"6px 0"}}>{g.desc||"—"}</div>}</td>
+                    ? <textarea className="fta" style={{minHeight:44}} placeholder={optional?"Optional":""} value={g.desc} onChange={e=>{setGoalErr("");setGoals(prev=>prev.map(x=>x.sl===g.sl?{...x,desc:e.target.value}:x));}}/>
+                    : <div style={{padding:"6px 0"}}>{g.desc||(optional?<span className="tsl">Not set (optional)</span>:"—")}</div>}</td>
                   <td>{isSelf
-                    ? <textarea className="fta" style={{minHeight:44}} value={g.steps} onChange={e=>setGoals(prev=>prev.map(x=>x.sl===g.sl?{...x,steps:e.target.value}:x))}/>
-                    : <div style={{padding:"6px 0"}}>{g.steps||"—"}</div>}</td>
+                    ? <textarea className="fta" style={{minHeight:44}} placeholder={optional?"Optional":""} value={g.steps} onChange={e=>{setGoalErr("");setGoals(prev=>prev.map(x=>x.sl===g.sl?{...x,steps:e.target.value}:x));}}/>
+                    : <div style={{padding:"6px 0"}}>{g.steps||(optional?"":"—")}</div>}</td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
       {isSelf && !goalSubmitted && (
-        <div className="md-actions" style={{justifyContent:"flex-start",marginTop:12}}>
-          <button className="btn bgh bsm" onClick={()=>submitInitialGoals("draft")}>Save draft</button>
-          <button className="btn bp bsm" onClick={()=>submitInitialGoals("submitted")}>Submit & lock</button>
-        </div>
+        <>
+          {goalErr && <div className="err" style={{marginTop:12,marginBottom:0}}>{goalErr}</div>}
+          <div className="fxb" style={{marginTop:12,flexWrap:"wrap",gap:10}}>
+            <span className="tx tsl">
+              {goals.filter(g=>g.sl<=reqGoals&&isFilled(g)).length} of {reqGoals} required goals filled
+              {hasOptionalGoal && goals.some(g=>g.sl>reqGoals&&isFilled(g)) && " · optional goal 3 added"}
+            </span>
+            <div className="fx g8">
+              <button className="btn bgh bsm" onClick={()=>submitInitialGoals("draft")}>Save draft</button>
+              <button className="btn bp bsm" onClick={()=>submitInitialGoals("submitted")}>Submit & lock</button>
+            </div>
+          </div>
+        </>
       )}
 
       {goalSubmitted && (
@@ -5954,6 +5998,7 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
               </div>
             );
           })}
+          {hasOptionalGoal && goals.length<3 && <div className="tx tsl">Goal 3 not set (optional).</div>}
         </div>
       )}
 
