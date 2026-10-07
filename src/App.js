@@ -1,4 +1,4 @@
-// MSNA Time Tracker v46: Partner Actionables. Latest update shown at top of the drawer (form collapsed), latest-update line and "New" pills in lists.
+// MSNA Time Tracker v47: fixes v46 Update button (openDetail called itself). v46: latest update at top of drawer, update line and "New" pills in lists.
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { initializeApp } from "firebase/app";
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, terminate, clearIndexedDbPersistence, waitForPendingWrites, collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, getDocs, query, where } from "firebase/firestore";
@@ -6674,7 +6674,7 @@ function PartnerActions({ user, users=[], meetings=[], setMeetings, actions=[], 
   const isAdmin = user.email===ADMIN_EMAIL;
   // v46: opening an item marks its latest update as seen by this partner
   const isNew = a => paIsNewFor(a, user.id);
-  const openDetail = a => { setDetailNew(isNew(a)); openDetail(a); paMarkSeen(a, user.id); };
+  const openDetail = a => { setDetailNew(isNew(a)); setDetailId(a.id); paMarkSeen(a, user.id); };
 
   const partners = users.filter(u=>u.role==="partner"&&u.active!==false).slice().sort((a,b)=>a.name.localeCompare(b.name));
   const nameOf = id => users.find(u=>u.id===id)?.name || "—";
