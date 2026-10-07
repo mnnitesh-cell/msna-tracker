@@ -1,6 +1,7 @@
+// MSNA Time Tracker v46: Partner Actionables. Latest update shown at top of the drawer (form collapsed), latest-update line and "New" pills in lists.
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { initializeApp } from "firebase/app";
-import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, terminate, clearIndexedDbPersistence, waitForPendingWrites, collection, doc, onSnapshot, setDoc, deleteDoc, getDocs, query, where } from "firebase/firestore";
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, terminate, clearIndexedDbPersistence, waitForPendingWrites, collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, getDocs, query, where } from "firebase/firestore";
 import { getAuth, signInWithEmailAndPassword, signOut, updatePassword, reauthenticateWithCredential, EmailAuthProvider, createUserWithEmailAndPassword, onAuthStateChanged, sendPasswordResetEmail } from "firebase/auth";
 
 // ── FIREBASE CONFIG ──
@@ -6248,6 +6249,53 @@ const paFirstName = n => (n||"").split(" ")[0];
 // Overdue items the partner OWNS: drives the sidebar badge
 const paMyOverdueCount = (actions, userId) => actions.filter(a=>a.ownerId===userId && paIsOverdue(a)).length;
 
+// v46: update visibility.
+// Latest real update on an actionable (the "created" entry does not count).
+const paLatestUpdate = a => {
+  const h = a.history||[];
+  for(let i=h.length-1;i>=0;i--) if(h[i].type!=="created") return h[i];
+  return null;
+};
+// Updates written before this go-live are treated as already seen, so v46 does not flood every row with "New".
+const PA_SEEN_START = "2026-10-07T00:00:00+05:30";
+// "New" for this partner = someone ELSE updated it after this partner last opened it.
+const paIsNewFor = (a, userId) => {
+  const h = paLatestUpdate(a);
+  if(!h || h.byId===userId) return false;
+  const at = new Date(h.at).getTime();
+  if(at < new Date(PA_SEEN_START).getTime()) return false;
+  const seen = a.seenBy?.[userId];
+  return !seen || at > new Date(seen).getTime();
+};
+// Record that this partner has now seen the item. Field-level write, so it never overwrites a
+// concurrent update from another partner. The real-time listener brings the change back to every screen.
+const paMarkSeen = (a, userId) => {
+  if(!paIsNewFor(a, userId)) return;
+  updateDoc(doc(db, "partner_actions", a.id), { [`seenBy.${userId}`]: new Date().toISOString() })
+    .catch(e=>console.error("paMarkSeen error", e));
+};
+const paTimeAgo = iso => {
+  const d = paDayDiff(iso.slice(0,10), todayStr());
+  if(d<=0) return `today, ${new Date(iso).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})}`;
+  if(d===1) return "yesterday";
+  if(d<7) return `${d} days ago`;
+  return fmtDate(iso.slice(0,10));
+};
+function PANewPill() {
+  return <span className="pa-new" title="Updated by another partner since you last opened it">New</span>;
+}
+// One-line summary of the latest update, shown under the title in lists.
+function PALatestLine({ a, clamp=1 }) {
+  const h = paLatestUpdate(a);
+  if(!h) return <div className="tx" style={{color:"var(--slate-light)",marginTop:4}}>No updates yet</div>;
+  const text = h.note || h.change;
+  return (
+    <div className="pa-up" style={{WebkitLineClamp:clamp}}>
+      <span className="fw6" style={{color:"var(--navy)"}}>{h.byName}</span> · {paTimeAgo(h.at)}: {h.change&&h.change!=="Note"&&h.note?<span style={{color:"var(--navy-mid)"}}>{h.change}. </span>:null}{text}
+    </div>
+  );
+}
+
 const PA_CSS = `
 .pa-row{display:grid;grid-template-columns:minmax(0,2.4fr) 150px 130px 125px 110px minmax(0,1.4fr) 84px;gap:14px;align-items:center;padding:13px 18px;border-bottom:1px solid var(--border);}
 .pa-row:last-child{border-bottom:none;}
@@ -6271,6 +6319,11 @@ const PA_CSS = `
 .pa-mi:hover{background:#fcfcfc;}
 .pa-ri{display:grid;grid-template-columns:minmax(0,1fr) 150px 135px 110px 300px;gap:14px;align-items:center;padding:12px 20px;border-bottom:1px solid var(--cream);}
 .pa-ri:last-child{border-bottom:none;}
+.pa-new{display:inline-flex;align-items:center;font-size:10.5px;font-weight:700;letter-spacing:.3px;color:#7a4b06;background:#fde68a;padding:1px 8px;border-radius:20px;margin-left:8px;vertical-align:2px;white-space:nowrap;}
+.pa-up{font-size:12px;color:var(--slate);margin-top:5px;line-height:1.5;padding-left:9px;border-left:2px solid var(--gold);overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;}
+.pa-mi.is-new{background:#fffbeb;}
+.pa-mi.is-new:hover{background:#fef6dc;}
+.pa-latest{background:#fef9ec;border:1px solid #fde68a;border-left:4px solid var(--gold);border-radius:0 12px 12px 0;padding:14px 16px;}
 `;
 
 function PACatChip({ cat }) {
@@ -6453,11 +6506,12 @@ function PAQuickAddModal({ partners, meetings, defaultMeetingId, defaultOwnerId,
 }
 
 // ── Detail drawer: update status, add a note, revise due date, edit details ──
-function PADetailDrawer({ user, a, users, partners, meeting, canDelete, onClose, onSave, onDelete }) {
+function PADetailDrawer({ user, a, users, partners, meeting, canDelete, wasNew=false, onClose, onSave, onDelete }) {
   const [status,setStatus] = useState(a.status);
   const [note,setNote]     = useState("");
   const [due,setDue]       = useState(a.dueDate||"");
   const [editing,setEditing] = useState(false);
+  const [showForm,setShowForm] = useState(false); // v46: update form stays collapsed until asked for
   const [d,setD] = useState({ title:a.title, category:a.category, ownerId:a.ownerId, supportIds:a.supportIds||[], priority:a.priority||"Medium" });
   const [err,setErr] = useState("");
   const nameOf = id => users.find(u=>u.id===id)?.name || "—";
@@ -6496,6 +6550,11 @@ function PADetailDrawer({ user, a, users, partners, meeting, canDelete, onClose,
   const noteLabel = status==="dropped"&&a.status!=="dropped" ? "Reason for dropping (required)" : status==="done"&&a.status!=="done" ? "Closure note (optional)" : "Update note";
   const notePh = status==="dropped" ? "Why is this no longer needed?" : status==="done" ? "What was the outcome?" : "What has happened since the last update?";
   const history = (a.history||[]).slice().reverse();
+  const latest = paLatestUpdate(a);
+  const cancelForm = () => {
+    setShowForm(false); setEditing(false); setErr(""); setNote(""); setStatus(a.status); setDue(a.dueDate||"");
+    setD({ title:a.title, category:a.category, ownerId:a.ownerId, supportIds:a.supportIds||[], priority:a.priority||"Medium" });
+  };
   const dotColor = h => h.type==="created" ? "#94a3b8" : /→ Done/.test(h.change) ? "var(--green)" : /→ Dropped/.test(h.change) ? "var(--slate)" : /Due /.test(h.change) ? "var(--amber)" : h.type==="note" ? "var(--gold)" : "#1e40af";
 
   return (
@@ -6513,6 +6572,24 @@ function PADetailDrawer({ user, a, users, partners, meeting, canDelete, onClose,
         {!editing
           ? <div style={{fontFamily:"'Playfair Display',serif",fontSize:23,lineHeight:1.3}}>{a.title}</div>
           : <div className="fg" style={{marginBottom:0}}><label className="fl" htmlFor="pa-et">Actionable</label><textarea id="pa-et" className="fta" style={{minHeight:60}} value={d.title} onChange={e=>setD(x=>({...x,title:e.target.value}))}/></div>}
+
+        {/* v46: latest update sits right under the title, so nobody has to scroll to find it */}
+        {latest
+          ? <div className="pa-latest">
+              <div className="fxb" style={{gap:10}}>
+                <div className="pa-k" style={{color:"#92400e"}}>Latest update{wasNew&&<span className="pa-new">New for you</span>}</div>
+                <div className="tx" style={{color:"#92400e"}}>{paTimeAgo(latest.at)}</div>
+              </div>
+              <div className="ts" style={{marginTop:6,color:"var(--navy)"}}>
+                <strong>{latest.byName}</strong>
+                {latest.change&&latest.change!=="Note"&&<span style={{color:"var(--navy-mid)",fontWeight:600}}> · {latest.change}</span>}
+              </div>
+              {latest.note&&<div style={{fontSize:14,color:"#334155",marginTop:6,lineHeight:1.55,whiteSpace:"pre-wrap"}}>{latest.note}</div>}
+            </div>
+          : <div className="pa-latest" style={{background:"var(--cream)",borderColor:"var(--border)",borderLeftColor:"var(--slate-light)"}}>
+              <div className="pa-k">Latest update</div>
+              <div className="ts tsl" style={{marginTop:6}}>No updates yet since this was raised.</div>
+            </div>}
 
         {!editing?(
           <div className="pa-meta">
@@ -6532,13 +6609,14 @@ function PADetailDrawer({ user, a, users, partners, meeting, canDelete, onClose,
             <div><div className="fl">Supporting</div><PASupportPicker partners={partners} ownerId={d.ownerId} value={d.supportIds} onChange={v=>setD(x=>({...x,supportIds:v}))}/></div>
           </div>
         )}
-        <div className="fx g8">
-          <button className="btn bgh bsm" onClick={()=>{setEditing(e=>!e);setD({ title:a.title, category:a.category, ownerId:a.ownerId, supportIds:a.supportIds||[], priority:a.priority||"Medium" });}}><I n="edit" s={13}/>{editing?"Cancel editing details":"Edit details"}</button>
+        <div className="fx g8" style={{flexWrap:"wrap"}}>
+          {!showForm&&<button className="btn bp bsm" onClick={()=>setShowForm(true)}><I n="plus" s={13}/>Add an update</button>}
+          <button className="btn bgh bsm" onClick={()=>{const on=!editing;setEditing(on);if(on)setShowForm(true);setD({ title:a.title, category:a.category, ownerId:a.ownerId, supportIds:a.supportIds||[], priority:a.priority||"Medium" });}}><I n="edit" s={13}/>{editing?"Cancel editing details":"Edit details"}</button>
           {canDelete&&<button className="btn bd bsm" onClick={()=>onDelete(a)}><I n="trash" s={13}/>Delete</button>}
         </div>
 
-        <div style={{display:"flex",flexDirection:"column",gap:14,border:"1.5px solid var(--border)",borderRadius:12,padding:18}}>
-          <div className="fw6" style={{fontSize:14.5}}>Add an update</div>
+        {showForm&&<div style={{display:"flex",flexDirection:"column",gap:14,border:"1.5px solid var(--navy)",borderRadius:12,padding:18}}>
+          <div className="fw6" style={{fontSize:14.5}}>{editing?"Save changes":"Add an update"}</div>
           {err&&<div className="err" style={{marginBottom:0}}>{err}</div>}
           <div>
             <div className="fl">Status</div>
@@ -6557,13 +6635,13 @@ function PADetailDrawer({ user, a, users, partners, meeting, canDelete, onClose,
             </div>
           )}
           <div className="fx g8" style={{justifyContent:"flex-end"}}>
-            <button className="btn bgh" onClick={onClose}>Cancel</button>
+            <button className="btn bgh" onClick={cancelForm}>Cancel</button>
             <button className="btn bp" onClick={save}><I n="check" s={15}/>Save update</button>
           </div>
-        </div>
+        </div>}
 
         <div>
-          <div className="fw6" style={{fontSize:14.5,marginBottom:12}}>History</div>
+          <div className="fw6" style={{fontSize:14.5,marginBottom:12}}>History <span className="tx tsl" style={{fontWeight:400}}>({history.length})</span></div>
           {history.map((h,i)=>(
             <div key={i} style={{display:"flex",gap:14}}>
               <div style={{display:"flex",flexDirection:"column",alignItems:"center",width:12}}>
@@ -6592,7 +6670,11 @@ function PartnerActions({ user, users=[], meetings=[], setMeetings, actions=[], 
   const [meetingM,setMeetingM] = useState(null); // null | {existing?}
   const [quickM,setQuickM]   = useState(null);   // null | {meetingId}
   const [detailId,setDetailId] = useState(null);
+  const [detailNew,setDetailNew] = useState(false); // was the opened item "New" at the moment it was opened
   const isAdmin = user.email===ADMIN_EMAIL;
+  // v46: opening an item marks its latest update as seen by this partner
+  const isNew = a => paIsNewFor(a, user.id);
+  const openDetail = a => { setDetailNew(isNew(a)); openDetail(a); paMarkSeen(a, user.id); };
 
   const partners = users.filter(u=>u.role==="partner"&&u.active!==false).slice().sort((a,b)=>a.name.localeCompare(b.name));
   const nameOf = id => users.find(u=>u.id===id)?.name || "—";
@@ -6690,7 +6772,7 @@ function PartnerActions({ user, users=[], meetings=[], setMeetings, actions=[], 
     return (
       <div className="pa-row">
         <div style={{minWidth:0}}>
-          <div className="fw6" style={{fontSize:14,lineHeight:1.35}}>{a.title}</div>
+          <div className="fw6" style={{fontSize:14,lineHeight:1.35}}>{a.title}{isNew(a)&&<PANewPill/>}</div>
           <div className="fxc g8 mt4" style={{flexWrap:"wrap"}}>
             <span style={{fontSize:11,fontWeight:700,color:PA_PRIO_COLOR[a.priority]||"var(--slate)"}}>{a.priority||"Medium"}</span>
             <span className="tx tsl">{raisedLabel(a)}</span>
@@ -6705,7 +6787,7 @@ function PartnerActions({ user, users=[], meetings=[], setMeetings, actions=[], 
         <PADue a={a}/>
         <div><PAStatusBadge status={a.status}/></div>
         <div className="tx tsl" style={{lineHeight:1.4,overflow:"hidden",display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical"}}>{latestNote(a)}</div>
-        <div><button className="btn bgh bsm" onClick={()=>setDetailId(a.id)}>Update</button></div>
+        <div><button className="btn bgh bsm" onClick={()=>openDetail(a)}>Update</button></div>
       </div>
     );
   };
@@ -6718,10 +6800,11 @@ function PartnerActions({ user, users=[], meetings=[], setMeetings, actions=[], 
     </div>
   );
 
+  const newAll = actions.filter(isNew).length;
   const tabs = [
     ["mine",`My Actionables (${mine.length})`],
     ["all",`All (${openAll.length} open)`],
-    ["meet","By Meeting"],
+    ["meet",newAll?`By Meeting · ${newAll} new`:"By Meeting"],
     ["review","Meeting Review"],
   ];
 
@@ -6738,6 +6821,7 @@ function PartnerActions({ user, users=[], meetings=[], setMeetings, actions=[], 
     const pct = items.length ? Math.round(closed/items.length*100) : 0;
     const sorted = items.slice().sort((a,b)=>paIsOpen(a)!==paIsOpen(b)?(paIsOpen(a)?-1:1):paSort(a,b));
     const canDel = m && (isAdmin || m.createdBy===user.id);
+    const newCount = items.filter(isNew).length;
     return (
       <div className="card" style={{display:"flex",flexDirection:"column",gap:14}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:20}}>
@@ -6752,6 +6836,7 @@ function PartnerActions({ user, users=[], meetings=[], setMeetings, actions=[], 
             </div>}
           </div>
           <div style={{width:220,flexShrink:0,textAlign:"right"}}>
+            {newCount>0&&<div style={{marginBottom:6}}><span className="pa-new" style={{marginLeft:0,fontSize:11.5,padding:"3px 10px"}}>{newCount} new update{newCount===1?"":"s"}</span></div>}
             <div className="ts fw6">{closed} of {items.length} closed</div>
             <div className="pbw" style={{marginTop:7}}><div className="pbf pbok" style={{width:Math.max(pct,items.length?2:0)+"%"}}/></div>
             <div className="tx tsl mt4">{open} open · {done} done · {dropped} dropped</div>
@@ -6759,8 +6844,11 @@ function PartnerActions({ user, users=[], meetings=[], setMeetings, actions=[], 
         </div>
         {sorted.length>0&&<div style={{borderTop:"1px solid var(--border)"}}>
           {sorted.map(a=>(
-            <div key={a.id} className="pa-mi" role="button" tabIndex={0} onClick={()=>setDetailId(a.id)} onKeyDown={e=>{if(e.key==="Enter")setDetailId(a.id);}}>
-              <div style={{fontSize:13.5,fontWeight:500}}>{a.title}</div>
+            <div key={a.id} className={`pa-mi${isNew(a)?" is-new":""}`} role="button" tabIndex={0} onClick={()=>openDetail(a)} onKeyDown={e=>{if(e.key==="Enter")openDetail(a);}}>
+              <div style={{minWidth:0}}>
+                <div style={{fontSize:13.5,fontWeight:500}}>{a.title}{isNew(a)&&<PANewPill/>}</div>
+                <PALatestLine a={a}/>
+              </div>
               <div><PACatChip cat={a.category}/></div>
               <div className="ts">{nameOf(a.ownerId)}</div>
               <PADue a={a}/>
@@ -6857,15 +6945,15 @@ function PartnerActions({ user, users=[], meetings=[], setMeetings, actions=[], 
               {g.items.map(a=>(
                 <div key={a.id} className="pa-ri">
                   <div style={{minWidth:0}}>
-                    <div className="fw6" style={{fontSize:13.5}}>{a.title}</div>
-                    <div className="tx tsl mt4">{latestNote(a)}</div>
+                    <div className="fw6" style={{fontSize:13.5}}>{a.title}{isNew(a)&&<PANewPill/>}</div>
+                    <PALatestLine a={a} clamp={2}/>
                   </div>
                   <div><PACatChip cat={a.category}/></div>
                   <PADue a={a}/>
                   <div><PAStatusBadge status={a.status}/></div>
                   <div className="fx g8" style={{justifyContent:"flex-end"}}>
                     <button className="btn bsc bsm" onClick={()=>markDone(a)}><I n="check" s={12}/>Done</button>
-                    <button className="btn bgh bsm" onClick={()=>setDetailId(a.id)}>Update or new date</button>
+                    <button className="btn bgh bsm" onClick={()=>openDetail(a)}>Update or new date</button>
                   </div>
                 </div>
               ))}
@@ -6876,7 +6964,7 @@ function PartnerActions({ user, users=[], meetings=[], setMeetings, actions=[], 
           <div className="card">
             <div className="card-title mb8">Closed since the last meeting</div>
             {closedSince.map(a=>(
-              <div key={a.id} className="pa-mi" role="button" tabIndex={0} onClick={()=>setDetailId(a.id)} onKeyDown={e=>{if(e.key==="Enter")setDetailId(a.id);}}>
+              <div key={a.id} className="pa-mi" role="button" tabIndex={0} onClick={()=>openDetail(a)} onKeyDown={e=>{if(e.key==="Enter")openDetail(a);}}>
                 <div style={{fontSize:13.5,fontWeight:500}}>{a.title}</div>
                 <div><PACatChip cat={a.category}/></div>
                 <div className="ts">{nameOf(a.ownerId)}</div>
@@ -6891,7 +6979,7 @@ function PartnerActions({ user, users=[], meetings=[], setMeetings, actions=[], 
       {meetingM&&<PAMeetingModal partners={partners} existing={meetingM.existing} onClose={()=>setMeetingM(null)} onSave={saveMeeting}/>}
       {quickM&&<PAQuickAddModal partners={partners} meetings={meetingsSorted} defaultMeetingId={quickM.meetingId} defaultOwnerId={user.id} onClose={()=>setQuickM(null)} onSave={saveQuick}/>}
       {detail&&<PADetailDrawer key={detail.id} user={user} a={detail} users={users} partners={partners} meeting={meetingOf(detail.meetingId)}
-        canDelete={isAdmin||detail.createdBy===user.id} onClose={()=>setDetailId(null)} onSave={saveDetail} onDelete={deleteAction}/>}
+        canDelete={isAdmin||detail.createdBy===user.id} wasNew={detailNew} onClose={()=>setDetailId(null)} onSave={saveDetail} onDelete={deleteAction}/>}
     </div>
   );
 }
@@ -6916,7 +7004,7 @@ function PADashboardCard({ user, actions=[], onOpen }) {
         const info = paDueInfo(a);
         return (
           <div key={a.id} style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) 170px 130px",gap:14,alignItems:"center",padding:"10px 0",borderTop:"1px solid var(--cream)"}}>
-            <div style={{fontSize:13.5,fontWeight:500}}>{a.title}</div>
+            <div style={{fontSize:13.5,fontWeight:500}}>{a.title}{paIsNewFor(a,user.id)&&<PANewPill/>}</div>
             <div className="tx tsl">{a.category}</div>
             <div style={{fontSize:12.5,fontWeight:600,textAlign:"right",color:info.kind==="ok"?"var(--slate)":PA_DUE_COLOR[info.kind]}}>{info.sub}</div>
           </div>
