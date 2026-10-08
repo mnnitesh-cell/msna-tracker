@@ -1,4 +1,4 @@
-// MSNA Time Tracker v48: Engagement Letter tracking (draft EL asked at code creation, EL pending flags, signed EL check at closure). v47: fixes v46 Update button (openDetail called itself). v46: latest update at top of drawer, update line and "New" pills in lists.
+// MSNA Time Tracker v50: older codes confirm "Signed EL received" instead of draft; EL saves are field-level; failed saves now show a notice. v49: Assigned Work (firm work given by partners to managers, accept/reopen). v48: Engagement Letter tracking (draft EL asked at code creation, EL pending flags, signed EL check at closure). v47: fixes v46 Update button (openDetail called itself). v46: latest update at top of drawer, update line and "New" pills in lists.
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { initializeApp } from "firebase/app";
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, terminate, clearIndexedDbPersistence, waitForPendingWrites, collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, getDocs, query, where } from "firebase/firestore";
@@ -46,11 +46,19 @@ const APPRAISAL_METRICS = [
 ];
 
 // ── FIRESTORE HELPERS ──
+// v50: a refused or failed save is announced to the app (see the notice in App), instead of failing silently.
+const reportWriteError = (col, e) => {
+  try { window.dispatchEvent(new window.CustomEvent("msna-write-error", { detail:{ col, code:e?.code||"" } })); } catch(_) {}
+};
 const fsSet = async (col, id, data) => {
-  try { await setDoc(doc(db, col, id), data); } catch(e) { console.error("fsSet error", e); }
+  try { await setDoc(doc(db, col, id), data); } catch(e) { console.error("fsSet error", e); reportWriteError(col, e); }
 };
 const fsDel = async (col, id) => {
-  try { await deleteDoc(doc(db, col, id)); } catch(e) { console.error("fsDel error", e); }
+  try { await deleteDoc(doc(db, col, id)); } catch(e) { console.error("fsDel error", e); reportWriteError(col, e); }
+};
+// Field-level update: changes only the fields given, so it never overwrites other people's edits on the same record.
+const fsUpdate = async (col, id, fields) => {
+  try { await updateDoc(doc(db, col, id), fields); return true; } catch(e) { console.error("fsUpdate error", e); reportWriteError(col, e); return false; }
 };
 
 // ── SECURITY (v34) ──
@@ -524,9 +532,24 @@ function canUpdateEL(user, p) {
   if(user.role==="manager") return (p.assignedManagers||[]).includes(user.id) || (p.status==="pending_approval"&&p.createdBy===user.id);
   return false;
 }
-function applyELShared(setProjects, user, p, date) {
-  setProjects(prev=>prev.map(x=>x.id===p.id?{...x,elDraftShared:true,elDraftSharedDate:date,elDraftAutoFromSigned:false,elDraftUpdatedBy:user.id,elDraftUpdatedAt:new Date().toISOString()}:x));
-  addAudit(user.id,user.name,"EL_DRAFT_SHARED",`Draft engagement letter for ${p.code} marked as shared on ${fmtDate(date)}`);
+// v50: EL changes from the quick buttons are field-level writes; the real-time listener updates every screen.
+function applyELShared(user, p, date) {
+  fsUpdate("projects", p.id, { elDraftShared:true, elDraftSharedDate:date, elDraftAutoFromSigned:false, elDraftUpdatedBy:user.id, elDraftUpdatedAt:new Date().toISOString() })
+    .then(ok=>{ if(ok) addAudit(user.id,user.name,"EL_DRAFT_SHARED",`Draft engagement letter for ${p.code} marked as shared on ${fmtDate(date)}`); });
+}
+// Older codes (created before EL tracking, status "not recorded"): the signed EL is normally already in place,
+// so the quick action confirms the signed EL directly. That also counts as the draft being shared.
+const elIsLegacy = p => elDraftState(p)==="unrecorded" && !p.elSignedReceived;
+function applyELSignedLegacy(user, p) {
+  fsUpdate("projects", p.id, { ...elSignedPatch(user, p), elLegacySigned:true })
+    .then(ok=>{ if(ok) addAudit(user.id,user.name,"EL_SIGNED_RECEIVED",`Signed engagement letter for ${p.code} confirmed as received (code created before EL tracking)`); });
+}
+// The right quick action for a flagged code: older codes confirm the signed EL, newer ones mark the draft as shared.
+function ELActionButton({ user, p, onShared, onSigned }) {
+  if(!elNeedsAttention(p) || !canUpdateEL(user,p)) return null;
+  return elIsLegacy(p)
+    ? <button className="btn bgh bxs" onClick={()=>onSigned(p)}>Mark signed EL received</button>
+    : <button className="btn bgh bxs" onClick={()=>onShared(p)}>Mark as shared</button>;
 }
 // Fields written when the signed EL is confirmed at closure. A signed EL implies the draft was shared.
 function elSignedPatch(user, p) {
@@ -596,6 +619,22 @@ function ELMarkSharedModal({ project, onSave, onClose }) {
   );
 }
 
+function ELSignedLegacyModal({ project, onSave, onClose }) {
+  return (
+    <div className="mo" onClick={onClose}>
+      <div className="md" style={{maxWidth:440}} onClick={e=>e.stopPropagation()}>
+        <div className="md-title">Confirm signed EL</div>
+        <div className="ts tsl mb16"><span className="mono fw6 tnv">{project.code}</span> · {project.clientName} · {project.name}</div>
+        <div className="al al-i"><I n="info" s={15}/><div>This code was created before EL tracking started, so the signed engagement letter is usually already on file. Confirm it has been received from the client.</div></div>
+        <div className="md-actions">
+          <button className="btn bgh" onClick={onClose}>Cancel</button>
+          <button className="btn bsc" onClick={onSave}><I n="check" s={15}/>Signed EL received</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Closure check (v48): signed EL + performance appraisals.
 // mode "close"   → assigned partner / admin closing directly
 // mode "request" → manager (or non-assigned partner) raising a closure request; appraisals are shown, not enforced
@@ -656,8 +695,9 @@ function ClosureModal({ project:p, mode, pendingNames=[], users=[], onConfirm, o
 }
 
 // Dashboard card: engagements whose draft EL is pending or not recorded. Partners firm-wide, managers their own.
-function ELDashboardCard({ user, users=[], projects=[], setProjects, onOpenProjects }) {
+function ELDashboardCard({ user, users=[], projects=[], onOpenProjects }) {
   const [markP,setMarkP] = useState(null);
+  const [signP,setSignP] = useState(null);
   const [showAll,setShowAll] = useState(false);
   if(user.role==="intern") return null;
   const list = projects
@@ -674,7 +714,7 @@ function ELDashboardCard({ user, users=[], projects=[], setProjects, onOpenProje
           <span style={{color:overdue?"var(--red)":"var(--amber)"}}><I n="alert" s={18}/></span>
           <div>
             <div className="card-title">Engagement letters pending · {list.length}</div>
-            <div className="tx tsl mt4">Draft not yet shared with the client, or status not recorded{overdue?` · ${overdue} over ${EL_AGE_RED_DAYS} days`:""}</div>
+            <div className="tx tsl mt4">Draft not yet shared with the client, or signed EL not confirmed on older codes{overdue?` · ${overdue} over ${EL_AGE_RED_DAYS} days`:""}</div>
           </div>
         </div>
         {onOpenProjects&&<button className="btn bgh bsm" onClick={onOpenProjects}>Open Projects →</button>}
@@ -694,7 +734,7 @@ function ELDashboardCard({ user, users=[], projects=[], setProjects, onOpenProje
               </div>
               <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
                 <ELPill p={p}/>
-                {canUpdateEL(user,p)&&<button className="btn bgh bxs" onClick={()=>setMarkP(p)}>Mark as shared</button>}
+                <ELActionButton user={user} p={p} onShared={setMarkP} onSigned={setSignP}/>
               </div>
             </div>
           );
@@ -703,7 +743,8 @@ function ELDashboardCard({ user, users=[], projects=[], setProjects, onOpenProje
       {list.length>6&&<div style={{borderTop:"1px solid var(--border)",paddingTop:10,textAlign:"center"}}>
         <button className="btn bgh bxs" onClick={()=>setShowAll(s=>!s)}>{showAll?"Show fewer":`Show all ${list.length}`}</button>
       </div>}
-      {markP&&<ELMarkSharedModal project={markP} onClose={()=>setMarkP(null)} onSave={date=>{applyELShared(setProjects,user,markP,date);setMarkP(null);}}/>}
+      {markP&&<ELMarkSharedModal project={markP} onClose={()=>setMarkP(null)} onSave={date=>{applyELShared(user,markP,date);setMarkP(null);}}/>}
+      {signP&&<ELSignedLegacyModal project={signP} onClose={()=>setSignP(null)} onSave={()=>{applyELSignedLegacy(user,signP);setSignP(null);}}/>}
     </div>
   );
 }
@@ -968,7 +1009,7 @@ function Login({ onLogin }) {
 // ══════════════════════════════════════════════════════════════
 // SIDEBAR
 // ══════════════════════════════════════════════════════════════
-function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=0, projPendingCount=0, projClosurePendingCount=0, appraisalPendingCount=0, goalPendingCount=0, paOverdueCount=0 }) {
+function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=0, projPendingCount=0, projClosurePendingCount=0, appraisalPendingCount=0, goalPendingCount=0, paOverdueCount=0, awCount=0 }) {
   const isAdmin = user.email===ADMIN_EMAIL;
   const role = user.role; // "partner" | "manager" | "intern"
 
@@ -989,6 +1030,7 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=
         { id:"week",       icon:"calendar", label:"My Week" },
         { id:"timesheets", icon:"clock",    label:"Timesheets" },
         { id:"leave",      icon:"calendar", label:"Leave",       leaveBadge:true },
+        { id:"assignedwork", icon:"task",   label:"Assigned Work", awBadge:true, roles:["partner","manager"] },
       ]
     },
     {
@@ -1094,6 +1136,7 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=
                 {n.appraisalBadge && appraisalPendingCount>0 && <span className="nb">{appraisalPendingCount}</span>}
                 {n.goalBadge && goalPendingCount>0 && <span className="nb">{goalPendingCount}</span>}
                 {n.paBadge && paOverdueCount>0 && <span className="nb3" title="Your overdue actionables">{paOverdueCount}</span>}
+                {n.awBadge && awCount>0 && <span className={user.role==="partner"?"nb":"nb3"} title={user.role==="partner"?"Work awaiting acceptance":"Your overdue work"}>{awCount}</span>}
               </div>
             ))}
           </div>
@@ -1106,7 +1149,7 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=
 // ══════════════════════════════════════════════════════════════
 // DASHBOARD
 // ══════════════════════════════════════════════════════════════
-function Dashboard({ user, users=[], projects=[], setProjects, tss=[], paActions=[], onOpenActions, onOpenProjects }) {
+function Dashboard({ user, users=[], projects=[], tss=[], paActions=[], onOpenActions, onOpenProjects, awItems=[], onOpenWork }) {
   const isP=user.role==="partner";
   const mySheets = isP?tss:tss.filter(t=>t.userId===user.id);
   const approved = mySheets.filter(t=>t.status==="approved");
@@ -1163,7 +1206,7 @@ function Dashboard({ user, users=[], projects=[], setProjects, tss=[], paActions
           </div>
         </div>
       )}
-      <ELDashboardCard user={user} users={users} projects={projects} setProjects={setProjects} onOpenProjects={onOpenProjects}/>
+      <ELDashboardCard user={user} users={users} projects={projects} onOpenProjects={onOpenProjects}/>
       <div className="sg">
         <div className="sc"><div className="sv">{activeP}</div><div className="sl">Active Engagements</div></div>
         <div className="sc"><div className="sv">{totalHrs.toFixed(1)}</div><div className="sl">{isP?"Firm Hours":"My Approved Hrs"}</div></div>
@@ -1171,6 +1214,7 @@ function Dashboard({ user, users=[], projects=[], setProjects, tss=[], paActions
         <div className="sc"><div className="sv" style={{color:pending>0?"var(--amber)":"var(--green)"}}>{pending}</div><div className="sl">{user.role==="intern"?"Pending Entries":"Pending Approvals"}</div></div>
       </div>
       {isP&&<PADashboardCard user={user} actions={paActions} onOpen={onOpenActions}/>}
+      <AWDashboardCard user={user} items={awItems} onOpen={onOpenWork}/>
       <div className="card">
         <div className="card-title mb16">Recent Activity</div>
         {recent.length===0?<div className="es"><div className="es-icon"><I n="clock" s={40}/></div>No entries yet.</div>:(
@@ -1847,12 +1891,14 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
   const [filterEL,setFEL]     =useState(""); // v48: "", attention, pending, unrecorded, shared
   const [closureM,setClosureM]=useState(null); // v48: { id, mode: close | request | approve }
   const [markELP,setMarkELP]  =useState(null); // v48: project whose draft EL is being marked as shared
+  const [signELP,setSignELP]  =useState(null); // v50: older code whose signed EL is being confirmed
   const [sortBy,setSortBy]    =useState("code");
   const [sortDir,setSortDir]  =useState("asc");
   const [form,setF]           =useState({code:"",name:"",clientName:"",description:"",assignedPartnerId:"",budgetHours:"",monthlyBudgetHours:"",engagementFee:"",feeType:"fixed",retainerMonths:"",category:"Assurance",billable:true,assignedStaff:[],assignedManagers:[],assignedPartners:[],elDraftShared:null,elDraftSharedDate:""});
   const [ferr,setFerr]        =useState("");
   const isP=user.role==="partner";
   const isMgr=user.role==="manager";
+  const legacyEL = !!editP && elIsLegacy(editP); // v50: older code being edited → ask about the signed EL instead
   const partners=users.filter(u=>u.role==="partner"&&u.active).slice().sort((a,b)=>a.name.localeCompare(b.name));
   const lastProjectCode=(()=>{const inCat=projects.filter(p=>(p.category||"Assurance")===(form.category||"Assurance"));if(!inCat.length)return null;return inCat.slice().sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||""))[0].code;})();
 
@@ -1864,7 +1910,7 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
     if(!editP&&projects.find(p=>p.code.toUpperCase()===form.code.toUpperCase())){setFerr("Project code already exists.");return;}
     // v48: draft EL question is mandatory; either answer lets the code be created
     if(typeof form.elDraftShared!=="boolean"){setFerr("Answer whether the draft Engagement Letter is prepared and shared with the client.");return;}
-    if(form.elDraftShared&&!form.elDraftSharedDate&&!editP?.elDraftAutoFromSigned){setFerr("Enter the date the draft Engagement Letter was shared.");return;}
+    if(form.elDraftShared&&!form.elDraftSharedDate&&!editP?.elDraftAutoFromSigned&&!legacyEL){setFerr("Enter the date the draft Engagement Letter was shared.");return;}
     if(form.elDraftShared&&form.elDraftSharedDate>todayStr()){setFerr("The Engagement Letter date cannot be in the future.");return;}
     // Calculate total fee: for retainer = monthly fee × months; for fixed = as entered
     const totalEngFee = form.engagementFee ? (
@@ -1888,13 +1934,17 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
       elDraftShared:form.elDraftShared,
       elDraftSharedDate:form.elDraftShared?(form.elDraftSharedDate||null):null,
     };
+    // v50: older code answered Yes to the signed-EL question → record the signed EL (implies the draft was shared)
+    const legacySigned = legacyEL && form.elDraftShared===true ? { ...elSignedPatch(user, editP), elLegacySigned:true } : null;
+    if(legacySigned) Object.assign(baseObj, legacySigned);
     const elChanged = !editP || editP.elDraftShared!==form.elDraftShared || (editP.elDraftSharedDate||"")!==(baseObj.elDraftSharedDate||"");
     const elStamp = elChanged ? {elDraftUpdatedBy:user.id,elDraftUpdatedAt:new Date().toISOString(),...(editP&&editP.elDraftAutoFromSigned&&baseObj.elDraftSharedDate?{elDraftAutoFromSigned:false}:{})} : {};
     const elText = form.elDraftShared?`shared on ${fmtDate(baseObj.elDraftSharedDate)}`:"not yet shared";
     if(editP){
       setProjects(p=>p.map(x=>x.id===editP.id?{...x,...baseObj,...elStamp,updatedBy:user.id,updatedAt:new Date().toISOString()}:x));
       addAudit(user.id,user.name,"EDIT_PROJECT",`Edited ${editP.code} — ${form.name}`);
-      if(elChanged) addAudit(user.id,user.name,form.elDraftShared?"EL_DRAFT_SHARED":"EL_DRAFT_PENDING",`Draft engagement letter for ${editP.code}: ${elText}`);
+      if(legacySigned) addAudit(user.id,user.name,"EL_SIGNED_RECEIVED",`Signed engagement letter for ${editP.code} confirmed as received (code created before EL tracking)`);
+      else if(elChanged) addAudit(user.id,user.name,form.elDraftShared?"EL_DRAFT_SHARED":"EL_DRAFT_PENDING",`Draft engagement letter for ${editP.code}: ${elText}`);
     } else {
       const np={id:genId(),...form,code:form.code.toUpperCase(),...baseObj,
         ...elStamp,status:isP?"active":"pending_approval",createdBy:user.id,createdAt:new Date().toISOString()};
@@ -2082,7 +2132,7 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
                   {p.status==="active"&&p.closeRejectReason&&<div className="tx tdn mt4">↩ Closure request rejected: {p.closeRejectReason}</div>}
                   {showEL&&<div style={{display:"flex",alignItems:"center",gap:6,marginTop:6,flexWrap:"wrap"}}>
                     <ELPill p={p}/>
-                    {elNeedsAttention(p)&&canUpdateEL(user,p)&&<button className="btn bgh bxs" onClick={()=>setMarkELP(p)}>Mark as shared</button>}
+                    <ELActionButton user={user} p={p} onShared={setMarkELP} onSigned={setSignELP}/>
                   </div>}
                 </td>
                 <td>{p.clientName}</td>
@@ -2202,9 +2252,10 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
             <div className="fg"><label className="fl">Engagement Name</label><input className="fi" placeholder="e.g. Virtual CFO Services FY2025-26" value={form.name} onChange={e=>setF(f=>({...f,name:e.target.value}))}/></div>
             {/* v48: draft Engagement Letter — mandatory, but either answer lets the code be created */}
             <div className="fg" style={{background:"var(--cream)",borderRadius:10,padding:"14px 16px",border:"1px solid var(--border)"}}>
-              <label style={{display:"block",fontSize:13,fontWeight:600,color:"var(--navy)",marginBottom:10,lineHeight:1.45}}>Is the draft Engagement Letter prepared and shared with the client? <span className="tdn">*</span></label>
-              <YesNo value={form.elDraftShared} onChange={v=>setF(f=>({...f,elDraftShared:v,elDraftSharedDate:v?(f.elDraftSharedDate||todayStr()):""}))}/>
-              {form.elDraftShared===true&&(
+              <label style={{display:"block",fontSize:13,fontWeight:600,color:"var(--navy)",marginBottom:10,lineHeight:1.45}}>{legacyEL?"Has the signed Engagement Letter been received from the client?":"Is the draft Engagement Letter prepared and shared with the client?"} <span className="tdn">*</span></label>
+              <YesNo value={form.elDraftShared} onChange={v=>setF(f=>({...f,elDraftShared:v,elDraftSharedDate:v&&!legacyEL?(f.elDraftSharedDate||todayStr()):""}))}/>
+              {legacyEL&&<div className="tx tsl" style={{marginTop:8}}>This code was created before EL tracking started, so the signed EL is confirmed directly.</div>}
+              {form.elDraftShared===true&&!legacyEL&&(
                 <div style={{marginTop:12}}>
                   <label className="fl">Date shared with the client *</label>
                   <input type="date" className="fi" style={{maxWidth:220,background:"#fff"}} max={todayStr()} value={form.elDraftSharedDate} onChange={e=>setF(f=>({...f,elDraftSharedDate:e.target.value}))}/>
@@ -2212,7 +2263,7 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
                 </div>
               )}
               {form.elDraftShared===false&&(
-                <div className="al al-w" style={{marginTop:12,marginBottom:0}}><I n="alert" s={14}/><div>This engagement will be flagged as <strong>EL pending</strong> until the draft is shared. The code can still be {editP?"saved":"created"}.</div></div>
+                <div className="al al-w" style={{marginTop:12,marginBottom:0}}><I n="alert" s={14}/><div>This engagement will be flagged as <strong>EL pending</strong> until {legacyEL?"the signed EL is confirmed":"the draft is shared"}. The code can still be {editP?"saved":"created"}.</div></div>
               )}
             </div>
             <div className="fg"><label className="fl">Description</label><textarea className="fta" placeholder="Brief engagement scope..." value={form.description} onChange={e=>setF(f=>({...f,description:e.target.value}))}/></div>
@@ -2319,7 +2370,8 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
         const names = pendingAppraisalsFor(cp).map(r=>users.find(u=>u.id===r.staffId)?.name||"—");
         return <ClosureModal project={cp} mode={closureM.mode} pendingNames={names} users={users} onConfirm={confirmClosure} onClose={()=>setClosureM(null)}/>;
       })()}
-      {markELP&&<ELMarkSharedModal project={markELP} onClose={()=>setMarkELP(null)} onSave={date=>{applyELShared(setProjects,user,markELP,date);setMarkELP(null);}}/>}
+      {markELP&&<ELMarkSharedModal project={markELP} onClose={()=>setMarkELP(null)} onSave={date=>{applyELShared(user,markELP,date);setMarkELP(null);}}/>}
+      {signELP&&<ELSignedLegacyModal project={signELP} onClose={()=>setSignELP(null)} onSave={()=>{applyELSignedLegacy(user,signELP);setSignELP(null);}}/>}
     </div>
   );
 }
@@ -7275,6 +7327,818 @@ function PADashboardCard({ user, actions=[], onOpen }) {
 }
 
 
+// ══════════════════════════════════════════════════════════════
+// ASSIGNED WORK (v49): partners and managers
+// Firm work (staffing, operations, BD, internal events, training, admin) given by partners to managers.
+// Partners assign items, or managers log a meeting with partners and add what came out of it.
+// Managers mark items done with a closure note; any partner accepts (closes) or reopens with a reason.
+// Data: "work_meetings" and "work_items", kept apart from Partner Actionables so partners' meetings stay private.
+// Managers load only items they own, support or created.
+// ══════════════════════════════════════════════════════════════
+const AW_CATEGORIES = ["Staffing","Operations","Business Development","Internal event","Training","Admin","Other"];
+const AW_STATUSES_MGR = ["open","in_progress","submitted"];
+const AW_STATUSES_PTR = ["open","in_progress","submitted","done","dropped"];
+const AW_STATUS_LABEL = { open:"Open", in_progress:"In progress", submitted:"Awaiting acceptance", done:"Accepted", dropped:"Dropped" };
+const AW_STATUS_SEG   = { open:"Open", in_progress:"In progress", submitted:"Done, send for acceptance", done:"Accepted", dropped:"Dropped" };
+const AW_STATUS_CLASS = { open:"bp2", in_progress:"bac", submitted:"brs", done:"ba", dropped:"bcl" };
+const AW_CAT_STYLE = {
+  "Staffing":             { background:"#e0e7ff", color:"#3730a3" },
+  "Operations":           { background:"#f1f5f9", color:"#475569" },
+  "Business Development": { background:"#fef3c7", color:"#92400e" },
+  "Internal event":       { background:"#fce7f3", color:"#9d174d" },
+  "Training":             { background:"#d1fae5", color:"#065f46" },
+  "Admin":                { background:"#dbeafe", color:"#1e40af" },
+  "Other":                { background:"#f3e8ff", color:"#6d28d9" },
+};
+const AW_SEEN_START = "2026-10-08T00:00:00+05:30";
+
+const awIsWorking = a => a.status==="open" || a.status==="in_progress";        // with the manager
+const awIsOpen    = a => awIsWorking(a) || a.status==="submitted";              // not yet closed
+const awIsOverdue = a => awIsWorking(a) && !!a.dueDate && a.dueDate < todayStr();
+function awDueInfo(a) {
+  if(a.status==="submitted") return { kind:"ok", sub:"Awaiting acceptance" };
+  if(!awIsOpen(a)) {
+    const when = a.closedAt ? fmtDate(a.closedAt.slice(0,10)) : "";
+    return { kind:"closed", sub: a.status==="done" ? `Accepted ${when}` : `Dropped ${when}` };
+  }
+  return paDueInfo(a);
+}
+const awRank = a => a.status==="submitted" ? 3 : (k => k==="over"?0 : k==="soon"?1 : 2)(awDueInfo(a).kind);
+const awSort = (a,b) => awRank(a)-awRank(b) || (a.dueDate||"9999").localeCompare(b.dueDate||"9999");
+const awBlankRow = () => ({ key:genId(), title:"", category:"", ownerId:"", supportIds:[], dueDate:"", priority:"Medium" });
+const awInvolves = (a, uid) => a.ownerId===uid || (a.supportIds||[]).includes(uid);
+// Who should see a "New" pill: partners who gave it (or any partner once it awaits acceptance); the owner and supporting managers.
+const awRelevant = (a, user) => user.role==="partner"
+  ? ((a.fromPartnerIds||[]).includes(user.id) || a.status==="submitted")
+  : awInvolves(a, user.id);
+const awIsNewFor = (a, user) => {
+  const h = a.history||[]; const last = h[h.length-1];
+  if(!last || last.byId===user.id || !awRelevant(a,user)) return false;
+  const at = new Date(last.at).getTime();
+  if(at < new Date(AW_SEEN_START).getTime()) return false;
+  const seen = a.seenBy?.[user.id];
+  return !seen || at > new Date(seen).getTime();
+};
+const awMarkSeen = (a, user) => {
+  if(!awIsNewFor(a, user)) return;
+  updateDoc(doc(db, "work_items", a.id), { [`seenBy.${user.id}`]: new Date().toISOString() })
+    .catch(e=>console.error("awMarkSeen error", e));
+};
+// Sidebar badge: partners → items awaiting acceptance (firm-wide, any partner can accept); managers → their own overdue.
+const awBadgeCount = (items, user) => !user ? 0 : user.role==="partner"
+  ? items.filter(a=>a.status==="submitted").length
+  : items.filter(a=>a.ownerId===user.id && awIsOverdue(a)).length;
+
+function AWCatChip({ cat }) {
+  return <span className="pa-chip" style={AW_CAT_STYLE[cat]||AW_CAT_STYLE.Other}>{cat||"—"}</span>;
+}
+function AWStatusBadge({ status }) {
+  return <span className={`bdg ${AW_STATUS_CLASS[status]||"bcl"}`}>{AW_STATUS_LABEL[status]||status}</span>;
+}
+function AWDue({ a }) {
+  const info = awDueInfo(a);
+  const c = PA_DUE_COLOR[info.kind];
+  return <div>
+    <div style={{fontSize:13,fontWeight:info.kind==="over"||info.kind==="soon"?600:400,color:c}}>{a.dueDate?fmtDate(a.dueDate):"—"}</div>
+    <div style={{fontSize:11.5,color:info.kind==="ok"?"var(--slate)":c}}>{info.sub}</div>
+  </div>;
+}
+// Toggle chips for a list of people (partners present, partners who gave it, supporting managers)
+function AWPeopleChips({ people, value=[], onChange, exclude, big=false }) {
+  const opts = people.filter(p=>p.id!==exclude);
+  if(!opts.length) return <span className="tx tsl">—</span>;
+  return <div style={{display:"flex",gap:big?8:4,flexWrap:"wrap"}}>
+    {opts.map(p=>{
+      const on = value.includes(p.id);
+      return <button key={p.id} type="button" aria-pressed={on} className={`pa-pchip ${on?"on":""}`} style={big?{padding:"8px 14px",fontSize:13}:undefined}
+        onClick={()=>onChange(on?value.filter(x=>x!==p.id):[...value,p.id])}>{big?p.name:paFirstName(p.name)}</button>;
+    })}
+  </div>;
+}
+
+// ── Log / edit a meeting with partners (partners or managers) ──
+function AWMeetingModal({ user, partners, managers, existing, onClose, onSave }) {
+  const isEdit = !!existing;
+  const [date,setDate]     = useState(existing?.date || todayStr());
+  const [title,setTitle]   = useState(existing?.title || (user.role==="partner"?"Meeting with managers":"Meeting with partners"));
+  const [present,setPres]  = useState(existing?.partnerIds || (user.role==="partner"?[user.id]:[]));
+  const [notes,setNotes]   = useState(existing?.notes || "");
+  const [rows,setRows]     = useState([{...awBlankRow(),ownerId:user.role==="manager"?user.id:""},awBlankRow(),awBlankRow()]);
+  const [err,setErr]       = useState("");
+  const setRow = (key, patch) => setRows(rs=>rs.map(r=>r.key===key?{...r,...patch}:r));
+  const addRow = () => setRows(rs=>[...rs,awBlankRow()]);
+  const removeRow = key => setRows(rs=>rs.length>1?rs.filter(r=>r.key!==key):[awBlankRow()]);
+  const isBlank = r => !r.title.trim() && !r.dueDate && !r.category;
+  const filled = rows.filter(r=>!isBlank(r));
+  const save = () => {
+    setErr("");
+    if(!date){ setErr("Meeting date is required."); return; }
+    if(!title.trim()){ setErr("Meeting title is required."); return; }
+    if(!present.length){ setErr("Select the partners who were present."); return; }
+    if(!isEdit){
+      for(let i=0;i<rows.length;i++){
+        const r = rows[i]; if(isBlank(r)) continue;
+        const miss = [!r.title.trim()&&"work",!r.category&&"category",!r.ownerId&&"owner",!r.dueDate&&"due date"].filter(Boolean);
+        if(miss.length){ setErr(`Row ${i+1} needs: ${miss.join(", ")}.`); return; }
+      }
+    }
+    onSave({ date, title:title.trim(), partnerIds:present, notes:notes.trim() }, isEdit?[]:filled);
+  };
+  return (
+    <div className="mo" onClick={onClose}>
+      <div className="md" onClick={e=>e.stopPropagation()} style={{maxWidth:isEdit?620:1180}}>
+        <div className="md-title">{isEdit?"Edit meeting":user.role==="partner"?"Log meeting with managers":"Log meeting with partners"}</div>
+        {!isEdit&&<div className="ts tsl" style={{marginTop:-12,marginBottom:18}}>Record the meeting once, then add every piece of work that came out of it.</div>}
+        {err&&<div className="err">{err}</div>}
+        <div style={{display:"grid",gridTemplateColumns:isEdit?"1fr 1fr":"180px 300px minmax(0,1fr)",gap:16}}>
+          <div className="fg"><label className="fl" htmlFor="aw-md">Meeting date</label><input id="aw-md" type="date" className="fi" value={date} max={todayStr()} onChange={e=>setDate(e.target.value)}/></div>
+          <div className="fg"><label className="fl" htmlFor="aw-mt">Title</label><input id="aw-mt" className="fi" value={title} onChange={e=>setTitle(e.target.value)}/></div>
+          <div className="fg" style={isEdit?{gridColumn:"1 / -1"}:undefined}>
+            <div className="fl">Partners present *</div>
+            <AWPeopleChips people={partners} value={present} onChange={setPres} big/>
+          </div>
+        </div>
+        <div className="fg"><label className="fl" htmlFor="aw-mn">Short notes (optional)</label>
+          <textarea id="aw-mn" className="fta" style={{minHeight:56}} placeholder="Topics discussed..." value={notes} onChange={e=>setNotes(e.target.value)}/>
+        </div>
+        {!isEdit&&(
+          <div style={{borderTop:"1.5px solid var(--border)",paddingTop:16}}>
+            <div className="fxb mb8">
+              <div className="fw6" style={{fontSize:15}}>Work <span className="tsl" style={{fontWeight:500}}>({filled.length})</span></div>
+              <div className="tx tsl">Each needs the work, a category, one manager as owner and a due date. Blank rows are ignored.</div>
+            </div>
+            <div className="pa-grid" style={{marginBottom:6}}>
+              <div className="pa-hd">#</div><div className="pa-hd">Work</div><div className="pa-hd">Category</div><div className="pa-hd">Owner</div><div className="pa-hd">Supporting</div><div className="pa-hd">Due date</div><div className="pa-hd">Priority</div><div/>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {rows.map((r,idx)=>(
+                <div key={r.key} className="pa-grid">
+                  <div className="ts tsl fw6">{idx+1}</div>
+                  <input className="fi" aria-label={`Work ${idx+1}`} placeholder="What needs to be done?" value={r.title}
+                    onChange={e=>setRow(r.key,{title:e.target.value})}
+                    onKeyDown={e=>{ if(e.key==="Enter"){ e.preventDefault(); if(idx===rows.length-1) addRow(); } }}/>
+                  <select className="fs" aria-label="Category" value={r.category} onChange={e=>setRow(r.key,{category:e.target.value})}>
+                    <option value="">Select</option>{AW_CATEGORIES.map(c=><option key={c}>{c}</option>)}
+                  </select>
+                  <select className="fs" aria-label="Owner" value={r.ownerId} onChange={e=>setRow(r.key,{ownerId:e.target.value,supportIds:r.supportIds.filter(x=>x!==e.target.value)})}>
+                    <option value="">Select</option>{managers.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                  <AWPeopleChips people={managers} exclude={r.ownerId} value={r.supportIds} onChange={v=>setRow(r.key,{supportIds:v})}/>
+                  <input type="date" className="fi" aria-label="Due date" value={r.dueDate} onChange={e=>setRow(r.key,{dueDate:e.target.value})}/>
+                  <select className="fs" aria-label="Priority" value={r.priority} onChange={e=>setRow(r.key,{priority:e.target.value})}>
+                    {PA_PRIORITIES.map(p=><option key={p}>{p}</option>)}
+                  </select>
+                  <button type="button" className="btn bgh bic bsm" aria-label="Remove row" title="Remove row" onClick={()=>removeRow(r.key)}><I n="x" s={13}/></button>
+                </div>
+              ))}
+            </div>
+            <button type="button" className="btn bsm" onClick={addRow} style={{marginTop:10,background:"transparent",border:"1.5px dashed var(--gold)",color:"var(--navy)"}}><I n="plus" s={13}/>Add another row</button>
+          </div>
+        )}
+        <div className="md-actions" style={{justifyContent:"space-between",alignItems:"center"}}>
+          <div className="tx tsl">{isEdit?"Work items are edited individually from their own panel.":user.role==="manager"?"The partners present will see these marked New and can adjust due dates or priority.":""}</div>
+          <div className="fx g8">
+            <button className="btn bgh" onClick={onClose}>Cancel</button>
+            <button className="btn bp" onClick={save}><I n="check" s={15}/>{isEdit?"Save meeting":`Save meeting${filled.length?` and ${filled.length} item${filled.length===1?"":"s"}`:""}`}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Quick add: one item ──
+function AWQuickAddModal({ user, partners, managers, meetings, defaultMeetingId, onClose, onSave }) {
+  const [r,setR] = useState({ ...awBlankRow(), ownerId:user.role==="manager"?user.id:"" });
+  const [from,setFrom] = useState(user.role==="partner"?[user.id]:[]);
+  const [meetingId,setMeetingId] = useState(defaultMeetingId||"");
+  const [err,setErr] = useState("");
+  const pickMeeting = id => {
+    setMeetingId(id);
+    const m = meetings.find(x=>x.id===id);
+    if(m && (m.partnerIds||[]).length) setFrom(m.partnerIds);
+  };
+  const save = () => {
+    const miss = [!r.title.trim()&&"work",!r.category&&"category",!r.ownerId&&"owner",!r.dueDate&&"due date",!from.length&&"given by"].filter(Boolean);
+    if(miss.length){ setErr(`Please fill in: ${miss.join(", ")}.`); return; }
+    onSave(r, from, meetingId||null);
+  };
+  return (
+    <div className="mo" onClick={onClose}>
+      <div className="md" onClick={e=>e.stopPropagation()} style={{maxWidth:600}}>
+        <div className="md-title">{user.role==="partner"?"Assign work":"Add work item"}</div>
+        {err&&<div className="err">{err}</div>}
+        <div className="fg"><label className="fl" htmlFor="aw-qt">Work</label>
+          <textarea id="aw-qt" className="fta" style={{minHeight:60}} placeholder="What needs to be done?" value={r.title} onChange={e=>setR(x=>({...x,title:e.target.value}))}/>
+        </div>
+        <div className="g2">
+          <div className="fg"><label className="fl" htmlFor="aw-qc">Category</label>
+            <select id="aw-qc" className="fs" value={r.category} onChange={e=>setR(x=>({...x,category:e.target.value}))}><option value="">Select</option>{AW_CATEGORIES.map(c=><option key={c}>{c}</option>)}</select>
+          </div>
+          <div className="fg"><label className="fl" htmlFor="aw-qp">Priority</label>
+            <select id="aw-qp" className="fs" value={r.priority} onChange={e=>setR(x=>({...x,priority:e.target.value}))}>{PA_PRIORITIES.map(p=><option key={p}>{p}</option>)}</select>
+          </div>
+          <div className="fg"><label className="fl" htmlFor="aw-qo">Owner (manager)</label>
+            <select id="aw-qo" className="fs" value={r.ownerId} onChange={e=>setR(x=>({...x,ownerId:e.target.value,supportIds:x.supportIds.filter(s=>s!==e.target.value)}))}><option value="">Select</option>{managers.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select>
+          </div>
+          <div className="fg"><label className="fl" htmlFor="aw-qd">Due date</label>
+            <input id="aw-qd" type="date" className="fi" value={r.dueDate} onChange={e=>setR(x=>({...x,dueDate:e.target.value}))}/>
+          </div>
+        </div>
+        <div className="fg"><div className="fl">Supporting managers (optional)</div>
+          <AWPeopleChips people={managers} exclude={r.ownerId} value={r.supportIds} onChange={v=>setR(x=>({...x,supportIds:v}))}/>
+        </div>
+        <div className="fg"><label className="fl" htmlFor="aw-qm">From meeting</label>
+          <select id="aw-qm" className="fs" value={meetingId} onChange={e=>pickMeeting(e.target.value)}>
+            <option value="">Not from a meeting</option>
+            {meetings.map(m=><option key={m.id} value={m.id}>{m.title} · {fmtDate(m.date)}</option>)}
+          </select>
+        </div>
+        <div className="fg"><div className="fl">Given by *</div>
+          <AWPeopleChips people={partners} value={from} onChange={setFrom} big/>
+        </div>
+        <div className="md-actions">
+          <button className="btn bgh" onClick={onClose}>Cancel</button>
+          <button className="btn bp" onClick={save}><I n="check" s={15}/>{user.role==="partner"?"Assign work":"Add item"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Reopen with a reason (partners) ──
+function AWReopenModal({ a, onClose, onSave }) {
+  const [reason,setReason] = useState("");
+  const [err,setErr] = useState("");
+  return (
+    <div className="mo" style={{zIndex:1100}} onClick={onClose}>
+      <div className="md" style={{maxWidth:460}} onClick={e=>e.stopPropagation()}>
+        <div className="md-title">Reopen work</div>
+        <div className="ts tsl mb16">{a.title}</div>
+        {err&&<div className="err">{err}</div>}
+        <div className="fg"><label className="fl" htmlFor="aw-rr">What still needs to be done? *</label>
+          <textarea id="aw-rr" className="fta" placeholder="The manager will see this." value={reason} onChange={e=>{setReason(e.target.value);setErr("");}}/>
+        </div>
+        <div className="md-actions">
+          <button className="btn bgh" onClick={onClose}>Cancel</button>
+          <button className="btn bam" onClick={()=>{ if(!reason.trim()){ setErr("Give a reason so the manager knows what's missing."); return; } onSave(reason.trim()); }}><I n="arrowleft" s={14}/>Reopen</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Detail drawer ──
+function AWDetailDrawer({ user, a, users, partners, managers, meeting, canDelete, wasNew=false, onClose, onSave, onDelete, onAccept, onReopen }) {
+  const isP = user.role==="partner";
+  const [status,setStatus] = useState(a.status);
+  const [note,setNote]     = useState("");
+  const [due,setDue]       = useState(a.dueDate||"");
+  const [prio,setPrio]     = useState(a.priority||"Medium");
+  const [editing,setEditing] = useState(false);
+  const [showForm,setShowForm] = useState(false);
+  const blankD = () => ({ title:a.title, category:a.category, ownerId:a.ownerId, supportIds:a.supportIds||[], fromPartnerIds:a.fromPartnerIds||[] });
+  const [d,setD] = useState(blankD());
+  const [err,setErr] = useState("");
+  const nameOf = id => users.find(u=>u.id===id)?.name || "—";
+  const info = awDueInfo(a);
+  const statuses = isP ? AW_STATUSES_PTR : AW_STATUSES_MGR;
+  const closed = !awIsOpen(a);
+  const canUpdate = isP || (awInvolves(a, user.id) && !closed);
+  const willWork = status==="open"||status==="in_progress";
+  const ownerOptions = managers.some(p=>p.id===a.ownerId) ? managers : [...managers, users.find(u=>u.id===a.ownerId)].filter(Boolean);
+
+  const save = () => {
+    setErr("");
+    const changes = [];
+    if(status!==a.status) changes.push(`${AW_STATUS_LABEL[a.status]} → ${AW_STATUS_LABEL[status]}`);
+    const newDue = isP && willWork ? due : a.dueDate;
+    if(isP && willWork && !due){ setErr("Due date is required."); return; }
+    if(newDue!==a.dueDate) changes.push(`Due ${fmtDate(a.dueDate)} → ${fmtDate(newDue)}`);
+    const newPrio = isP ? prio : (a.priority||"Medium");
+    if(newPrio!==(a.priority||"Medium")) changes.push(`Priority ${a.priority||"Medium"} → ${newPrio}`);
+    let details = {};
+    if(editing){
+      if(!d.title.trim()){ setErr("The work description is required."); return; }
+      if(!d.category||!d.ownerId){ setErr("Category and owner are required."); return; }
+      if(!d.fromPartnerIds.length){ setErr("Select at least one partner under Given by."); return; }
+      const sup = d.supportIds.filter(x=>x!==d.ownerId);
+      if(d.title.trim()!==a.title) changes.push("Text edited");
+      if(d.category!==a.category) changes.push(`Category ${a.category} → ${d.category}`);
+      if(d.ownerId!==a.ownerId) changes.push(`Owner ${nameOf(a.ownerId)} → ${nameOf(d.ownerId)}`);
+      if([...sup].sort().join()!==[...(a.supportIds||[])].sort().join()) changes.push(`Supporting: ${sup.length?sup.map(nameOf).join(", "):"none"}`);
+      if([...d.fromPartnerIds].sort().join()!==[...(a.fromPartnerIds||[])].sort().join()) changes.push(`Given by: ${d.fromPartnerIds.map(nameOf).join(", ")}`);
+      details = { title:d.title.trim(), category:d.category, ownerId:d.ownerId, supportIds:sup, fromPartnerIds:d.fromPartnerIds };
+    }
+    if(status==="submitted" && a.status!=="submitted" && !note.trim()){ setErr("Add a closure note so the partner sees what was delivered."); return; }
+    if(status==="dropped" && a.status!=="dropped" && !note.trim()){ setErr("A reason is required to drop an item."); return; }
+    if(!changes.length && !note.trim()){ setErr("Nothing to save. Change the status or add a note."); return; }
+    const now = new Date().toISOString();
+    const nowOpen = status==="open"||status==="in_progress"||status==="submitted";
+    const closedAt = nowOpen ? null : (awIsOpen(a) || status!==a.status ? now : (a.closedAt||now));
+    const extra = status==="submitted"&&a.status!=="submitted" ? { submittedAt:now, submittedBy:user.id, submittedByName:user.name }
+      : status==="done"&&a.status!=="done" ? { acceptedBy:user.id, acceptedAt:now } : {};
+    const entry = { at:now, byId:user.id, byName:user.name, type:changes.length?"update":"note", change:changes.join(" · ")||"Note", note:note.trim() };
+    onSave({ ...a, ...details, ...extra, status, dueDate:newDue, priority:newPrio, closedAt, updatedAt:now, updatedBy:user.id, history:[...(a.history||[]), entry] }, entry.change);
+  };
+
+  const noteLabel = status==="submitted"&&a.status!=="submitted" ? "Closure note (required)" : status==="dropped"&&a.status!=="dropped" ? "Reason for dropping (required)" : "Update note";
+  const notePh = status==="submitted" ? "What was delivered?" : status==="dropped" ? "Why is this no longer needed?" : "What has happened since the last update?";
+  const history = (a.history||[]).slice().reverse();
+  const latest = paLatestUpdate(a);
+  const cancelForm = () => { setShowForm(false); setEditing(false); setErr(""); setNote(""); setStatus(a.status); setDue(a.dueDate||""); setPrio(a.priority||"Medium"); setD(blankD()); };
+  const dotColor = h => h.type==="created" ? "#94a3b8" : /→ Accepted/.test(h.change) ? "var(--green)" : /→ Awaiting/.test(h.change) ? "var(--gold)" : /→ Dropped/.test(h.change) ? "var(--slate)" : /Reopened/.test(h.change) ? "var(--amber)" : /Due /.test(h.change) ? "var(--amber)" : h.type==="note" ? "var(--gold)" : "#1e40af";
+
+  return (
+    <>
+      <div className="pa-drawer-bg" onClick={onClose}/>
+      <div className="pa-drawer" role="dialog" aria-label="Work item details">
+        <div className="fxb">
+          <div className="fx g8" style={{flexWrap:"wrap"}}>
+            <AWCatChip cat={a.category}/>
+            <AWStatusBadge status={a.status}/>
+            {info.kind==="over"&&<span className="pa-chip" style={{background:"#fee2e2",color:"#b91c1c",fontWeight:600}}>{info.sub}</span>}
+          </div>
+          <button className="btn bgh bic bsm" aria-label="Close" onClick={onClose}><I n="x" s={16}/></button>
+        </div>
+        {!editing
+          ? <div style={{fontFamily:"'Playfair Display',serif",fontSize:23,lineHeight:1.3}}>{a.title}</div>
+          : <div className="fg" style={{marginBottom:0}}><label className="fl" htmlFor="aw-et">Work</label><textarea id="aw-et" className="fta" style={{minHeight:60}} value={d.title} onChange={e=>setD(x=>({...x,title:e.target.value}))}/></div>}
+
+        {isP&&a.status==="submitted"&&!showForm&&(
+          <div className="al al-w" style={{marginBottom:0,alignItems:"center",justifyContent:"space-between"}}>
+            <div style={{display:"flex",gap:8,alignItems:"center"}}><I n="info" s={15}/><div><strong>{nameOf(a.submittedBy||a.ownerId)}</strong> has marked this done. Accept to close it, or reopen with a reason.</div></div>
+            <div className="fx g8" style={{flexShrink:0}}>
+              <button className="btn bsc bsm" onClick={()=>onAccept(a)}><I n="check" s={13}/>Accept</button>
+              <button className="btn bgh bsm" onClick={()=>onReopen(a)}>Reopen</button>
+            </div>
+          </div>
+        )}
+
+        {latest
+          ? <div className="pa-latest">
+              <div className="fxb" style={{gap:10}}>
+                <div className="pa-k" style={{color:"#92400e"}}>Latest update{wasNew&&<span className="pa-new">New for you</span>}</div>
+                <div className="tx" style={{color:"#92400e"}}>{paTimeAgo(latest.at)}</div>
+              </div>
+              <div className="ts" style={{marginTop:6,color:"var(--navy)"}}>
+                <strong>{latest.byName}</strong>
+                {latest.change&&latest.change!=="Note"&&<span style={{color:"var(--navy-mid)",fontWeight:600}}> · {latest.change}</span>}
+              </div>
+              {latest.note&&<div style={{fontSize:14,color:"#334155",marginTop:6,lineHeight:1.55,whiteSpace:"pre-wrap"}}>{latest.note}</div>}
+            </div>
+          : <div className="pa-latest" style={{background:"var(--cream)",borderColor:"var(--border)",borderLeftColor:"var(--slate-light)"}}>
+              <div className="pa-k">Latest update{wasNew&&<span className="pa-new">New for you</span>}</div>
+              <div className="ts tsl" style={{marginTop:6}}>No updates yet since this was {a.createdByRole==="manager"?`logged by ${a.createdByName}`:"assigned"}.</div>
+            </div>}
+
+        {!editing?(
+          <div className="pa-meta">
+            <div><div className="pa-k">Owner</div><div className="pa-v fw6">{nameOf(a.ownerId)}</div></div>
+            <div><div className="pa-k">Supporting</div><div className="pa-v" style={{color:(a.supportIds||[]).length?"var(--navy)":"var(--slate)"}}>{(a.supportIds||[]).length?(a.supportIds||[]).map(nameOf).join(", "):"None"}</div></div>
+            <div><div className="pa-k">Priority</div><div className="pa-v fw6" style={{color:PA_PRIO_COLOR[a.priority]||"var(--slate)"}}>{a.priority||"Medium"}</div></div>
+            <div><div className="pa-k">Due</div><div className="pa-v fw6" style={{color:PA_DUE_COLOR[info.kind]}}>{a.dueDate?fmtDate(a.dueDate):"—"}</div>
+              {a.originalDueDate&&a.originalDueDate!==a.dueDate&&<div className="tx tsl">Originally {fmtDate(a.originalDueDate)}</div>}</div>
+            <div><div className="pa-k">Given by</div><div className="pa-v">{(a.fromPartnerIds||[]).map(nameOf).join(", ")||"—"}</div></div>
+            <div><div className="pa-k">{meeting?"Raised in":"Created by"}</div><div className="pa-v">{meeting?`${meeting.title}, ${fmtDate(meeting.date)}`:(a.createdByName||nameOf(a.createdBy))}</div></div>
+          </div>
+        ):(
+          <div className="pa-meta" style={{gridTemplateColumns:"1fr 1fr"}}>
+            <div><label className="fl" htmlFor="aw-ec">Category</label><select id="aw-ec" className="fs" value={d.category} onChange={e=>setD(x=>({...x,category:e.target.value}))}>{AW_CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></div>
+            <div><label className="fl" htmlFor="aw-eo">Owner</label><select id="aw-eo" className="fs" value={d.ownerId} onChange={e=>setD(x=>({...x,ownerId:e.target.value,supportIds:x.supportIds.filter(s=>s!==e.target.value)}))}>{ownerOptions.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></div>
+            <div><div className="fl">Supporting</div><AWPeopleChips people={managers} exclude={d.ownerId} value={d.supportIds} onChange={v=>setD(x=>({...x,supportIds:v}))}/></div>
+            <div><div className="fl">Given by</div><AWPeopleChips people={partners} value={d.fromPartnerIds} onChange={v=>setD(x=>({...x,fromPartnerIds:v}))}/></div>
+          </div>
+        )}
+        <div className="fx g8" style={{flexWrap:"wrap"}}>
+          {canUpdate&&!showForm&&<button className="btn bp bsm" onClick={()=>setShowForm(true)}><I n="plus" s={13}/>Add an update</button>}
+          {isP&&<button className="btn bgh bsm" onClick={()=>{const on=!editing;setEditing(on);if(on)setShowForm(true);setD(blankD());}}><I n="edit" s={13}/>{editing?"Cancel editing details":"Edit details"}</button>}
+          {canDelete&&<button className="btn bd bsm" onClick={()=>onDelete(a)}><I n="trash" s={13}/>Delete</button>}
+        </div>
+
+        {showForm&&<div style={{display:"flex",flexDirection:"column",gap:14,border:"1.5px solid var(--navy)",borderRadius:12,padding:18}}>
+          <div className="fw6" style={{fontSize:14.5}}>{editing?"Save changes":"Add an update"}</div>
+          {err&&<div className="err" style={{marginBottom:0}}>{err}</div>}
+          <div>
+            <div className="fl">Status</div>
+            <div className="pa-seg" role="group" aria-label="Status">
+              {statuses.map(s=><button key={s} type="button" className={status===s?"on":""} aria-pressed={status===s} onClick={()=>setStatus(s)}>{isP?AW_STATUS_LABEL[s]:AW_STATUS_SEG[s]}</button>)}
+            </div>
+          </div>
+          <div>
+            <label className="fl" htmlFor="aw-note">{noteLabel}</label>
+            <textarea id="aw-note" className="fta" placeholder={notePh} value={note} onChange={e=>setNote(e.target.value)}/>
+          </div>
+          {isP&&willWork&&(
+            <div style={{display:"grid",gridTemplateColumns:"190px 150px minmax(0,1fr)",gap:12,alignItems:"end"}}>
+              <div><label className="fl" htmlFor="aw-due">Due date</label><input id="aw-due" type="date" className="fi" value={due} onChange={e=>setDue(e.target.value)}/></div>
+              <div><label className="fl" htmlFor="aw-pr">Priority</label><select id="aw-pr" className="fs" value={prio} onChange={e=>setPrio(e.target.value)}>{PA_PRIORITIES.map(p=><option key={p}>{p}</option>)}</select></div>
+              <div className="tx tsl" style={{paddingBottom:12}}>The original due date stays in the history.</div>
+            </div>
+          )}
+          {!isP&&<div className="tx tsl">Due date and priority are set by partners. If you need more time, say so in the note.</div>}
+          <div className="fx g8" style={{justifyContent:"flex-end"}}>
+            <button className="btn bgh" onClick={cancelForm}>Cancel</button>
+            <button className="btn bp" onClick={save}><I n="check" s={15}/>Save update</button>
+          </div>
+        </div>}
+
+        <div>
+          <div className="fw6" style={{fontSize:14.5,marginBottom:12}}>History <span className="tx tsl" style={{fontWeight:400}}>({history.length})</span></div>
+          {history.map((h,i)=>(
+            <div key={i} style={{display:"flex",gap:14}}>
+              <div style={{display:"flex",flexDirection:"column",alignItems:"center",width:12}}>
+                <div style={{width:12,height:12,borderRadius:"50%",flexShrink:0,background:dotColor(h)}}/>
+                {i<history.length-1&&<div style={{width:2,flexGrow:1,background:"var(--border)",margin:"4px 0"}}/>}
+              </div>
+              <div style={{paddingBottom:16,flex:1}}>
+                <div className="ts"><strong>{h.byName}</strong> <span className="tsl">· {fmtDate(h.at.slice(0,10))} at {new Date(h.at).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})}</span></div>
+                {h.change&&h.change!=="Note"&&<div style={{fontSize:12.5,color:"var(--navy-mid)",fontWeight:600,marginTop:3}}>{h.change}</div>}
+                {h.note&&<div className="ts" style={{color:"#334155",marginTop:3,lineHeight:1.45,whiteSpace:"pre-wrap"}}>{h.note}</div>}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── Main page ──
+function AssignedWork({ user, users=[], meetings=[], setMeetings, items=[], setItems, loaded=true }) {
+  const isP = user.role==="partner";
+  const isAdmin = user.email===ADMIN_EMAIL;
+  const [tab,setTab]         = useState(isP?"accept":"mine");
+  const [fOwner,setFOwner]   = useState("");
+  const [fCat,setFCat]       = useState("");
+  const [fStatus,setFStatus] = useState("open");
+  const [meetingM,setMeetingM] = useState(null);
+  const [quickM,setQuickM]   = useState(null);
+  const [detailId,setDetailId] = useState(null);
+  const [detailNew,setDetailNew] = useState(false);
+  const [reopenFor,setReopenFor] = useState(null);
+
+  const partners = users.filter(u=>u.role==="partner"&&u.active!==false).slice().sort((a,b)=>a.name.localeCompare(b.name));
+  const managers = users.filter(u=>u.role==="manager"&&u.active!==false).slice().sort((a,b)=>a.name.localeCompare(b.name));
+  const nameOf = id => users.find(u=>u.id===id)?.name || "—";
+  const meetingOf = id => meetings.find(m=>m.id===id);
+  const isNew = a => awIsNewFor(a, user);
+  const openDetail = a => { setDetailNew(isNew(a)); setDetailId(a.id); awMarkSeen(a, user); };
+
+  // Managers only see items they own, support or created (the data is already scoped that way).
+  const visible = isP ? items : items.filter(a=>awInvolves(a,user.id)||a.createdBy===user.id);
+  const openAll = visible.filter(awIsOpen).sort(awSort);
+  const awaiting = openAll.filter(a=>a.status==="submitted");
+  const givenByMe = openAll.filter(a=>(a.fromPartnerIds||[]).includes(user.id));
+  const mineOwned = openAll.filter(a=>a.ownerId===user.id && awIsWorking(a));
+  const mineSupp  = openAll.filter(a=>a.ownerId!==user.id && (a.supportIds||[]).includes(user.id) && awIsWorking(a));
+  const mine      = [...mineOwned,...mineSupp].sort(awSort);
+  const myAwaiting = awaiting.filter(a=>awInvolves(a,user.id));
+  const myOverdue = mineOwned.filter(awIsOverdue).length;
+  const firmOverdue = openAll.filter(awIsOverdue).length;
+  const closedList = visible.filter(a=>!awIsOpen(a)).sort((a,b)=>(b.closedAt||"").localeCompare(a.closedAt||""));
+  const myMeetingIds = new Set(visible.map(a=>a.meetingId).filter(Boolean));
+  const meetingsSorted = meetings
+    .filter(m=>isP || m.createdBy===user.id || myMeetingIds.has(m.id))
+    .slice().sort((a,b)=>(b.date||"").localeCompare(a.date||"")||(b.createdAt||"").localeCompare(a.createdAt||""));
+
+  const allFiltered = visible.filter(a=>{
+    if(fOwner&&a.ownerId!==fOwner) return false;
+    if(fCat&&a.category!==fCat) return false;
+    if(fStatus==="open"&&!awIsOpen(a)) return false;
+    if(fStatus==="overdue"&&!awIsOverdue(a)) return false;
+    if(fStatus==="submitted"&&a.status!=="submitted") return false;
+    if(fStatus==="done"&&a.status!=="done") return false;
+    if(fStatus==="dropped"&&a.status!=="dropped") return false;
+    return true;
+  }).sort((a,b)=>awIsOpen(a)!==awIsOpen(b)?(awIsOpen(a)?-1:1):awIsOpen(a)?awSort(a,b):(b.closedAt||"").localeCompare(a.closedAt||""));
+
+  // ── writes ──
+  const newItem = (r, fromIds, meetingId, now) => ({
+    id:genId(), meetingId:meetingId||null, title:r.title.trim(), category:r.category,
+    ownerId:r.ownerId, supportIds:(r.supportIds||[]).filter(x=>x!==r.ownerId), fromPartnerIds:fromIds,
+    dueDate:r.dueDate, originalDueDate:r.dueDate, priority:r.priority||"Medium",
+    status:"open", closedAt:null,
+    createdBy:user.id, createdByName:user.name, createdByRole:user.role, createdAt:now, updatedAt:now, updatedBy:user.id,
+    history:[{ at:now, byId:user.id, byName:user.name, type:"created",
+      change: isP ? (meetingId?"Assigned in meeting":"Assigned") : "Logged by manager",
+      note:`Owner ${nameOf(r.ownerId)} · due ${fmtDate(r.dueDate)} · ${r.priority||"Medium"} priority · given by ${fromIds.map(nameOf).join(", ")}` }],
+  });
+  const saveMeeting = (m, rows) => {
+    const now = new Date().toISOString();
+    if(meetingM?.existing){
+      const id = meetingM.existing.id;
+      setMeetings(prev=>prev.map(x=>x.id===id?{...x,...m,updatedAt:now,updatedBy:user.id}:x));
+      addAudit(user.id,user.name,"AW_EDIT_MEETING",`Edited work meeting of ${m.date}`);
+    } else {
+      const mid = genId();
+      setMeetings(prev=>[...prev,{ id:mid, ...m, createdBy:user.id, createdByName:user.name, createdByRole:user.role, createdAt:now }]);
+      if(rows.length) setItems(prev=>[...prev,...rows.map(r=>newItem(r,m.partnerIds,mid,now))]);
+      addAudit(user.id,user.name,"AW_LOG_MEETING",`Logged work meeting of ${m.date} with ${rows.length} item(s)`);
+      setTab("meet");
+    }
+    setMeetingM(null);
+  };
+  const saveQuick = (r, fromIds, meetingId) => {
+    const now = new Date().toISOString();
+    setItems(prev=>[...prev,newItem(r,fromIds,meetingId,now)]);
+    addAudit(user.id,user.name,"AW_ADD_ITEM",`Work for ${nameOf(r.ownerId)}: ${r.title.trim()}`);
+    setQuickM(null);
+  };
+  const saveDetail = (updated, summary) => {
+    setItems(prev=>prev.map(x=>x.id===updated.id?updated:x));
+    addAudit(user.id,user.name,"AW_UPDATE_ITEM",`${updated.title}: ${summary}`);
+    setDetailId(null);
+  };
+  const accept = a => {
+    const now = new Date().toISOString();
+    setItems(prev=>prev.map(x=>x.id===a.id?{...x,status:"done",closedAt:now,acceptedBy:user.id,acceptedAt:now,updatedAt:now,updatedBy:user.id,
+      history:[...(x.history||[]),{at:now,byId:user.id,byName:user.name,type:"update",change:"Awaiting acceptance → Accepted",note:""}]}:x));
+    addAudit(user.id,user.name,"AW_ACCEPT_ITEM",`Accepted: ${a.title}`);
+    setDetailId(null);
+  };
+  const reopen = (a, reason) => {
+    const now = new Date().toISOString();
+    setItems(prev=>prev.map(x=>x.id===a.id?{...x,status:"in_progress",closedAt:null,updatedAt:now,updatedBy:user.id,reopenCount:(x.reopenCount||0)+1,
+      history:[...(x.history||[]),{at:now,byId:user.id,byName:user.name,type:"update",change:"Reopened · Awaiting acceptance → In progress",note:reason}]}:x));
+    addAudit(user.id,user.name,"AW_REOPEN_ITEM",`Reopened: ${a.title}`);
+    setReopenFor(null); setDetailId(null);
+  };
+  const deleteItem = a => {
+    if(!window.confirm(`Delete this item permanently?\n\n"${a.title}"${isP?'\n\nUse "Dropped" instead if it is simply no longer needed.':""}`)) return;
+    setItems(prev=>prev.filter(x=>x.id!==a.id));
+    addAudit(user.id,user.name,"AW_DELETE_ITEM",`Deleted work item: ${a.title}`);
+    setDetailId(null);
+  };
+  const deleteMeeting = m => {
+    const linked = items.filter(a=>a.meetingId===m.id);
+    if(!window.confirm(`Delete the meeting of ${fmtDate(m.date)}${linked.length?` and its ${linked.length} item${linked.length===1?"":"s"}`:""}? This cannot be undone.`)) return;
+    setMeetings(prev=>prev.filter(x=>x.id!==m.id));
+    if(linked.length) setItems(prev=>prev.filter(a=>a.meetingId!==m.id));
+    addAudit(user.id,user.name,"AW_DELETE_MEETING",`Deleted work meeting of ${m.date} with ${linked.length} item(s)`);
+  };
+
+  const detail = detailId ? items.find(a=>a.id===detailId) : null;
+  // Delete: admin; a partner who created it; a manager who logged it, while nobody else has touched it.
+  const canDeleteItem = a => isAdmin || (a.createdBy===user.id && (isP || (a.history||[]).every(h=>h.byId===user.id)));
+
+  // ── pieces ──
+  const sourceLabel = a => {
+    const m = meetingOf(a.meetingId);
+    const from = (a.fromPartnerIds||[]).map(id=>paFirstName(nameOf(id))).join(", ");
+    if(m) return `${fmtDate(m.date)} meeting${a.createdByRole==="manager"?` · logged by ${paFirstName(a.createdByName)}`:""}`;
+    return `Given by ${from||"—"}`;
+  };
+  const Row = ({ a }) => {
+    const role = a.ownerId===user.id ? "Owner" : (a.supportIds||[]).includes(user.id) ? "Supporting" : (a.fromPartnerIds||[]).includes(user.id) ? "Given by you" : "";
+    return (
+      <div className="pa-row">
+        <div style={{minWidth:0}}>
+          <div className="fw6" style={{fontSize:14,lineHeight:1.35}}>{a.title}{isNew(a)&&<PANewPill/>}</div>
+          <div className="fxc g8 mt4" style={{flexWrap:"wrap"}}>
+            <span style={{fontSize:11,fontWeight:700,color:PA_PRIO_COLOR[a.priority]||"var(--slate)"}}>{a.priority||"Medium"}</span>
+            <span className="tx tsl">{sourceLabel(a)}</span>
+            {role&&<span className="pa-you">You: {role}</span>}
+            {(a.reopenCount||0)>0&&<span className="tx" style={{color:"#b45309"}}>Reopened {a.reopenCount}×</span>}
+          </div>
+        </div>
+        <div><AWCatChip cat={a.category}/></div>
+        <div>
+          <div style={{fontWeight:500,fontSize:13.5}}>{nameOf(a.ownerId)}</div>
+          {(a.supportIds||[]).length>0&&<div className="tx tsl">+ {(a.supportIds||[]).map(id=>paFirstName(nameOf(id))).join(", ")}</div>}
+        </div>
+        <AWDue a={a}/>
+        <div><AWStatusBadge status={a.status}/></div>
+        <div style={{minWidth:0}}><PALatestLine a={a} clamp={2}/></div>
+        <div>
+          {isP&&a.status==="submitted"
+            ? <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                <button className="btn bsc bxs" style={{justifyContent:"center"}} onClick={()=>accept(a)}>Accept</button>
+                <button className="btn bgh bxs" style={{justifyContent:"center"}} onClick={()=>setReopenFor(a)}>Reopen</button>
+              </div>
+            : <button className="btn bgh bsm" onClick={()=>openDetail(a)}>{awIsOpen(a)?"Update":"View"}</button>}
+        </div>
+      </div>
+    );
+  };
+  const Table = ({ list, empty }) => (
+    <div className="card" style={{padding:0,overflow:"hidden"}}>
+      {list.length===0 ? <div className="es"><div className="es-icon"><I n="task" s={36}/></div>{empty}</div> : <>
+        <div className="pa-row hd"><div className="pa-hd">Work</div><div className="pa-hd">Category</div><div className="pa-hd">Owner</div><div className="pa-hd">Due</div><div className="pa-hd">Status</div><div className="pa-hd">Latest update</div><div/></div>
+        {list.map(a=><Row key={a.id} a={a}/>)}
+      </>}
+    </div>
+  );
+  const MeetingCard = ({ m }) => {
+    const list = visible.filter(a=>a.meetingId===m.id).sort((a,b)=>awIsOpen(a)!==awIsOpen(b)?(awIsOpen(a)?-1:1):awSort(a,b));
+    const closedN = list.filter(a=>!awIsOpen(a)).length;
+    const pct = list.length ? Math.round(closedN/list.length*100) : 0;
+    const canEdit = isP || m.createdBy===user.id;
+    return (
+      <div className="card" style={{display:"flex",flexDirection:"column",gap:14}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:20}}>
+          <div style={{minWidth:0}}>
+            <div style={{fontFamily:"'Playfair Display',serif",fontSize:19}}>{m.title}</div>
+            <div className="ts tsl mt4">{fmtDate(m.date)} · Partners: {(m.partnerIds||[]).map(nameOf).join(", ")||"—"}{m.createdByRole==="manager"?` · logged by ${m.createdByName}`:""}</div>
+            {m.notes&&<div className="ts" style={{color:"#334155",marginTop:8,maxWidth:760,lineHeight:1.5,whiteSpace:"pre-wrap"}}>{m.notes}</div>}
+            {canEdit&&<div className="fx g8" style={{marginTop:10}}>
+              <button className="btn bgh bxs" onClick={()=>setQuickM({meetingId:m.id})}><I n="plus" s={12}/>Add item</button>
+              <button className="btn bgh bxs" onClick={()=>setMeetingM({existing:m})}><I n="edit" s={12}/>Edit meeting</button>
+              {(isAdmin||m.createdBy===user.id)&&<button className="btn bgh bxs" style={{color:"var(--red)"}} onClick={()=>deleteMeeting(m)}><I n="trash" s={12}/>Delete</button>}
+            </div>}
+          </div>
+          <div style={{width:200,flexShrink:0,textAlign:"right"}}>
+            <div className="ts fw6">{closedN} of {list.length} closed</div>
+            <div className="pbw" style={{marginTop:7}}><div className="pbf pbok" style={{width:Math.max(pct,list.length?2:0)+"%"}}/></div>
+          </div>
+        </div>
+        {list.length>0&&<div style={{borderTop:"1px solid var(--border)"}}>
+          {list.map(a=>(
+            <div key={a.id} className={`pa-mi${isNew(a)?" is-new":""}`} role="button" tabIndex={0} onClick={()=>openDetail(a)} onKeyDown={e=>{if(e.key==="Enter")openDetail(a);}}>
+              <div style={{minWidth:0}}>
+                <div style={{fontSize:13.5,fontWeight:500}}>{a.title}{isNew(a)&&<PANewPill/>}</div>
+                <PALatestLine a={a}/>
+              </div>
+              <div><AWCatChip cat={a.category}/></div>
+              <div className="ts">{nameOf(a.ownerId)}</div>
+              <AWDue a={a}/>
+              <div><AWStatusBadge status={a.status}/></div>
+            </div>
+          ))}
+        </div>}
+      </div>
+    );
+  };
+
+  const tabs = isP ? [
+    ["accept",`Awaiting acceptance (${awaiting.length})`],
+    ["given",`Given by me (${givenByMe.length})`],
+    ["bymgr","By manager"],
+    ["meet","By meeting"],
+    ["all","All"],
+  ] : [
+    ["mine",`My work (${mine.length})`],
+    ["waiting",`Awaiting acceptance (${myAwaiting.length})`],
+    ["meet","By meeting"],
+    ["closed","Closed"],
+  ];
+  const mgrGroups = managers.map(m=>({ m, list:openAll.filter(a=>a.ownerId===m.id) })).filter(g=>g.list.length);
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:18}}>
+      <style>{PA_CSS}</style>
+      <div className="sh" style={{marginBottom:0}}>
+        <div>
+          <div className="card-title">{isP?"Firm work given to managers, tracked to acceptance":"Work given to you by partners"}</div>
+          <div className="card-sub mt4 ts">Staffing, operations, business development, internal events, training and admin. Engagement work stays in timesheets.
+            <span style={{marginLeft:10}} className="pa-you"><I n="lock" s={10}/> Partners and managers only</span>
+          </div>
+        </div>
+        <div className="fxc g8">
+          <button className="btn bgh" onClick={()=>setQuickM({meetingId:""})}><I n="plus" s={15}/>{isP?"Assign work":"Add item"}</button>
+          <button className="btn bp" onClick={()=>setMeetingM({})}><I n="calendar" s={15}/>{isP?"Log meeting":"Log meeting with partners"}</button>
+        </div>
+      </div>
+
+      <div className="sg" style={{marginBottom:0}}>
+        {isP ? <>
+          <div className="sc"><div className="sv">{givenByMe.length}</div><div className="sl">Open, given by you</div></div>
+          <div className="sc" style={awaiting.length?{borderColor:"#fde68a"}:undefined}><div className="sv" style={{color:awaiting.length?"#b45309":"var(--green)"}}>{awaiting.length}</div><div className="sl">Awaiting acceptance</div></div>
+          <div className="sc"><div className="sv" style={{color:firmOverdue?"#b91c1c":"var(--green)"}}>{firmOverdue}</div><div className="sl">Overdue</div></div>
+          <div className="sc"><div className="sv">{openAll.length}</div><div className="sl">Firm-wide open</div></div>
+        </> : <>
+          <div className="sc"><div className="sv">{mineOwned.length}</div><div className="sl">My open{mineSupp.length?` · +${mineSupp.length} supporting`:""}</div></div>
+          <div className="sc" style={myOverdue?{borderColor:"#fecaca"}:undefined}><div className="sv" style={{color:myOverdue?"#b91c1c":"var(--green)"}}>{myOverdue}</div><div className="sl">My overdue</div></div>
+          <div className="sc"><div className="sv" style={{color:myAwaiting.length?"#b45309":"var(--navy)"}}>{myAwaiting.length}</div><div className="sl">Awaiting acceptance</div></div>
+          <div className="sc"><div className="sv">{closedList.filter(a=>a.status==="done").length}</div><div className="sl">Accepted</div></div>
+        </>}
+      </div>
+
+      <div className="tabs" style={{marginBottom:0,alignSelf:"flex-start"}}>
+        {tabs.map(([id,label])=><div key={id} className={`tab ${tab===id?"active":""}`} role="button" tabIndex={0} onClick={()=>setTab(id)} onKeyDown={e=>{if(e.key==="Enter")setTab(id);}}>{label}</div>)}
+      </div>
+
+      {!loaded&&<div className="al al-i"><I n="info" s={15}/><div>Loading work items...</div></div>}
+
+      {tab==="accept"&&<>
+        <div className="ts tsl">Marked done by managers. Any partner can accept or reopen.</div>
+        <Table list={awaiting} empty="Nothing waiting for acceptance."/>
+      </>}
+      {tab==="given"&&<>
+        <div className="ts tsl">Open items you gave, overdue first.</div>
+        <Table list={givenByMe} empty="Nothing open that you gave."/>
+      </>}
+      {tab==="mine"&&<>
+        <div className="ts tsl">Items you own or support, overdue first.</div>
+        <Table list={mine} empty="Nothing open on your plate."/>
+      </>}
+      {tab==="waiting"&&<>
+        <div className="ts tsl">Items you've marked done. A partner will accept or reopen them.</div>
+        <Table list={myAwaiting} empty="Nothing waiting for a partner."/>
+      </>}
+      {tab==="closed"&&<Table list={closedList} empty="Nothing closed yet."/>}
+
+      {tab==="bymgr"&&<div style={{display:"flex",flexDirection:"column",gap:14}}>
+        {mgrGroups.length===0&&<div className="card"><div className="es"><div className="es-icon"><I n="check" s={36}/></div>All clear. Nothing open.</div></div>}
+        {mgrGroups.map(({m,list})=>{
+          const over = list.filter(awIsOverdue).length;
+          const wait = list.filter(a=>a.status==="submitted").length;
+          return (
+            <div key={m.id} className="card" style={{padding:0,overflow:"hidden"}}>
+              <div className="fxc g12" style={{padding:"14px 20px",background:"var(--cream)",borderBottom:"1px solid var(--border)"}}>
+                <div style={{width:34,height:34,borderRadius:"50%",background:"#dbeafe",color:"#1e40af",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:13}}>{m.name.split(" ").map(x=>x[0]).join("").slice(0,2).toUpperCase()}</div>
+                <div className="fw6" style={{fontSize:14.5}}>{m.name}</div>
+                <div className="ts tsl">{list.length} open{over?` · ${over} overdue`:""}{wait?` · ${wait} awaiting acceptance`:""}</div>
+              </div>
+              {list.map(a=>(
+                <div key={a.id} className="pa-ri">
+                  <div style={{minWidth:0}}>
+                    <div className="fw6" style={{fontSize:13.5}}>{a.title}{isNew(a)&&<PANewPill/>}</div>
+                    <PALatestLine a={a} clamp={2}/>
+                  </div>
+                  <div><AWCatChip cat={a.category}/></div>
+                  <AWDue a={a}/>
+                  <div><AWStatusBadge status={a.status}/></div>
+                  <div className="fx g8" style={{justifyContent:"flex-end"}}>
+                    {a.status==="submitted"&&<button className="btn bsc bsm" onClick={()=>accept(a)}><I n="check" s={12}/>Accept</button>}
+                    {a.status==="submitted"&&<button className="btn bgh bsm" onClick={()=>setReopenFor(a)}>Reopen</button>}
+                    {a.status!=="submitted"&&<button className="btn bgh bsm" onClick={()=>openDetail(a)}>Update or new date</button>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        })}
+      </div>}
+
+      {tab==="meet"&&<div style={{display:"flex",flexDirection:"column",gap:14}}>
+        {meetingsSorted.length===0&&<div className="card"><div className="es"><div className="es-icon"><I n="calendar" s={36}/></div>No meetings logged yet.</div></div>}
+        {meetingsSorted.map(m=><MeetingCard key={m.id} m={m}/>)}
+      </div>}
+
+      {tab==="all"&&<>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+          <select className="fs" aria-label="Owner" style={{width:"auto",fontSize:13,padding:"8px 12px"}} value={fOwner} onChange={e=>setFOwner(e.target.value)}>
+            <option value="">All managers</option>{[...new Set([...managers.map(p=>p.id),...items.map(a=>a.ownerId)])].map(id=><option key={id} value={id}>{nameOf(id)}</option>)}
+          </select>
+          <select className="fs" aria-label="Category" style={{width:"auto",fontSize:13,padding:"8px 12px"}} value={fCat} onChange={e=>setFCat(e.target.value)}>
+            <option value="">All categories</option>{AW_CATEGORIES.map(c=><option key={c}>{c}</option>)}
+          </select>
+          <select className="fs" aria-label="Status" style={{width:"auto",fontSize:13,padding:"8px 12px"}} value={fStatus} onChange={e=>setFStatus(e.target.value)}>
+            <option value="open">Not yet closed</option><option value="overdue">Overdue only</option><option value="submitted">Awaiting acceptance</option><option value="done">Accepted</option><option value="dropped">Dropped</option><option value="all">All statuses</option>
+          </select>
+          {(fOwner||fCat||fStatus!=="open")&&<button className="btn bgh bsm" onClick={()=>{setFOwner("");setFCat("");setFStatus("open");}}>✕ Clear</button>}
+          <span className="tx tsl" style={{marginLeft:"auto",fontSize:12}}>{allFiltered.length} item{allFiltered.length===1?"":"s"}</span>
+        </div>
+        <Table list={allFiltered} empty="No items match these filters."/>
+      </>}
+
+      {meetingM&&<AWMeetingModal user={user} partners={partners} managers={managers} existing={meetingM.existing} onClose={()=>setMeetingM(null)} onSave={saveMeeting}/>}
+      {quickM&&<AWQuickAddModal user={user} partners={partners} managers={managers} meetings={meetingsSorted} defaultMeetingId={quickM.meetingId} onClose={()=>setQuickM(null)} onSave={saveQuick}/>}
+      {detail&&<AWDetailDrawer key={detail.id} user={user} a={detail} users={users} partners={partners} managers={managers} meeting={meetingOf(detail.meetingId)}
+        canDelete={canDeleteItem(detail)} wasNew={detailNew} onClose={()=>setDetailId(null)} onSave={saveDetail} onDelete={deleteItem}
+        onAccept={accept} onReopen={a=>setReopenFor(a)}/>}
+      {reopenFor&&<AWReopenModal a={reopenFor} onClose={()=>setReopenFor(null)} onSave={reason=>reopen(reopenFor,reason)}/>}
+    </div>
+  );
+}
+
+// Dashboard card. Managers: their open work. Partners: items awaiting acceptance.
+function AWDashboardCard({ user, items=[], onOpen }) {
+  if(user.role!=="partner"&&user.role!=="manager") return null;
+  const isP = user.role==="partner";
+  const list = isP
+    ? items.filter(a=>a.status==="submitted").sort((a,b)=>(a.submittedAt||"").localeCompare(b.submittedAt||""))
+    : items.filter(a=>a.ownerId===user.id&&awIsWorking(a)).sort(awSort);
+  if(!list.length) return null;
+  const over = isP ? 0 : list.filter(awIsOverdue).length;
+  return (
+    <div className="card mb22">
+      <style>{PA_CSS}</style>
+      <div className="fxb mb8">
+        <div className="fxc g8">
+          <div className="card-title">{isP?"Work awaiting your acceptance":"My assigned work"}</div>
+          {over>0&&<span className="pa-chip" style={{background:"#fee2e2",color:"#b91c1c",fontWeight:600}}>{over} overdue</span>}
+          <span className="pa-chip" style={{background:"var(--cream)",color:"var(--slate)"}}>{list.length} {isP?"waiting":"open"}</span>
+        </div>
+        <button className="btn bgh bsm" onClick={onOpen}>{isP?"Review":"View all"} <I n="arrowright" s={13}/></button>
+      </div>
+      {list.slice(0,5).map(a=>{
+        const info = awDueInfo(a);
+        return (
+          <div key={a.id} style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) 170px 150px",gap:14,alignItems:"center",padding:"10px 0",borderTop:"1px solid var(--cream)"}}>
+            <div style={{fontSize:13.5,fontWeight:500}}>{a.title}{awIsNewFor(a,user)&&<PANewPill/>}</div>
+            <div className="tx tsl">{a.category}</div>
+            <div style={{fontSize:12.5,fontWeight:600,textAlign:"right",color:isP?"#b45309":info.kind==="ok"?"var(--slate)":PA_DUE_COLOR[info.kind]}}>{isP?`Done by ${paFirstName(a.submittedByName||"")||"manager"}`:info.sub}</div>
+          </div>
+        );
+      })}
+      {list.length>5&&<div className="tx tsl mt8">+ {list.length-5} more</div>}
+    </div>
+  );
+}
+
+
 // ROOT
 // ══════════════════════════════════════════════════════════════
 export default function App() {
@@ -7323,6 +8187,26 @@ export default function App() {
   // v37: Partner Actionables (meetings amongst partners and their action items). Partner-only.
   const [paMeetings, setPaMeetings] = useLS("partner_meetings", [], isPartner);
   const [paActions, setPaActions, paActionsLoaded] = useLS("partner_actions", [], isPartner);
+  // v49: Assigned Work. Partners load everything; managers only items they own, support or created.
+  const isManagerUser = !!currentUser && currentUser.role==="manager";
+  const awEnabled = signedIn && (isPartner || isManagerUser);
+  const awScope = useMemo(()=> isManagerUser ? ((colName, emit) => {
+    const col = collection(db, colName);
+    return listenMerged([
+      query(col, where("ownerId","==",currentUser.id)),
+      query(col, where("supportIds","array-contains",currentUser.id)),
+      query(col, where("createdBy","==",currentUser.id)),
+    ], emit, colName+" (mine)");
+  }) : null, [isManagerUser, currentUser]);
+  const [awMeetings, setAwMeetings] = useLS("work_meetings", [], awEnabled);
+  // v50: show a notice when a save is refused or fails, instead of the screen quietly flipping back
+  const [writeErr,setWriteErr] = useState(null);
+  useEffect(()=>{
+    const h = e => setWriteErr({ ...(e.detail||{}), at:Date.now() });
+    window.addEventListener("msna-write-error", h);
+    return () => window.removeEventListener("msna-write-error", h);
+  },[]);
+  const [awItems, setAwItems, awItemsLoaded] = useLS("work_items", [], awEnabled, awScope, isManagerUser?`mgr:${currentUser.id}`:"all");
 
   // Partners see cost rates merged onto each user (from "rates"); everyone else never gets them.
   const usersView = useMemo(()=>{
@@ -7377,7 +8261,7 @@ export default function App() {
   // ── Migration: fix existing pending intern entries on projects with no managers ──
   // These entries were stuck — no manager to approve them, not visible to partner either
   useEffect(() => {
-    if(!tss.length||!projects.length) return;
+    if(!isPartner||!tss.length||!projects.length) return; // v50: partners only (others aren't allowed to write it)
     const toFix = tss.filter(t => {
       if(!["pending","resubmitted"].includes(t.status)) return false;
       const u2 = users.find(u=>u.id===t.userId);
@@ -7453,7 +8337,7 @@ export default function App() {
     return cnt;
   })() : 0;
 
-  const titles={dashboard:"Dashboard",week:"My Week",timesheets:"Timesheets",projects:"Projects",approvals:"Approvals",reports:"Reports",profitability:"Profitability",productivity:"Productivity Dashboard",compliance:"Compliance",leave:"Leave",appraisal:"Performance Appraisal",goals:"Goal Setting",audit:"Audit Trail",users:"User Management",changepassword:"Change Password",partneractions:"Partner Actionables"};
+  const titles={dashboard:"Dashboard",week:"My Week",timesheets:"Timesheets",projects:"Projects",approvals:"Approvals",reports:"Reports",profitability:"Profitability",productivity:"Productivity Dashboard",compliance:"Compliance",leave:"Leave",appraisal:"Performance Appraisal",goals:"Goal Setting",audit:"Audit Trail",users:"User Management",changepassword:"Change Password",partneractions:"Partner Actionables",assignedwork:"Assigned Work"};
   const paOverdueCount = (isPartner && currentUser) ? paMyOverdueCount(paActions, currentUser.id) : 0;
 
   if(!currentUser) return <><style>{CSS}</style><Login onLogin={u=>{setCU(u);setTab("dashboard");}}/></>;
@@ -7472,7 +8356,8 @@ export default function App() {
           projClosurePendingCount={currentUser.role==="partner" ? projects.filter(p=>p.status==="pending_closure").length : 0}
           appraisalPendingCount={appraisalPendingCount}
           goalPendingCount={goalPendingCount}
-          paOverdueCount={paOverdueCount}/>
+          paOverdueCount={paOverdueCount}
+          awCount={awBadgeCount(awItems, currentUser)}/>
         <div className="main">
           <div className="topbar">
             <div className="tb-title">{titles[tab]}</div>
@@ -7482,7 +8367,16 @@ export default function App() {
             </div>
           </div>
           <div className="content">
-            {tab==="dashboard"  &&<Dashboard    user={currentUser} {...db_props} paActions={isPartner?paActions:[]} onOpenActions={()=>setTab("partneractions")} onOpenProjects={()=>setTab("projects")}/>}
+            {writeErr&&(
+              <div className="al al-d" style={{alignItems:"center",justifyContent:"space-between"}}>
+                <div style={{display:"flex",gap:8,alignItems:"flex-start"}}><I n="alert" s={16}/><div>
+                  <strong>Your last change was not saved.</strong> {writeErr.code==="permission-denied"?"Your access does not allow this change.":"The connection or server refused it."} Refresh the page and try again. If it keeps happening, tell the Admin and mention: <span className="mono">{writeErr.col}{writeErr.code?` · ${writeErr.code}`:""}</span>
+                </div></div>
+                <button className="btn bgh bsm" onClick={()=>setWriteErr(null)}>Dismiss</button>
+              </div>
+            )}
+            {tab==="dashboard"  &&<Dashboard    user={currentUser} {...db_props} paActions={isPartner?paActions:[]} onOpenActions={()=>setTab("partneractions")} onOpenProjects={()=>setTab("projects")} awItems={awItems} onOpenWork={()=>setTab("assignedwork")}/>}
+            {tab==="assignedwork"&&(isPartner||currentUser.role==="manager")&&<AssignedWork user={currentUser} users={usersView} meetings={awMeetings} setMeetings={setAwMeetings} items={awItems} setItems={setAwItems} loaded={awItemsLoaded}/>}
             {tab==="partneractions"&&isPartner&&<PartnerActions user={currentUser} users={usersView} meetings={paMeetings} setMeetings={setPaMeetings} actions={paActions} setActions={setPaActions} loaded={paActionsLoaded}/>}
             {tab==="week"       &&<WeekView     user={currentUser} {...db_props}/>}
             {tab==="timesheets" &&<Timesheets   user={currentUser} {...db_props}/>}
