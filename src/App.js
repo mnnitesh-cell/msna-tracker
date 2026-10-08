@@ -1,4 +1,4 @@
-// MSNA Time Tracker v50: older codes confirm "Signed EL received" instead of draft; EL saves are field-level; failed saves now show a notice. v49: Assigned Work (firm work given by partners to managers, accept/reopen). v48: Engagement Letter tracking (draft EL asked at code creation, EL pending flags, signed EL check at closure). v47: fixes v46 Update button (openDetail called itself). v46: latest update at top of drawer, update line and "New" pills in lists.
+// MSNA Time Tracker v51: Assigned Work takes several managers per item, all equal. v50: older codes confirm "Signed EL received" instead of draft; EL saves are field-level; failed saves now show a notice. v49: Assigned Work (firm work given by partners to managers, accept/reopen). v48: Engagement Letter tracking (draft EL asked at code creation, EL pending flags, signed EL check at closure). v47: fixes v46 Update button (openDetail called itself). v46: latest update at top of drawer, update line and "New" pills in lists.
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { initializeApp } from "firebase/app";
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, terminate, clearIndexedDbPersistence, waitForPendingWrites, collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, getDocs, query, where } from "firebase/firestore";
@@ -7367,6 +7367,9 @@ const awRank = a => a.status==="submitted" ? 3 : (k => k==="over"?0 : k==="soon"
 const awSort = (a,b) => awRank(a)-awRank(b) || (a.dueDate||"9999").localeCompare(b.dueDate||"9999");
 const awBlankRow = () => ({ key:genId(), title:"", category:"", ownerId:"", supportIds:[], dueDate:"", priority:"Medium" });
 const awInvolves = (a, uid) => a.ownerId===uid || (a.supportIds||[]).includes(uid);
+// v51: managers on an item are equal. Stored as ownerId (first picked) + supportIds (the rest), so older items still work.
+const awMgrIds = a => [a.ownerId, ...(a.supportIds||[])].filter((x,i,arr)=>x&&arr.indexOf(x)===i);
+const awSetMgrs = ids => ({ ownerId: ids[0]||"", supportIds: ids.slice(1) });
 // Who should see a "New" pill: partners who gave it (or any partner once it awaits acceptance); the owner and supporting managers.
 const awRelevant = (a, user) => user.role==="partner"
   ? ((a.fromPartnerIds||[]).includes(user.id) || a.status==="submitted")
@@ -7387,7 +7390,7 @@ const awMarkSeen = (a, user) => {
 // Sidebar badge: partners → items awaiting acceptance (firm-wide, any partner can accept); managers → their own overdue.
 const awBadgeCount = (items, user) => !user ? 0 : user.role==="partner"
   ? items.filter(a=>a.status==="submitted").length
-  : items.filter(a=>a.ownerId===user.id && awIsOverdue(a)).length;
+  : items.filter(a=>awInvolves(a,user.id) && awIsOverdue(a)).length;
 
 function AWCatChip({ cat }) {
   return <span className="pa-chip" style={AW_CAT_STYLE[cat]||AW_CAT_STYLE.Other}>{cat||"—"}</span>;
@@ -7438,7 +7441,7 @@ function AWMeetingModal({ user, partners, managers, existing, onClose, onSave })
     if(!isEdit){
       for(let i=0;i<rows.length;i++){
         const r = rows[i]; if(isBlank(r)) continue;
-        const miss = [!r.title.trim()&&"work",!r.category&&"category",!r.ownerId&&"owner",!r.dueDate&&"due date"].filter(Boolean);
+        const miss = [!r.title.trim()&&"work",!r.category&&"category",!r.ownerId&&"at least one manager",!r.dueDate&&"due date"].filter(Boolean);
         if(miss.length){ setErr(`Row ${i+1} needs: ${miss.join(", ")}.`); return; }
       }
     }
@@ -7465,14 +7468,14 @@ function AWMeetingModal({ user, partners, managers, existing, onClose, onSave })
           <div style={{borderTop:"1.5px solid var(--border)",paddingTop:16}}>
             <div className="fxb mb8">
               <div className="fw6" style={{fontSize:15}}>Work <span className="tsl" style={{fontWeight:500}}>({filled.length})</span></div>
-              <div className="tx tsl">Each needs the work, a category, one manager as owner and a due date. Blank rows are ignored.</div>
+              <div className="tx tsl">Each needs the work, a category, at least one manager and a due date. Blank rows are ignored.</div>
             </div>
-            <div className="pa-grid" style={{marginBottom:6}}>
-              <div className="pa-hd">#</div><div className="pa-hd">Work</div><div className="pa-hd">Category</div><div className="pa-hd">Owner</div><div className="pa-hd">Supporting</div><div className="pa-hd">Due date</div><div className="pa-hd">Priority</div><div/>
+            <div className="pa-grid" style={{marginBottom:6,gridTemplateColumns:"24px minmax(0,1fr) 165px 300px 145px 100px 28px"}}>
+              <div className="pa-hd">#</div><div className="pa-hd">Work</div><div className="pa-hd">Category</div><div className="pa-hd">Managers</div><div className="pa-hd">Due date</div><div className="pa-hd">Priority</div><div/>
             </div>
             <div style={{display:"flex",flexDirection:"column",gap:8}}>
               {rows.map((r,idx)=>(
-                <div key={r.key} className="pa-grid">
+                <div key={r.key} className="pa-grid" style={{gridTemplateColumns:"24px minmax(0,1fr) 165px 300px 145px 100px 28px"}}>
                   <div className="ts tsl fw6">{idx+1}</div>
                   <input className="fi" aria-label={`Work ${idx+1}`} placeholder="What needs to be done?" value={r.title}
                     onChange={e=>setRow(r.key,{title:e.target.value})}
@@ -7480,10 +7483,7 @@ function AWMeetingModal({ user, partners, managers, existing, onClose, onSave })
                   <select className="fs" aria-label="Category" value={r.category} onChange={e=>setRow(r.key,{category:e.target.value})}>
                     <option value="">Select</option>{AW_CATEGORIES.map(c=><option key={c}>{c}</option>)}
                   </select>
-                  <select className="fs" aria-label="Owner" value={r.ownerId} onChange={e=>setRow(r.key,{ownerId:e.target.value,supportIds:r.supportIds.filter(x=>x!==e.target.value)})}>
-                    <option value="">Select</option>{managers.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
-                  </select>
-                  <AWPeopleChips people={managers} exclude={r.ownerId} value={r.supportIds} onChange={v=>setRow(r.key,{supportIds:v})}/>
+                  <AWPeopleChips people={managers} value={awMgrIds(r)} onChange={v=>setRow(r.key,awSetMgrs(v))}/>
                   <input type="date" className="fi" aria-label="Due date" value={r.dueDate} onChange={e=>setRow(r.key,{dueDate:e.target.value})}/>
                   <select className="fs" aria-label="Priority" value={r.priority} onChange={e=>setRow(r.key,{priority:e.target.value})}>
                     {PA_PRIORITIES.map(p=><option key={p}>{p}</option>)}
@@ -7519,7 +7519,7 @@ function AWQuickAddModal({ user, partners, managers, meetings, defaultMeetingId,
     if(m && (m.partnerIds||[]).length) setFrom(m.partnerIds);
   };
   const save = () => {
-    const miss = [!r.title.trim()&&"work",!r.category&&"category",!r.ownerId&&"owner",!r.dueDate&&"due date",!from.length&&"given by"].filter(Boolean);
+    const miss = [!r.title.trim()&&"work",!r.category&&"category",!r.ownerId&&"at least one manager",!r.dueDate&&"due date",!from.length&&"given by"].filter(Boolean);
     if(miss.length){ setErr(`Please fill in: ${miss.join(", ")}.`); return; }
     onSave(r, from, meetingId||null);
   };
@@ -7538,15 +7538,12 @@ function AWQuickAddModal({ user, partners, managers, meetings, defaultMeetingId,
           <div className="fg"><label className="fl" htmlFor="aw-qp">Priority</label>
             <select id="aw-qp" className="fs" value={r.priority} onChange={e=>setR(x=>({...x,priority:e.target.value}))}>{PA_PRIORITIES.map(p=><option key={p}>{p}</option>)}</select>
           </div>
-          <div className="fg"><label className="fl" htmlFor="aw-qo">Owner (manager)</label>
-            <select id="aw-qo" className="fs" value={r.ownerId} onChange={e=>setR(x=>({...x,ownerId:e.target.value,supportIds:x.supportIds.filter(s=>s!==e.target.value)}))}><option value="">Select</option>{managers.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select>
-          </div>
-          <div className="fg"><label className="fl" htmlFor="aw-qd">Due date</label>
+          <div className="fg" style={{gridColumn:"1 / -1"}}><label className="fl" htmlFor="aw-qd">Due date</label>
             <input id="aw-qd" type="date" className="fi" value={r.dueDate} onChange={e=>setR(x=>({...x,dueDate:e.target.value}))}/>
           </div>
         </div>
-        <div className="fg"><div className="fl">Supporting managers (optional)</div>
-          <AWPeopleChips people={managers} exclude={r.ownerId} value={r.supportIds} onChange={v=>setR(x=>({...x,supportIds:v}))}/>
+        <div className="fg"><div className="fl">Managers * <span className="tsl" style={{textTransform:"none",letterSpacing:0,fontWeight:400}}>(select one or more; each can update it and mark it done)</span></div>
+          <AWPeopleChips people={managers} value={awMgrIds(r)} onChange={v=>setR(x=>({...x,...awSetMgrs(v)}))} big/>
         </div>
         <div className="fg"><label className="fl" htmlFor="aw-qm">From meeting</label>
           <select id="aw-qm" className="fs" value={meetingId} onChange={e=>pickMeeting(e.target.value)}>
@@ -7606,7 +7603,7 @@ function AWDetailDrawer({ user, a, users, partners, managers, meeting, canDelete
   const closed = !awIsOpen(a);
   const canUpdate = isP || (awInvolves(a, user.id) && !closed);
   const willWork = status==="open"||status==="in_progress";
-  const ownerOptions = managers.some(p=>p.id===a.ownerId) ? managers : [...managers, users.find(u=>u.id===a.ownerId)].filter(Boolean);
+  const mgrOptions = [...managers, ...awMgrIds(a).filter(id=>!managers.some(m=>m.id===id)).map(id=>users.find(u=>u.id===id)).filter(Boolean)];
 
   const save = () => {
     setErr("");
@@ -7620,13 +7617,13 @@ function AWDetailDrawer({ user, a, users, partners, managers, meeting, canDelete
     let details = {};
     if(editing){
       if(!d.title.trim()){ setErr("The work description is required."); return; }
-      if(!d.category||!d.ownerId){ setErr("Category and owner are required."); return; }
+      if(!d.category||!d.ownerId){ setErr("Category and at least one manager are required."); return; }
       if(!d.fromPartnerIds.length){ setErr("Select at least one partner under Given by."); return; }
       const sup = d.supportIds.filter(x=>x!==d.ownerId);
       if(d.title.trim()!==a.title) changes.push("Text edited");
       if(d.category!==a.category) changes.push(`Category ${a.category} → ${d.category}`);
-      if(d.ownerId!==a.ownerId) changes.push(`Owner ${nameOf(a.ownerId)} → ${nameOf(d.ownerId)}`);
-      if([...sup].sort().join()!==[...(a.supportIds||[])].sort().join()) changes.push(`Supporting: ${sup.length?sup.map(nameOf).join(", "):"none"}`);
+      const newMgrs = [d.ownerId, ...sup];
+      if([...newMgrs].sort().join()!==[...awMgrIds(a)].sort().join()) changes.push(`Managers: ${newMgrs.map(nameOf).join(", ")}`);
       if([...d.fromPartnerIds].sort().join()!==[...(a.fromPartnerIds||[])].sort().join()) changes.push(`Given by: ${d.fromPartnerIds.map(nameOf).join(", ")}`);
       details = { title:d.title.trim(), category:d.category, ownerId:d.ownerId, supportIds:sup, fromPartnerIds:d.fromPartnerIds };
     }
@@ -7694,8 +7691,7 @@ function AWDetailDrawer({ user, a, users, partners, managers, meeting, canDelete
 
         {!editing?(
           <div className="pa-meta">
-            <div><div className="pa-k">Owner</div><div className="pa-v fw6">{nameOf(a.ownerId)}</div></div>
-            <div><div className="pa-k">Supporting</div><div className="pa-v" style={{color:(a.supportIds||[]).length?"var(--navy)":"var(--slate)"}}>{(a.supportIds||[]).length?(a.supportIds||[]).map(nameOf).join(", "):"None"}</div></div>
+            <div style={{gridColumn:"span 2"}}><div className="pa-k">Managers</div><div className="pa-v fw6">{awMgrIds(a).map(nameOf).join(", ")||"—"}</div></div>
             <div><div className="pa-k">Priority</div><div className="pa-v fw6" style={{color:PA_PRIO_COLOR[a.priority]||"var(--slate)"}}>{a.priority||"Medium"}</div></div>
             <div><div className="pa-k">Due</div><div className="pa-v fw6" style={{color:PA_DUE_COLOR[info.kind]}}>{a.dueDate?fmtDate(a.dueDate):"—"}</div>
               {a.originalDueDate&&a.originalDueDate!==a.dueDate&&<div className="tx tsl">Originally {fmtDate(a.originalDueDate)}</div>}</div>
@@ -7705,8 +7701,7 @@ function AWDetailDrawer({ user, a, users, partners, managers, meeting, canDelete
         ):(
           <div className="pa-meta" style={{gridTemplateColumns:"1fr 1fr"}}>
             <div><label className="fl" htmlFor="aw-ec">Category</label><select id="aw-ec" className="fs" value={d.category} onChange={e=>setD(x=>({...x,category:e.target.value}))}>{AW_CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></div>
-            <div><label className="fl" htmlFor="aw-eo">Owner</label><select id="aw-eo" className="fs" value={d.ownerId} onChange={e=>setD(x=>({...x,ownerId:e.target.value,supportIds:x.supportIds.filter(s=>s!==e.target.value)}))}>{ownerOptions.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></div>
-            <div><div className="fl">Supporting</div><AWPeopleChips people={managers} exclude={d.ownerId} value={d.supportIds} onChange={v=>setD(x=>({...x,supportIds:v}))}/></div>
+            <div style={{gridColumn:"1 / -1"}}><div className="fl">Managers</div><AWPeopleChips people={mgrOptions} value={awMgrIds(d)} onChange={v=>setD(x=>({...x,...awSetMgrs(v)}))}/></div>
             <div><div className="fl">Given by</div><AWPeopleChips people={partners} value={d.fromPartnerIds} onChange={v=>setD(x=>({...x,fromPartnerIds:v}))}/></div>
           </div>
         )}
@@ -7790,11 +7785,9 @@ function AssignedWork({ user, users=[], meetings=[], setMeetings, items=[], setI
   const openAll = visible.filter(awIsOpen).sort(awSort);
   const awaiting = openAll.filter(a=>a.status==="submitted");
   const givenByMe = openAll.filter(a=>(a.fromPartnerIds||[]).includes(user.id));
-  const mineOwned = openAll.filter(a=>a.ownerId===user.id && awIsWorking(a));
-  const mineSupp  = openAll.filter(a=>a.ownerId!==user.id && (a.supportIds||[]).includes(user.id) && awIsWorking(a));
-  const mine      = [...mineOwned,...mineSupp].sort(awSort);
+  const mine      = openAll.filter(a=>awInvolves(a,user.id) && awIsWorking(a)).sort(awSort);
   const myAwaiting = awaiting.filter(a=>awInvolves(a,user.id));
-  const myOverdue = mineOwned.filter(awIsOverdue).length;
+  const myOverdue = mine.filter(awIsOverdue).length;
   const firmOverdue = openAll.filter(awIsOverdue).length;
   const closedList = visible.filter(a=>!awIsOpen(a)).sort((a,b)=>(b.closedAt||"").localeCompare(a.closedAt||""));
   const myMeetingIds = new Set(visible.map(a=>a.meetingId).filter(Boolean));
@@ -7803,7 +7796,7 @@ function AssignedWork({ user, users=[], meetings=[], setMeetings, items=[], setI
     .slice().sort((a,b)=>(b.date||"").localeCompare(a.date||"")||(b.createdAt||"").localeCompare(a.createdAt||""));
 
   const allFiltered = visible.filter(a=>{
-    if(fOwner&&a.ownerId!==fOwner) return false;
+    if(fOwner&&!awInvolves(a,fOwner)) return false;
     if(fCat&&a.category!==fCat) return false;
     if(fStatus==="open"&&!awIsOpen(a)) return false;
     if(fStatus==="overdue"&&!awIsOverdue(a)) return false;
@@ -7822,7 +7815,7 @@ function AssignedWork({ user, users=[], meetings=[], setMeetings, items=[], setI
     createdBy:user.id, createdByName:user.name, createdByRole:user.role, createdAt:now, updatedAt:now, updatedBy:user.id,
     history:[{ at:now, byId:user.id, byName:user.name, type:"created",
       change: isP ? (meetingId?"Assigned in meeting":"Assigned") : "Logged by manager",
-      note:`Owner ${nameOf(r.ownerId)} · due ${fmtDate(r.dueDate)} · ${r.priority||"Medium"} priority · given by ${fromIds.map(nameOf).join(", ")}` }],
+      note:`Managers ${awMgrIds(r).map(nameOf).join(", ")} · due ${fmtDate(r.dueDate)} · ${r.priority||"Medium"} priority · given by ${fromIds.map(nameOf).join(", ")}` }],
   });
   const saveMeeting = (m, rows) => {
     const now = new Date().toISOString();
@@ -7842,7 +7835,7 @@ function AssignedWork({ user, users=[], meetings=[], setMeetings, items=[], setI
   const saveQuick = (r, fromIds, meetingId) => {
     const now = new Date().toISOString();
     setItems(prev=>[...prev,newItem(r,fromIds,meetingId,now)]);
-    addAudit(user.id,user.name,"AW_ADD_ITEM",`Work for ${nameOf(r.ownerId)}: ${r.title.trim()}`);
+    addAudit(user.id,user.name,"AW_ADD_ITEM",`Work for ${awMgrIds(r).map(nameOf).join(", ")}: ${r.title.trim()}`);
     setQuickM(null);
   };
   const saveDetail = (updated, summary) => {
@@ -7890,7 +7883,7 @@ function AssignedWork({ user, users=[], meetings=[], setMeetings, items=[], setI
     return `Given by ${from||"—"}`;
   };
   const Row = ({ a }) => {
-    const role = a.ownerId===user.id ? "Owner" : (a.supportIds||[]).includes(user.id) ? "Supporting" : (a.fromPartnerIds||[]).includes(user.id) ? "Given by you" : "";
+    const role = awInvolves(a,user.id) ? "Assigned" : (a.fromPartnerIds||[]).includes(user.id) ? "Given by you" : "";
     return (
       <div className="pa-row">
         <div style={{minWidth:0}}>
@@ -7904,8 +7897,7 @@ function AssignedWork({ user, users=[], meetings=[], setMeetings, items=[], setI
         </div>
         <div><AWCatChip cat={a.category}/></div>
         <div>
-          <div style={{fontWeight:500,fontSize:13.5}}>{nameOf(a.ownerId)}</div>
-          {(a.supportIds||[]).length>0&&<div className="tx tsl">+ {(a.supportIds||[]).map(id=>paFirstName(nameOf(id))).join(", ")}</div>}
+          {awMgrIds(a).map(id=><div key={id} style={{fontWeight:500,fontSize:13.5,lineHeight:1.35}}>{nameOf(id)}</div>)}
         </div>
         <AWDue a={a}/>
         <div><AWStatusBadge status={a.status}/></div>
@@ -7924,7 +7916,7 @@ function AssignedWork({ user, users=[], meetings=[], setMeetings, items=[], setI
   const Table = ({ list, empty }) => (
     <div className="card" style={{padding:0,overflow:"hidden"}}>
       {list.length===0 ? <div className="es"><div className="es-icon"><I n="task" s={36}/></div>{empty}</div> : <>
-        <div className="pa-row hd"><div className="pa-hd">Work</div><div className="pa-hd">Category</div><div className="pa-hd">Owner</div><div className="pa-hd">Due</div><div className="pa-hd">Status</div><div className="pa-hd">Latest update</div><div/></div>
+        <div className="pa-row hd"><div className="pa-hd">Work</div><div className="pa-hd">Category</div><div className="pa-hd">Managers</div><div className="pa-hd">Due</div><div className="pa-hd">Status</div><div className="pa-hd">Latest update</div><div/></div>
         {list.map(a=><Row key={a.id} a={a}/>)}
       </>}
     </div>
@@ -7960,7 +7952,7 @@ function AssignedWork({ user, users=[], meetings=[], setMeetings, items=[], setI
                 <PALatestLine a={a}/>
               </div>
               <div><AWCatChip cat={a.category}/></div>
-              <div className="ts">{nameOf(a.ownerId)}</div>
+              <div className="ts">{awMgrIds(a).map(id=>paFirstName(nameOf(id))).join(", ")}</div>
               <AWDue a={a}/>
               <div><AWStatusBadge status={a.status}/></div>
             </div>
@@ -7982,7 +7974,7 @@ function AssignedWork({ user, users=[], meetings=[], setMeetings, items=[], setI
     ["meet","By meeting"],
     ["closed","Closed"],
   ];
-  const mgrGroups = managers.map(m=>({ m, list:openAll.filter(a=>a.ownerId===m.id) })).filter(g=>g.list.length);
+  const mgrGroups = managers.map(m=>({ m, list:openAll.filter(a=>awInvolves(a,m.id)) })).filter(g=>g.list.length);
 
   return (
     <div style={{display:"flex",flexDirection:"column",gap:18}}>
@@ -8007,7 +7999,7 @@ function AssignedWork({ user, users=[], meetings=[], setMeetings, items=[], setI
           <div className="sc"><div className="sv" style={{color:firmOverdue?"#b91c1c":"var(--green)"}}>{firmOverdue}</div><div className="sl">Overdue</div></div>
           <div className="sc"><div className="sv">{openAll.length}</div><div className="sl">Firm-wide open</div></div>
         </> : <>
-          <div className="sc"><div className="sv">{mineOwned.length}</div><div className="sl">My open{mineSupp.length?` · +${mineSupp.length} supporting`:""}</div></div>
+          <div className="sc"><div className="sv">{mine.length}</div><div className="sl">My open</div></div>
           <div className="sc" style={myOverdue?{borderColor:"#fecaca"}:undefined}><div className="sv" style={{color:myOverdue?"#b91c1c":"var(--green)"}}>{myOverdue}</div><div className="sl">My overdue</div></div>
           <div className="sc"><div className="sv" style={{color:myAwaiting.length?"#b45309":"var(--navy)"}}>{myAwaiting.length}</div><div className="sl">Awaiting acceptance</div></div>
           <div className="sc"><div className="sv">{closedList.filter(a=>a.status==="done").length}</div><div className="sl">Accepted</div></div>
@@ -8079,7 +8071,7 @@ function AssignedWork({ user, users=[], meetings=[], setMeetings, items=[], setI
       {tab==="all"&&<>
         <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
           <select className="fs" aria-label="Owner" style={{width:"auto",fontSize:13,padding:"8px 12px"}} value={fOwner} onChange={e=>setFOwner(e.target.value)}>
-            <option value="">All managers</option>{[...new Set([...managers.map(p=>p.id),...items.map(a=>a.ownerId)])].map(id=><option key={id} value={id}>{nameOf(id)}</option>)}
+            <option value="">All managers</option>{[...new Set([...managers.map(p=>p.id),...items.flatMap(awMgrIds)])].map(id=><option key={id} value={id}>{nameOf(id)}</option>)}
           </select>
           <select className="fs" aria-label="Category" style={{width:"auto",fontSize:13,padding:"8px 12px"}} value={fCat} onChange={e=>setFCat(e.target.value)}>
             <option value="">All categories</option>{AW_CATEGORIES.map(c=><option key={c}>{c}</option>)}
@@ -8109,7 +8101,7 @@ function AWDashboardCard({ user, items=[], onOpen }) {
   const isP = user.role==="partner";
   const list = isP
     ? items.filter(a=>a.status==="submitted").sort((a,b)=>(a.submittedAt||"").localeCompare(b.submittedAt||""))
-    : items.filter(a=>a.ownerId===user.id&&awIsWorking(a)).sort(awSort);
+    : items.filter(a=>awInvolves(a,user.id)&&awIsWorking(a)).sort(awSort);
   if(!list.length) return null;
   const over = isP ? 0 : list.filter(awIsOverdue).length;
   return (
