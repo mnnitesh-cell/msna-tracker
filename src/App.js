@@ -1,4 +1,4 @@
-// MSNA Time Tracker v47: fixes v46 Update button (openDetail called itself). v46: latest update at top of drawer, update line and "New" pills in lists.
+// MSNA Time Tracker v48: Engagement Letter tracking (draft EL asked at code creation, EL pending flags, signed EL check at closure). v47: fixes v46 Update button (openDetail called itself). v46: latest update at top of drawer, update line and "New" pills in lists.
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { initializeApp } from "firebase/app";
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, terminate, clearIndexedDbPersistence, waitForPendingWrites, collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, getDocs, query, where } from "firebase/firestore";
@@ -498,6 +498,216 @@ function addAudit(userId, userName, action, detail) {
   fsSet("audit", id, { id, userId, userName, action, detail, ts: new Date().toISOString() });
 }
 
+// ── ENGAGEMENT LETTER (v48) ──
+// Draft EL: asked (mandatory) when a code is created or edited. Answering No never blocks creation;
+// the code is flagged "EL pending" until a partner or an assigned manager marks the draft as shared.
+// Signed EL: asked at closure (close, closure request). No = the code cannot be closed.
+// Codes created before v48 have no answer and show "EL not recorded".
+// Ageing runs from code creation, or from EL_TRACKING_START for older codes: amber up to 7 days, red after.
+const EL_TRACKING_START = "2026-10-08";
+const EL_AGE_RED_DAYS = 7;
+const EL_OPEN_STATUSES = ["active","pending_approval","pending_closure"];
+function elDraftState(p) {
+  if(p?.elDraftShared===true) return "shared";
+  if(p?.elDraftShared===false) return "pending";
+  return "unrecorded";
+}
+function elAgeDays(p) {
+  const created = (p?.createdAt||"").slice(0,10);
+  const start = created>EL_TRACKING_START ? created : EL_TRACKING_START;
+  return Math.max(0, Math.floor((new Date(todayStr()) - new Date(start)) / 86400000));
+}
+const elNeedsAttention = p => EL_OPEN_STATUSES.includes(p?.status) && elDraftState(p)!=="shared";
+// Partners always; managers if assigned to the code (or they created it and it is still pending approval).
+function canUpdateEL(user, p) {
+  if(user.role==="partner") return true;
+  if(user.role==="manager") return (p.assignedManagers||[]).includes(user.id) || (p.status==="pending_approval"&&p.createdBy===user.id);
+  return false;
+}
+function applyELShared(setProjects, user, p, date) {
+  setProjects(prev=>prev.map(x=>x.id===p.id?{...x,elDraftShared:true,elDraftSharedDate:date,elDraftAutoFromSigned:false,elDraftUpdatedBy:user.id,elDraftUpdatedAt:new Date().toISOString()}:x));
+  addAudit(user.id,user.name,"EL_DRAFT_SHARED",`Draft engagement letter for ${p.code} marked as shared on ${fmtDate(date)}`);
+}
+// Fields written when the signed EL is confirmed at closure. A signed EL implies the draft was shared.
+function elSignedPatch(user, p) {
+  if(p.elSignedReceived) return {};
+  const now = new Date().toISOString();
+  return {
+    elSignedReceived:true, elSignedConfirmedBy:user.id, elSignedConfirmedAt:now,
+    ...(elDraftState(p)!=="shared" ? { elDraftShared:true, elDraftSharedDate:null, elDraftAutoFromSigned:true, elDraftUpdatedBy:user.id, elDraftUpdatedAt:now } : {}),
+  };
+}
+
+function ELPill({ p }) {
+  const st = elDraftState(p);
+  if(p.elSignedReceived) return <span className="bdg ba"><I n="check" s={11}/>Signed EL received</span>;
+  if(st==="shared") return <span className="bdg ba"><I n="check" s={11}/>EL shared{p.elDraftSharedDate?` ${fmtDate(p.elDraftSharedDate)}`:""}</span>;
+  if(!EL_OPEN_STATUSES.includes(p.status)) return null;
+  const age = elAgeDays(p);
+  const red = age>EL_AGE_RED_DAYS;
+  const cls = red ? "br" : st==="pending" ? "brs" : "bcl";
+  const ageTxt = age===0 ? "today" : `${age} day${age===1?"":"s"}`;
+  return <span className={`bdg ${cls}`} title={red?`Over ${EL_AGE_RED_DAYS} days`:""}><I n="alert" s={11}/>{st==="pending"?"EL pending":"EL not recorded"} · {ageTxt}</span>;
+}
+
+// Yes / No pair used for both EL questions.
+function YesNo({ value, onChange, noTone="amber" }) {
+  const tones = { yes:["var(--green)","#f0fdf4","#065f46"], amber:["var(--amber)","#fffbeb","#92400e"], red:["var(--red)","#fef2f2","#991b1b"] };
+  return (
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+      {[[true,"Yes"],[false,"No"]].map(([v,l])=>{
+        const on = value===v;
+        const [bd,bg,fg] = tones[v?"yes":noTone];
+        return (
+          <button key={l} type="button" onClick={()=>onChange(v)}
+            style={{padding:"10px 14px",borderRadius:8,border:"1.5px solid",borderColor:on?bd:"var(--border)",background:on?bg:"#fff",color:on?fg:"var(--navy)",
+              fontWeight:on?600:500,fontFamily:"'DM Sans',sans-serif",fontSize:14,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:7,transition:"all .15s"}}>
+            <I n={v?"check":"x"} s={15}/>{l}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ELMarkSharedModal({ project, onSave, onClose }) {
+  const [date,setDate] = useState(todayStr());
+  const [err,setErr] = useState("");
+  const go = () => {
+    if(!date){ setErr("Enter the date the draft was shared."); return; }
+    if(date>todayStr()){ setErr("The date cannot be in the future."); return; }
+    onSave(date);
+  };
+  return (
+    <div className="mo" onClick={onClose}>
+      <div className="md" style={{maxWidth:420}} onClick={e=>e.stopPropagation()}>
+        <div className="md-title">Mark draft EL as shared</div>
+        <div className="ts tsl mb16"><span className="mono fw6 tnv">{project.code}</span> · {project.clientName} · {project.name}</div>
+        {err&&<div className="err">{err}</div>}
+        <div className="fg"><label className="fl">Date shared with the client *</label>
+          <input type="date" className="fi" value={date} max={todayStr()} onChange={e=>{setDate(e.target.value);setErr("");}}/>
+        </div>
+        <div className="md-actions">
+          <button className="btn bgh" onClick={onClose}>Cancel</button>
+          <button className="btn bp" onClick={go}><I n="check" s={15}/>Mark as shared</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Closure check (v48): signed EL + performance appraisals.
+// mode "close"   → assigned partner / admin closing directly
+// mode "request" → manager (or non-assigned partner) raising a closure request; appraisals are shown, not enforced
+// mode "approve" → partner approving a closure request; shows the requester's EL confirmation
+function ClosureModal({ project:p, mode, pendingNames=[], users=[], onConfirm, onClose }) {
+  const confirmed = !!p.elSignedReceived;
+  const [signed,setSigned] = useState(confirmed ? true : null);
+  const [tried,setTried] = useState(false);
+  const isRetainer = p.feeType==="retainer";
+  const apprBlocks = mode!=="request" && pendingNames.length>0;
+  const ok = signed===true && !apprBlocks;
+  const by = users.find(u=>u.id===p.elSignedConfirmedBy);
+  const title = mode==="request" ? `Request closure of ${p.code}` : mode==="approve" ? `Approve closure of ${p.code}` : `Close ${p.code}`;
+  const btn = mode==="request" ? "Send closure request" : mode==="approve" ? "Approve closure" : "Close engagement";
+  const Row = ({ okState, label, value }) => (
+    <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12,padding:"10px 0",borderBottom:"1px solid var(--border)"}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,fontSize:13,fontWeight:500,color:"var(--navy)"}}>
+        <span style={{color:okState==="ok"?"var(--green)":okState==="bad"?"var(--red)":okState==="warn"?"var(--amber)":"var(--slate-light)"}}><I n={okState==="ok"?"check":okState==="bad"?"x":okState==="warn"?"alert":"info"} s={15}/></span>{label}
+      </div>
+      <div style={{fontSize:12,textAlign:"right",maxWidth:220,color:okState==="ok"?"#065f46":okState==="bad"?"#991b1b":okState==="warn"?"#92400e":"var(--slate)"}}>{value}</div>
+    </div>
+  );
+  const elValue = signed===true ? (confirmed&&by ? `Received · confirmed by ${by.name}${p.elSignedConfirmedAt?` on ${fmtDate(p.elSignedConfirmedAt)}`:""}` : "Received") : signed===false ? "Not received" : "Not answered";
+  const apprValue = isRetainer ? "Not required for retainers" : pendingNames.length===0 ? "All submitted" : `Pending: ${pendingNames.join(", ")}`;
+  const apprState = isRetainer||pendingNames.length===0 ? "ok" : mode==="request" ? "warn" : "bad";
+  return (
+    <div className="mo" onClick={onClose}>
+      <div className="md" style={{maxWidth:480}} onClick={e=>e.stopPropagation()}>
+        <div className="md-title" style={{marginBottom:6}}>{title}</div>
+        <div className="ts tsl mb16">{p.clientName} · {p.name}</div>
+        {confirmed ? (
+          <div className="al al-s"><I n="check" s={15}/><div>Signed engagement letter confirmed as received{by?` by ${by.name}`:""}.</div></div>
+        ) : (
+          <div className="fg">
+            <label style={{display:"block",fontSize:13,fontWeight:600,color:"var(--navy)",marginBottom:10,lineHeight:1.45}}>Has the signed Engagement Letter been received from the client? *</label>
+            <YesNo value={signed} onChange={v=>{setSigned(v);setTried(false);}} noTone="red"/>
+          </div>
+        )}
+        <div style={{marginTop:4}}>
+          <Row okState={signed===true?"ok":signed===false?"bad":"na"} label="Signed engagement letter" value={elValue}/>
+          <Row okState={apprState} label="Performance appraisals" value={apprValue}/>
+        </div>
+        {signed===false&&<div className="al al-d" style={{marginTop:14,marginBottom:0}}><I n="alert" s={15}/><div>{mode==="request"?"A closure request can't be raised":"The engagement can't be closed"} until the signed engagement letter is received from the client.</div></div>}
+        {apprBlocks&&signed!==false&&<div className="al al-d" style={{marginTop:14,marginBottom:0}}><I n="alert" s={15}/><div>Every team member's appraisal, including the manager's, must be submitted first.</div></div>}
+        {mode==="request"&&!isRetainer&&pendingNames.length>0&&signed!==false&&<div className="al al-w" style={{marginTop:14,marginBottom:0}}><I n="info" s={15}/><div>You can send the request now. A partner can approve it only after these appraisals are submitted.</div></div>}
+        {signed===true&&!confirmed&&elDraftState(p)!=="shared"&&<div className="tx tsl" style={{marginTop:12}}>The draft engagement letter will also be marked as shared.</div>}
+        {tried&&signed===null&&<div className="tx tdn" style={{marginTop:12}}>Answer the engagement letter question to continue.</div>}
+        <div className="md-actions">
+          <button className="btn bgh" onClick={onClose}>Cancel</button>
+          <button className={`btn ${mode==="request"?"bp":"bsc"}`} disabled={signed===false||apprBlocks}
+            onClick={()=>{ if(signed===null){ setTried(true); return; } if(ok) onConfirm(); }}>
+            <I n={mode==="request"?"send":"check"} s={15}/>{btn}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Dashboard card: engagements whose draft EL is pending or not recorded. Partners firm-wide, managers their own.
+function ELDashboardCard({ user, users=[], projects=[], setProjects, onOpenProjects }) {
+  const [markP,setMarkP] = useState(null);
+  const [showAll,setShowAll] = useState(false);
+  if(user.role==="intern") return null;
+  const list = projects
+    .filter(elNeedsAttention)
+    .filter(p=>user.role==="partner" || (p.assignedManagers||[]).includes(user.id) || p.createdBy===user.id)
+    .sort((a,b)=>elAgeDays(b)-elAgeDays(a));
+  if(list.length===0) return null;
+  const overdue = list.filter(p=>elAgeDays(p)>EL_AGE_RED_DAYS).length;
+  const shown = showAll ? list : list.slice(0,6);
+  return (
+    <div className="card mb22" style={{padding:"18px 22px"}}>
+      <div className="fxb" style={{marginBottom:12,gap:12,flexWrap:"wrap"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <span style={{color:overdue?"var(--red)":"var(--amber)"}}><I n="alert" s={18}/></span>
+          <div>
+            <div className="card-title">Engagement letters pending · {list.length}</div>
+            <div className="tx tsl mt4">Draft not yet shared with the client, or status not recorded{overdue?` · ${overdue} over ${EL_AGE_RED_DAYS} days`:""}</div>
+          </div>
+        </div>
+        {onOpenProjects&&<button className="btn bgh bsm" onClick={onOpenProjects}>Open Projects →</button>}
+      </div>
+      <div>
+        {shown.map(p=>{
+          const partner = users.find(u=>u.id===p.assignedPartnerId);
+          return (
+            <div key={p.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,padding:"10px 0",borderTop:"1px solid var(--border)"}}>
+              <div style={{minWidth:0,flex:1}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                  <span className="mono fw6" style={{fontSize:13}}>{p.code}</span>
+                  <span className="ts fw6">{p.clientName}</span>
+                  {p.status==="pending_approval"&&<span className="bdg bp2">Awaiting approval</span>}
+                </div>
+                <div className="tx tsl" style={{marginTop:2,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.name}{partner?` · ${partner.name}`:""}</div>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+                <ELPill p={p}/>
+                {canUpdateEL(user,p)&&<button className="btn bgh bxs" onClick={()=>setMarkP(p)}>Mark as shared</button>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {list.length>6&&<div style={{borderTop:"1px solid var(--border)",paddingTop:10,textAlign:"center"}}>
+        <button className="btn bgh bxs" onClick={()=>setShowAll(s=>!s)}>{showAll?"Show fewer":`Show all ${list.length}`}</button>
+      </div>}
+      {markP&&<ELMarkSharedModal project={markP} onClose={()=>setMarkP(null)} onSave={date=>{applyELShared(setProjects,user,markP,date);setMarkP(null);}}/>}
+    </div>
+  );
+}
+
 // ── ICONS (filled, material-style) ──
 const I = ({ n, s=18 }) => {
   const paths = {
@@ -896,7 +1106,7 @@ function Sidebar({ user, tab, setTab, onLogout, pendingCount, leavePendingCount=
 // ══════════════════════════════════════════════════════════════
 // DASHBOARD
 // ══════════════════════════════════════════════════════════════
-function Dashboard({ user, users=[], projects=[], tss=[], paActions=[], onOpenActions }) {
+function Dashboard({ user, users=[], projects=[], setProjects, tss=[], paActions=[], onOpenActions, onOpenProjects }) {
   const isP=user.role==="partner";
   const mySheets = isP?tss:tss.filter(t=>t.userId===user.id);
   const approved = mySheets.filter(t=>t.status==="approved");
@@ -953,6 +1163,7 @@ function Dashboard({ user, users=[], projects=[], tss=[], paActions=[], onOpenAc
           </div>
         </div>
       )}
+      <ELDashboardCard user={user} users={users} projects={projects} setProjects={setProjects} onOpenProjects={onOpenProjects}/>
       <div className="sg">
         <div className="sc"><div className="sv">{activeP}</div><div className="sl">Active Engagements</div></div>
         <div className="sc"><div className="sv">{totalHrs.toFixed(1)}</div><div className="sl">{isP?"Firm Hours":"My Approved Hrs"}</div></div>
@@ -1633,21 +1844,28 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
   const [filterPartner,setFP] =useState("");
   const [filterCat,setFC]     =useState("");
   const [filterFee,setFF]     =useState("");
+  const [filterEL,setFEL]     =useState(""); // v48: "", attention, pending, unrecorded, shared
+  const [closureM,setClosureM]=useState(null); // v48: { id, mode: close | request | approve }
+  const [markELP,setMarkELP]  =useState(null); // v48: project whose draft EL is being marked as shared
   const [sortBy,setSortBy]    =useState("code");
   const [sortDir,setSortDir]  =useState("asc");
-  const [form,setF]           =useState({code:"",name:"",clientName:"",description:"",assignedPartnerId:"",budgetHours:"",monthlyBudgetHours:"",engagementFee:"",feeType:"fixed",retainerMonths:"",category:"Assurance",billable:true,assignedStaff:[],assignedManagers:[],assignedPartners:[]});
+  const [form,setF]           =useState({code:"",name:"",clientName:"",description:"",assignedPartnerId:"",budgetHours:"",monthlyBudgetHours:"",engagementFee:"",feeType:"fixed",retainerMonths:"",category:"Assurance",billable:true,assignedStaff:[],assignedManagers:[],assignedPartners:[],elDraftShared:null,elDraftSharedDate:""});
   const [ferr,setFerr]        =useState("");
   const isP=user.role==="partner";
   const isMgr=user.role==="manager";
   const partners=users.filter(u=>u.role==="partner"&&u.active).slice().sort((a,b)=>a.name.localeCompare(b.name));
   const lastProjectCode=(()=>{const inCat=projects.filter(p=>(p.category||"Assurance")===(form.category||"Assurance"));if(!inCat.length)return null;return inCat.slice().sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||""))[0].code;})();
 
-  const openAdd=()=>{setEditP(null);setF({code:"",name:"",clientName:"",description:"",assignedPartnerId:isP?user.id:"",budgetHours:"",monthlyBudgetHours:"",engagementFee:"",feeType:"fixed",retainerMonths:"",category:"Assurance",billable:true,assignedStaff:[],assignedManagers:[],assignedPartners:[]});setFerr("");setSM(true);};
-  const openEdit=(p)=>{setEditP(p);setF({code:p.code,name:p.name,clientName:p.clientName,description:p.description||"",assignedPartnerId:p.assignedPartnerId,budgetHours:p.budgetHours||"",monthlyBudgetHours:p.monthlyBudgetHours||"",engagementFee:p.monthlyFee||p.engagementFee||"",feeType:p.feeType||"fixed",retainerMonths:p.retainerMonths||"",category:p.category||"Assurance",billable:p.billable!==false,assignedStaff:p.assignedStaff||[],assignedManagers:p.assignedManagers||[],assignedPartners:p.assignedPartners||[]});setFerr("");setSM(true);};
+  const openAdd=()=>{setEditP(null);setF({code:"",name:"",clientName:"",description:"",assignedPartnerId:isP?user.id:"",budgetHours:"",monthlyBudgetHours:"",engagementFee:"",feeType:"fixed",retainerMonths:"",category:"Assurance",billable:true,assignedStaff:[],assignedManagers:[],assignedPartners:[],elDraftShared:null,elDraftSharedDate:""});setFerr("");setSM(true);};
+  const openEdit=(p)=>{setEditP(p);setF({code:p.code,name:p.name,clientName:p.clientName,description:p.description||"",assignedPartnerId:p.assignedPartnerId,budgetHours:p.budgetHours||"",monthlyBudgetHours:p.monthlyBudgetHours||"",engagementFee:p.monthlyFee||p.engagementFee||"",feeType:p.feeType||"fixed",retainerMonths:p.retainerMonths||"",category:p.category||"Assurance",billable:p.billable!==false,assignedStaff:p.assignedStaff||[],assignedManagers:p.assignedManagers||[],assignedPartners:p.assignedPartners||[],elDraftShared:typeof p.elDraftShared==="boolean"?p.elDraftShared:null,elDraftSharedDate:p.elDraftSharedDate||""});setFerr("");setSM(true);};
 
   const save=()=>{
     if(!form.code||!form.name||!form.clientName||!form.assignedPartnerId){setFerr("Code, name, client and partner are required.");return;}
     if(!editP&&projects.find(p=>p.code.toUpperCase()===form.code.toUpperCase())){setFerr("Project code already exists.");return;}
+    // v48: draft EL question is mandatory; either answer lets the code be created
+    if(typeof form.elDraftShared!=="boolean"){setFerr("Answer whether the draft Engagement Letter is prepared and shared with the client.");return;}
+    if(form.elDraftShared&&!form.elDraftSharedDate&&!editP?.elDraftAutoFromSigned){setFerr("Enter the date the draft Engagement Letter was shared.");return;}
+    if(form.elDraftShared&&form.elDraftSharedDate>todayStr()){setFerr("The Engagement Letter date cannot be in the future.");return;}
     // Calculate total fee: for retainer = monthly fee × months; for fixed = as entered
     const totalEngFee = form.engagementFee ? (
       form.feeType==="retainer" && form.retainerMonths
@@ -1667,15 +1885,21 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
       assignedStaff:form.assignedStaff,assignedManagers:form.assignedManagers,assignedPartners:form.assignedPartners||[],
       name:form.name,clientName:form.clientName,description:form.description,
       assignedPartnerId:form.assignedPartnerId,
+      elDraftShared:form.elDraftShared,
+      elDraftSharedDate:form.elDraftShared?(form.elDraftSharedDate||null):null,
     };
+    const elChanged = !editP || editP.elDraftShared!==form.elDraftShared || (editP.elDraftSharedDate||"")!==(baseObj.elDraftSharedDate||"");
+    const elStamp = elChanged ? {elDraftUpdatedBy:user.id,elDraftUpdatedAt:new Date().toISOString(),...(editP&&editP.elDraftAutoFromSigned&&baseObj.elDraftSharedDate?{elDraftAutoFromSigned:false}:{})} : {};
+    const elText = form.elDraftShared?`shared on ${fmtDate(baseObj.elDraftSharedDate)}`:"not yet shared";
     if(editP){
-      setProjects(p=>p.map(x=>x.id===editP.id?{...x,...baseObj,updatedBy:user.id,updatedAt:new Date().toISOString()}:x));
+      setProjects(p=>p.map(x=>x.id===editP.id?{...x,...baseObj,...elStamp,updatedBy:user.id,updatedAt:new Date().toISOString()}:x));
       addAudit(user.id,user.name,"EDIT_PROJECT",`Edited ${editP.code} — ${form.name}`);
+      if(elChanged) addAudit(user.id,user.name,form.elDraftShared?"EL_DRAFT_SHARED":"EL_DRAFT_PENDING",`Draft engagement letter for ${editP.code}: ${elText}`);
     } else {
       const np={id:genId(),...form,code:form.code.toUpperCase(),...baseObj,
-        status:isP?"active":"pending_approval",createdBy:user.id,createdAt:new Date().toISOString()};
+        ...elStamp,status:isP?"active":"pending_approval",createdBy:user.id,createdAt:new Date().toISOString()};
       setProjects(p=>[...p,np]);
-      addAudit(user.id,user.name,"CREATE_PROJECT",`Created ${form.code.toUpperCase()} — ${form.name}`);
+      addAudit(user.id,user.name,"CREATE_PROJECT",`Created ${form.code.toUpperCase()} — ${form.name} (draft EL ${elText})`);
     }
     setSM(false);
   };
@@ -1689,34 +1913,27 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
     return required.filter(r=>findAppraisalFor(appraisals,r)?.status!=="submitted");
   };
 
-  // Instant close — assigned partner or admin only. Still gated on appraisals for non-retainer engagements.
-  const close = id=>{
+  // v48: closing, requesting closure and approving closure all go through ClosureModal (signed EL + appraisal checks).
+  const close = id => setClosureM({ id, mode:"close" });
+  const requestClose = id => setClosureM({ id, mode:"request" });
+  const closeApprove = id => setClosureM({ id, mode:"approve" });
+
+  const confirmClosure = () => {
+    const { id, mode } = closureM;
     const proj = projects.find(x=>x.id===id);
-    const pending = pendingAppraisalsFor(proj);
-    if(pending.length>0) {
-      const names = pending.map(r=>users.find(u=>u.id===r.staffId)?.name||"—").join(", ");
-      alert(`Cannot close — performance appraisal is still pending for: ${names}. Every team member's appraisal, including the manager's, must be submitted first.`);
-      return;
+    if(!proj) { setClosureM(null); return; }
+    const now = new Date().toISOString();
+    const elPatch = elSignedPatch(user, proj);
+    if(mode==="request") {
+      setProjects(p=>p.map(x=>x.id===id?{...x,...elPatch,status:"pending_closure",closeRequestedBy:user.id,closeRequestedAt:now,closeRejectReason:null}:x));
+      addAudit(user.id,user.name,"REQUEST_CLOSE_PROJECT",`Requested closure of ${proj.code}`);
+    } else {
+      if(pendingAppraisalsFor(proj).length>0) return; // guarded in the modal too
+      setProjects(p=>p.map(x=>x.id===id?{...x,...elPatch,status:"closed",closedAt:now,closedBy:user.id}:x));
+      addAudit(user.id,user.name,mode==="approve"?"APPROVE_CLOSE_PROJECT":"CLOSE_PROJECT",`${mode==="approve"?"Approved closure of":"Closed"} ${proj.code}`);
     }
-    if(!window.confirm("Close this engagement?"))return;
-    setProjects(p=>p.map(x=>x.id===id?{...x,status:"closed",closedAt:new Date().toISOString(),closedBy:user.id}:x));
-    addAudit(user.id,user.name,"CLOSE_PROJECT",`Closed ${id}`);
-  };
-
-  // Manager (or a non-assigned partner) raises a closure request — always routes to partner approval, retainers included.
-  const requestClose = id=>{
-    const proj = projects.find(x=>x.id===id);
-    if(!window.confirm(`Request closure of ${proj?.code}? This will need a partner's approval.`))return;
-    setProjects(p=>p.map(x=>x.id===id?{...x,status:"pending_closure",closeRequestedBy:user.id,closeRequestedAt:new Date().toISOString(),closeRejectReason:null}:x));
-    addAudit(user.id,user.name,"REQUEST_CLOSE_PROJECT",`Requested closure of ${id}`);
-  };
-
-  // Any partner (not just the assigned one) can approve a closure request, subject to the appraisal gate.
-  const closeApprove = id=>{
-    const proj = projects.find(x=>x.id===id);
-    if(pendingAppraisalsFor(proj).length>0) return; // guarded by disabled button too
-    setProjects(p=>p.map(x=>x.id===id?{...x,status:"closed",closedAt:new Date().toISOString(),closedBy:user.id}:x));
-    addAudit(user.id,user.name,"APPROVE_CLOSE_PROJECT",`Approved closure of ${id}`);
+    if(elPatch.elSignedReceived) addAudit(user.id,user.name,"EL_SIGNED_RECEIVED",`Signed engagement letter for ${proj.code} confirmed as received`);
+    setClosureM(null);
   };
 
   // Any partner can reject a closure request — reverts to Active with a reason.
@@ -1750,6 +1967,10 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
     if(filterPartner&&p.assignedPartnerId!==filterPartner) return false;
     if(filterCat&&p.category!==filterCat) return false;
     if(filterFee&&p.feeType!==filterFee) return false;
+    if(filterEL==="attention"&&!elNeedsAttention(p)) return false;
+    if(filterEL==="pending"&&!(elNeedsAttention(p)&&elDraftState(p)==="pending")) return false;
+    if(filterEL==="unrecorded"&&!(elNeedsAttention(p)&&elDraftState(p)==="unrecorded")) return false;
+    if(filterEL==="shared"&&elDraftState(p)!=="shared") return false;
     return true;
   });
 
@@ -1771,7 +1992,8 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
   const paginated = sorted.slice((page-1)*PAGE_SIZE, page*PAGE_SIZE);
   const pendingCount = projects.filter(p=>p.status==="pending_approval").length;
   const closurePendingCount = projects.filter(p=>p.status==="pending_closure").length;
-  const hasFilters = search||filterPartner||filterCat||filterFee;
+  const hasFilters = search||filterPartner||filterCat||filterFee||filterEL;
+  const showEL = user.role!=="intern"; // v48: interns don't see EL flags
 
   return (
     <div>
@@ -1818,7 +2040,14 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
           <option value="fixed">Fixed Fee</option>
           <option value="retainer">Retainer</option>
         </select>
-        {hasFilters&&<button className="btn bgh bsm" onClick={()=>{setSearch("");setFP("");setFC("");setFF("");setPage(1);}}>✕ Clear</button>}
+        {showEL&&<select className="fs" style={{width:"auto",fontSize:13,padding:"8px 12px"}} value={filterEL} onChange={e=>{setFEL(e.target.value);setPage(1);}}>
+          <option value="">EL: All</option>
+          <option value="attention">EL: Needs attention</option>
+          <option value="pending">EL: Pending</option>
+          <option value="unrecorded">EL: Not recorded</option>
+          <option value="shared">EL: Shared</option>
+        </select>}
+        {hasFilters&&<button className="btn bgh bsm" onClick={()=>{setSearch("");setFP("");setFC("");setFF("");setFEL("");setPage(1);}}>✕ Clear</button>}
         <span className="tx tsl" style={{fontSize:12}}>{sorted.length} engagement{sorted.length!==1?"s":""}</span>
       </div>
 
@@ -1851,6 +2080,10 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
                 <td><div className="fw6">{p.name}</div><div className="tx tsl">{p.description}</div>
                   {p.status==="rejected"&&p.rejectReason&&<div className="tx tdn mt4">↩ {p.rejectReason}</div>}
                   {p.status==="active"&&p.closeRejectReason&&<div className="tx tdn mt4">↩ Closure request rejected: {p.closeRejectReason}</div>}
+                  {showEL&&<div style={{display:"flex",alignItems:"center",gap:6,marginTop:6,flexWrap:"wrap"}}>
+                    <ELPill p={p}/>
+                    {elNeedsAttention(p)&&canUpdateEL(user,p)&&<button className="btn bgh bxs" onClick={()=>setMarkELP(p)}>Mark as shared</button>}
+                  </div>}
                 </td>
                 <td>{p.clientName}</td>
                 <td className="ts">{partner?.name||"—"}</td>
@@ -1878,12 +2111,16 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
                   </>}
                   {p.status==="pending_closure"&&isP&&(()=>{
                     const pending = pendingAppraisalsFor(p);
+                    const elBy = users.find(u=>u.id===p.elSignedConfirmedBy);
                     return <div style={{display:"flex",flexDirection:"column",gap:6,minWidth:220}}>
+                      <div className={`tx ${p.elSignedReceived?"tsc":"tdn"}`} style={{lineHeight:1.4}}>
+                        <I n={p.elSignedReceived?"check":"alert"} s={11}/> {p.elSignedReceived?`Signed EL received${elBy?` (confirmed by ${elBy.name})`:""}`:"Signed EL not confirmed"}
+                      </div>
                       {pending.length>0&&<div className="tx tdn" style={{lineHeight:1.4}}>
                         <I n="alert" s={11}/> Appraisal pending — {pending.map(r=>users.find(u=>u.id===r.staffId)?.name||"—").join(", ")}
                       </div>}
                       <div className="fx g8" style={{flexWrap:"wrap"}}>
-                        <button className="btn bsc bsm" disabled={pending.length>0} title={pending.length>0?"All appraisals must be submitted first":""} onClick={()=>closeApprove(p.id)}><I n="check" s={12}/>Approve Closure</button>
+                        <button className="btn bsc bsm" onClick={()=>closeApprove(p.id)}><I n="check" s={12}/>Approve Closure</button>
                         <button className="btn bd bsm" onClick={()=>{setCRM(p);setCRR("");}}><I n="x" s={12}/>Reject</button>
                       </div>
                     </div>;
@@ -1963,6 +2200,21 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
               <div className="fg"><label className="fl">Client Name</label><input className="fi" placeholder="Client / Entity" value={form.clientName} onChange={e=>setF(f=>({...f,clientName:e.target.value}))}/></div>
             </div>
             <div className="fg"><label className="fl">Engagement Name</label><input className="fi" placeholder="e.g. Virtual CFO Services FY2025-26" value={form.name} onChange={e=>setF(f=>({...f,name:e.target.value}))}/></div>
+            {/* v48: draft Engagement Letter — mandatory, but either answer lets the code be created */}
+            <div className="fg" style={{background:"var(--cream)",borderRadius:10,padding:"14px 16px",border:"1px solid var(--border)"}}>
+              <label style={{display:"block",fontSize:13,fontWeight:600,color:"var(--navy)",marginBottom:10,lineHeight:1.45}}>Is the draft Engagement Letter prepared and shared with the client? <span className="tdn">*</span></label>
+              <YesNo value={form.elDraftShared} onChange={v=>setF(f=>({...f,elDraftShared:v,elDraftSharedDate:v?(f.elDraftSharedDate||todayStr()):""}))}/>
+              {form.elDraftShared===true&&(
+                <div style={{marginTop:12}}>
+                  <label className="fl">Date shared with the client *</label>
+                  <input type="date" className="fi" style={{maxWidth:220,background:"#fff"}} max={todayStr()} value={form.elDraftSharedDate} onChange={e=>setF(f=>({...f,elDraftSharedDate:e.target.value}))}/>
+                  {editP?.elDraftAutoFromSigned&&!form.elDraftSharedDate&&<div className="tx tsl mt4">Marked as shared automatically when the signed EL was confirmed. The date is optional here.</div>}
+                </div>
+              )}
+              {form.elDraftShared===false&&(
+                <div className="al al-w" style={{marginTop:12,marginBottom:0}}><I n="alert" s={14}/><div>This engagement will be flagged as <strong>EL pending</strong> until the draft is shared. The code can still be {editP?"saved":"created"}.</div></div>
+              )}
+            </div>
             <div className="fg"><label className="fl">Description</label><textarea className="fta" placeholder="Brief engagement scope..." value={form.description} onChange={e=>setF(f=>({...f,description:e.target.value}))}/></div>
             <div className="g2">
               <div className="fg"><label className="fl">Assigned Partner</label>
@@ -2061,6 +2313,13 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
         </div>
       )}
       {assignM&&<AssignModal project={assignM} users={users.filter(u=>u.active)} onSave={saveAssign} onClose={()=>setAM(null)}/> }
+      {closureM&&(()=>{
+        const cp = projects.find(x=>x.id===closureM.id);
+        if(!cp) return null;
+        const names = pendingAppraisalsFor(cp).map(r=>users.find(u=>u.id===r.staffId)?.name||"—");
+        return <ClosureModal project={cp} mode={closureM.mode} pendingNames={names} users={users} onConfirm={confirmClosure} onClose={()=>setClosureM(null)}/>;
+      })()}
+      {markELP&&<ELMarkSharedModal project={markELP} onClose={()=>setMarkELP(null)} onSave={date=>{applyELShared(setProjects,user,markELP,date);setMarkELP(null);}}/>}
     </div>
   );
 }
@@ -7223,7 +7482,7 @@ export default function App() {
             </div>
           </div>
           <div className="content">
-            {tab==="dashboard"  &&<Dashboard    user={currentUser} {...db_props} paActions={isPartner?paActions:[]} onOpenActions={()=>setTab("partneractions")}/>}
+            {tab==="dashboard"  &&<Dashboard    user={currentUser} {...db_props} paActions={isPartner?paActions:[]} onOpenActions={()=>setTab("partneractions")} onOpenProjects={()=>setTab("projects")}/>}
             {tab==="partneractions"&&isPartner&&<PartnerActions user={currentUser} users={usersView} meetings={paMeetings} setMeetings={setPaMeetings} actions={paActions} setActions={setPaActions} loaded={paActionsLoaded}/>}
             {tab==="week"       &&<WeekView     user={currentUser} {...db_props}/>}
             {tab==="timesheets" &&<Timesheets   user={currentUser} {...db_props}/>}
