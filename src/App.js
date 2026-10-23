@@ -1,4 +1,4 @@
-// MSNA Time Tracker v52: Engagement Letter gets a "Not applicable" answer (new and older codes; no EL flag, signed EL check skipped at closure). v51: Assigned Work takes several managers per item, all equal. v50: older codes confirm "Signed EL received" instead of draft; EL saves are field-level; failed saves now show a notice. v49: Assigned Work (firm work given by partners to managers, accept/reopen). v48: Engagement Letter tracking (draft EL asked at code creation, EL pending flags, signed EL check at closure). v47: fixes v46 Update button (openDetail called itself). v46: latest update at top of drawer, update line and "New" pills in lists.
+// MSNA Time Tracker v54: goal points count from the staff member's submitted self-assessment (Provisional), and become Final once a partner approves; a rejected entry drops out until resubmitted. v53: Overall quarterly score in Performance Appraisal = appraisal average × 70% + goals 30% (achieved and partner-approved goals only), with a "how it's arrived at" panel. From Q3 FY 2026-27 managers set 3 mandatory goals (10% each) and interns 2 (15% each, optional goal 3 not scored); managers who submitted 2 goals in Q3 add goal 3. v52: Engagement Letter gets a "Not applicable" answer (new and older codes; no EL flag, signed EL check skipped at closure). v51: Assigned Work takes several managers per item, all equal. v50: older codes confirm "Signed EL received" instead of draft; EL saves are field-level; failed saves now show a notice. v49: Assigned Work (firm work given by partners to managers, accept/reopen). v48: Engagement Letter tracking (draft EL asked at code creation, EL pending flags, signed EL check at closure). v47: fixes v46 Update button (openDetail called itself). v46: latest update at top of drawer, update line and "New" pills in lists.
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { initializeApp } from "firebase/app";
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, terminate, clearIndexedDbPersistence, waitForPendingWrites, collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, getDocs, query, where } from "firebase/firestore";
@@ -409,7 +409,98 @@ function isQuarterOnOrAfter(fy, quarter, ref) {
   const a = Number(fy.split("-")[0]), b = Number(ref.fy.split("-")[0]);
   return a>b || (a===b && GOAL_QUARTER_ORDER.indexOf(quarter)>=GOAL_QUARTER_ORDER.indexOf(ref.quarter));
 }
-function requiredGoalCount(fy, quarter) { return isQuarterOnOrAfter(fy, quarter, GOAL_OPTIONAL_THIRD_FROM) ? 2 : 3; }
+// v53: from Q3 FY 2026-27 the count depends on role. Managers: 3 mandatory goals. Interns (and others): 2 mandatory
+// goals, goal 3 stays optional and is never scored. Before Q3: 3 mandatory goals for everyone.
+// The role is the one at the time goals were submitted (stored as goalRole); older records fall back to the current role.
+function requiredGoalCount(fy, quarter, role) {
+  if(!isQuarterOnOrAfter(fy, quarter, GOAL_OPTIONAL_THIRD_FROM)) return 3;
+  return role==="manager" ? 3 : 2;
+}
+const goalRoleOf = (rec, u) => rec?.goalRole || u?.role || "intern";
+// Mandatory goals still missing from a SUBMITTED record (managers who submitted 2 goals in Q3 under the old rule).
+function goalMissingCount(rec, u) {
+  if(rec?.goalStatus!=="submitted") return 0;
+  const n = requiredGoalCount(rec.fy, rec.quarter, goalRoleOf(rec, u));
+  const have = (rec.goals||[]).filter(g=>g.sl<=n && (g.desc||"").trim()).length;
+  return Math.max(0, n-have);
+}
+
+// ── v53: COMBINED QUARTER SCORE ──
+// Overall = performance appraisal average × 70% + goal points (out of 30).
+// Goals: 30 points split equally across the mandatory goals (3 goals → 10 each, 2 goals → 15 each).
+// v54: a goal counts as soon as the self-assessment is submitted (Completed = points), Provisional until the partner
+// approves that entry, then Final. A rejected entry drops out until it is resubmitted.
+// WIP / Zero progress earn 0. Intern's optional goal 3 earns 0 (not scored).
+// No goals for the quarter (joined late, before joining, inactive, before the scheme) → appraisal counts 100%.
+// No appraisals for the quarter → goals count 100%.
+// Until everything is decided the score is Provisional and is worked out on the parts decided so far,
+// so an unassessed goal or an open appraisal never drags the number down in the meantime.
+const OVERALL_W_APPRAISAL = 70, OVERALL_W_GOALS = 30;
+const GOAL_ACHIEVED = "Completed";
+function goalScoreFor(fy, quarter, staffId, goals, users) {
+  const u = users.find(x=>x.id===staffId);
+  if(!isQuarterInGoalScheme(fy, quarter)) return { applicable:false, reason:"Goal setting started in Q2 FY 2026-27" };
+  const excl = goalQuarterExclusion(u, fy, quarter, goals);
+  if(excl) return { applicable:false, reason: excl==="grace" ? "Joined late in the quarter, goals skipped" : excl==="beforeJoining" ? "Before joining" : "Not applicable" };
+  const [qStart, qEnd] = quarterDateRange(fy, quarter);
+  if(qStart>todayStr()) return { applicable:false, reason:"Quarter not started" };
+  const rec = goals.find(g=>g.fy===fy&&g.quarter===quarter&&g.staffId===staffId);
+  const role = goalRoleOf(rec, u);
+  const n = requiredGoalCount(fy, quarter, role);
+  const each = OVERALL_W_GOALS / n;
+  const ended = todayStr() > qEnd;
+  const assessSubmitted = rec?.assessStatus==="submitted";
+  const rows = [1,2,3].map(sl => {
+    const g = (rec?.goals||[]).find(x=>x.sl===sl);
+    const a = (rec?.assess||[]).find(x=>x.sl===sl);
+    const scored = sl<=n;
+    if(!g || !((g.desc||"").trim())) {
+      if(!scored) return null;                                    // optional goal not set: nothing to show
+      return { sl, desc:"", scored, state:"notset", points:0, decided:false, each };
+    }
+    const reviewed = !!(assessSubmitted && a?.status && a?.reviewStatus==="approved");
+    const counted = !!(ended && assessSubmitted && a?.status && a?.reviewStatus!=="rejected"); // v54
+    let state;
+    if(!ended) state = "running";
+    else if(!assessSubmitted || !a?.status) state = "toassess";
+    else if(a.reviewStatus==="rejected") state = "rejected";
+    else if(!reviewed) state = "review";
+    else state = "approved";
+    const achieved = counted && a.status===GOAL_ACHIEVED;
+    return { sl, desc:g.desc, scored, state, selfStatus:a?.status||"", points: scored && achieved ? each : 0, decided: counted, approved: reviewed, each };
+  }).filter(Boolean);
+  const scoredRows = rows.filter(r=>r.scored);
+  const decided = scoredRows.filter(r=>r.decided);
+  return {
+    applicable:true, role, n, each, rows,
+    points: decided.reduce((s,r)=>s+r.points,0),
+    achieved: decided.filter(r=>r.points>0).length,
+    decidedWeight: decided.length*each,                         // part of the 30 already counted
+    final: scoredRows.every(r=>r.approved),                     // v54: Final only once every scored goal is partner-approved
+  };
+}
+// Combine the appraisal average for the quarter with the goal score.
+// appr = quarterAverage(items) for that staff member and quarter; gs = goalScoreFor(...)
+const round1 = x => Math.round(x*10)/10;
+function combinedScore(appr, gs) {
+  const apprApplicable = appr.total>0 && !(appr.scored===0 && appr.pending===0); // every engagement N/A → no appraisal part
+  const goalsApplicable = !!gs?.applicable;
+  const wA = apprApplicable ? OVERALL_W_APPRAISAL : 0;
+  const wG = goalsApplicable ? OVERALL_W_GOALS : 0;
+  const decA = apprApplicable && appr.avg!=null ? wA : 0;
+  const decG = goalsApplicable ? gs.decidedWeight : 0;
+  const apprPts = decA ? appr.avg*wA/100 : 0;                 // e.g. 82% × 70 = 57.4
+  const goalPts = goalsApplicable ? gs.points : 0;
+  const provisional = (apprApplicable && appr.pending>0) || (goalsApplicable && !gs.final);
+  const base = decA + decG;
+  const pct = base>0 ? round1((apprPts + goalPts) / base * 100) : null;
+  let mode = "both";
+  if(!apprApplicable && !goalsApplicable) mode = "none";
+  else if(!goalsApplicable) mode = "appraisalOnly";
+  else if(!apprApplicable) mode = "goalsOnly";
+  return { pct, provisional, mode, wA, wG, decA, decG, apprPts:round1(apprPts), goalPts:round1(goalPts), apprApplicable, goalsApplicable,
+    partial: provisional && base>0 && base<(wA+wG) };
+}
 function blankGoalRecord(fy, quarter, staffId) {
   return {
     id:`goal-${staffId}-${fy}-${quarter}`, fy, quarter, staffId,
@@ -445,6 +536,7 @@ function goalQuarterStatus(fy, quarter, staffId, goals, users) {
   const goalPhase = phaseReviewStatus(rec.goals, true);
   if(goalPhase==="resubmission") return { label:"Goals: resubmission needed", cls:"bp2" };
   if(goalPhase==="submitted") return { label:"Goals: pending review", cls:"brs" };
+  if(goalMissingCount(rec, u)>0) return { label:"Goal 3 to add", cls:"bp2" }; // v53: managers need 3 goals from Q3
   const [, qEnd] = quarterDateRange(fy, quarter);
   const ended = todayStr() > qEnd;
   if(!ended) return { label:"Goals approved", cls:"bac" };
@@ -5790,21 +5882,31 @@ function AppraisalListRow({ r, ex, onClick, actions }) {
 
 // What to show for one quarter: the average (partners / own view), or progress (manager's team view).
 // A quarter stays Provisional while any appraisal in it is still open — even after the quarter has ended.
-function quarterDisplay(fy, quarter, items, showAvg) {
+// v53: with showAvg, the number shown is the OVERALL score (appraisal 70% + goals 30%); goalFn(fy,q) gives the goal score.
+function quarterDisplay(fy, quarter, items, showAvg, goalFn) {
   const qItems = items.filter(i=>i.fy===fy && i.quarter===quarter);
   const s = quarterAverage(qItems);
+  const gs = showAvg && goalFn ? goalFn(fy, quarter) : null;
+  const c = combinedScore(s, gs);
   const [qStart] = quarterDateRange(fy, quarter);
   const upcoming = qStart>todayStr();
-  const provisional = s.pending>0;
-  if(upcoming && s.scored===0) return { s, main:"Upcoming", muted:true, upcoming, provisional:false };
-  if(s.total===0) return { s, main:"N/A", muted:true, provisional:false };
-  if(!showAvg) return { s, main:`${s.total-s.pending}/${s.total}`, muted:s.pending===s.total, provisional:false };
-  if(s.avg!=null) return { s, main:`${Math.round(s.avg)}%`, muted:false, provisional };
-  return { s, main: provisional ? "Pending" : "N/A", muted:true, provisional:false };
+  if(upcoming && s.scored===0) return { s, c, gs, main:"Upcoming", muted:true, upcoming, provisional:false };
+  if(!showAvg) {
+    if(s.total===0) return { s, c, gs, main:"N/A", muted:true, provisional:false };
+    return { s, c, gs, main:`${s.total-s.pending}/${s.total}`, muted:s.pending===s.total, provisional:false };
+  }
+  if(c.mode==="none") return { s, c, gs, main:"N/A", muted:true, provisional:false };
+  if(c.pct!=null) return { s, c, gs, main:`${Math.round(c.pct)}%`, muted:false, provisional:c.provisional };
+  return { s, c, gs, main: c.provisional ? "Pending" : "N/A", muted:true, provisional:false };
+}
+// Overall score of a quarter for one staff member (null when there is nothing to score yet).
+function overallOf(fy, quarter, items, goalFn) {
+  const s = quarterAverage(items.filter(i=>i.fy===fy && i.quarter===quarter));
+  return combinedScore(s, goalFn ? goalFn(fy, quarter) : null).pct;
 }
 
 const ProvisionalTag = ({ small }) => (
-  <span className="bdg brs" style={small?{fontSize:9.5,padding:"1px 6px"}:{}} title="Some appraisals in this quarter are still open, so this average can change">Provisional</span>
+  <span className="bdg brs" style={small?{fontSize:9.5,padding:"1px 6px"}:{}} title="Some appraisals or goal self-assessments in this quarter are still open, so this score can change">Provisional</span>
 );
 
 // ── Name-card quarter row: whole-number scores, coloured against the previous scored quarter ──
@@ -5816,15 +5918,13 @@ function prevQuarterOf(fy, quarter) {
   return { fy:`${y}-${String((y+1)%100).padStart(2,"0")}`, quarter:"Q4" };
 }
 // Rounded average of the most recent earlier quarter that has a score (crosses into the previous FY).
-function priorRoundedScore(fy, quarter, history) {
-  const byQ = {};
-  history.forEach(i => { const k = `${i.fy}|${i.quarter}`; (byQ[k] = byQ[k] || []).push(i); });
+function priorRoundedScore(fy, quarter, history, goalFn) {
   let cur = { fy, quarter };
   for(let n=0; n<12; n++) {
     cur = prevQuarterOf(cur.fy, cur.quarter);
     if(quarterDateRange(cur.fy, cur.quarter)[1] < APPRAISAL_START_DATE) return null;
-    const s = quarterAverage(byQ[`${cur.fy}|${cur.quarter}`] || []);
-    if(s.avg!=null) return Math.round(s.avg);
+    const pct = overallOf(cur.fy, cur.quarter, history, goalFn);
+    if(pct!=null) return Math.round(pct);
   }
   return null;
 }
@@ -5844,16 +5944,16 @@ function TrendLegend() {
   );
 }
 
-function QuarterStrip({ fy, items, showAvg, history=[] }) {
+function QuarterStrip({ fy, items, showAvg, history=[], goalFn }) {
   return (
     <div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",columnGap:10,marginTop:12,paddingTop:10,borderTop:"1px solid var(--border)"}}>
       {GOAL_QUARTER_ORDER.map(q=>{
-        const d = quarterDisplay(fy, q, items, showAvg);
+        const d = quarterDisplay(fy, q, items, showAvg, goalFn);
         let cell;
         if(d.upcoming && d.s.scored===0) cell = <span style={{color:"#b3bac6"}}>—</span>;
-        else if(showAvg && d.s.avg!=null) {
-          const cur = Math.round(d.s.avg);
-          const prev = priorRoundedScore(fy, q, history);
+        else if(showAvg && d.c.pct!=null) {
+          const cur = Math.round(d.c.pct);
+          const prev = priorRoundedScore(fy, q, history, goalFn);
           const color = prev==null || prev===cur ? "var(--navy)" : cur>prev ? TREND_UP : TREND_DOWN;
           cell = <><span style={{color,fontWeight:600}}>{cur}%</span>{d.provisional && <ProvDot/>}</>;
         }
@@ -5871,13 +5971,13 @@ function QuarterStrip({ fy, items, showAvg, history=[] }) {
 }
 
 // Four quarter cards inside a staff member; click one to see its engagements
-function QuarterTiles({ fy, items, showAvg, onPick }) {
+function QuarterTiles({ fy, items, showAvg, onPick, goalFn }) {
   return (
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:14}}>
       {GOAL_QUARTER_ORDER.map(q=>{
-        const d = quarterDisplay(fy, q, items, showAvg);
+        const d = quarterDisplay(fy, q, items, showAvg, goalFn);
         const { s } = d;
-        const clickable = s.total>0;
+        const clickable = s.total>0 || (showAvg && !!d.gs?.applicable);
         const parts = [];
         if(s.total>0) {
           if(d.upcoming && s.scored===0) parts.push(`${s.total} engagement${s.total>1?"s":""} pushed here`);
@@ -5898,7 +5998,12 @@ function QuarterTiles({ fy, items, showAvg, onPick }) {
               <span style={{fontFamily:"'Playfair Display',serif",fontSize:28,color:d.muted?"var(--slate)":"var(--navy)"}}>{d.main}</span>
               {d.provisional && <ProvisionalTag/>}
             </div>
-            <div className="tx tsl mt4">{showAvg && s.avg!=null ? "Average score" : ""}{showAvg && s.avg!=null && parts.length ? " · " : ""}{parts.join(" · ") || (d.upcoming ? "Quarter not started" : "No appraisals this quarter")}</div>
+            <div className="tx tsl mt4">{[
+              showAvg && d.c.pct!=null ? "Overall score" : null,
+              ...parts,
+              !parts.length ? (d.upcoming ? "Quarter not started" : showAvg && d.gs?.applicable ? "Goals only, no appraisals" : "No appraisals this quarter") : null,
+            ].filter(Boolean).join(" · ")}</div>
+            {showAvg && !d.upcoming && d.c.mode!=="none" && <QuarterMiniSplit c={d.c} s={s} gs={d.gs}/>}
           </div>
         );
       })}
@@ -5906,33 +6011,152 @@ function QuarterTiles({ fy, items, showAvg, onPick }) {
   );
 }
 
-function QuarterAppraisalList({ fy, quarter, items, showAvg, onOpen, rowActions }) {
+function QuarterAppraisalList({ fy, quarter, items, showAvg, onOpen, rowActions, goalFn }) {
   const qItems = items.filter(i=>i.fy===fy && i.quarter===quarter);
   const s = quarterAverage(qItems);
-  const provisional = s.pending>0;
+  const gs = showAvg && goalFn ? goalFn(fy, quarter) : null;
   return (
     <div>
-      {showAvg && (
-        <div className="card" style={{marginBottom:12,padding:"14px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:16,flexWrap:"wrap"}}>
-          <div>
-            <div className="ts tsl">{quarter} average score</div>
-            <div className="tx tsl mt4">Sum of engagement scores ÷ engagements scored ({s.scored}). N/A engagements{s.na?` (${s.na})`:""} are left out of both.{provisional?` ${s.pending} still open, so this can change.`:""}</div>
-          </div>
-          <div style={{display:"flex",alignItems:"center",gap:8}}>
-            {s.avg!=null && (provisional ? <ProvisionalTag/> : <span className="bdg bac">Final</span>)}
-            <span style={{fontFamily:"'Playfair Display',serif",fontSize:24}}>{s.avg!=null?`${Math.round(s.avg)}%`:provisional?"Pending":"N/A"}</span>
-          </div>
-        </div>
-      )}
+      {showAvg && <OverallBreakdown quarter={quarter} s={s} gs={gs} c={combinedScore(s, gs)}/>}
+      {qItems.length>0 && showAvg && <div style={{fontSize:11,fontWeight:600,letterSpacing:"1px",textTransform:"uppercase",color:"var(--slate)",margin:"18px 0 10px"}}>Engagement appraisals</div>}
       <div style={{display:"flex",flexDirection:"column",gap:8}}>
         {qItems.map(i=><AppraisalListRow key={i.r.key} r={i.r} ex={i.ex} onClick={()=>onOpen(i.r)} actions={rowActions?rowActions(i):null}/>)}
-        {qItems.length===0 && <div className="es">No appraisals in this quarter.</div>}
+        {qItems.length===0 && <div className="es" style={{padding:"28px 24px"}}>No engagement appraisals in this quarter.</div>}
       </div>
     </div>
   );
 }
 
-function PerformanceAppraisal({ user, users=[], projects=[], setProjects, tss=[], appraisals=[], setAppraisals }) {
+// ── v53: overall score building blocks ──
+const OV_BLUE = "#1e5fa8", OV_GREEN = "#0f8a5f";
+const fmtPts = x => { const r = Math.round(x*10)/10; return Number.isInteger(r) ? String(r) : r.toFixed(1); };
+// Thin two-colour bar on a quarter tile: appraisal points and goal points.
+function QuarterMiniSplit({ c, s, gs }) {
+  const total = c.wA + c.wG || 100;
+  const aw = c.decA ? (s.avg*c.wA/100) : 0;
+  const gw = c.goalsApplicable ? gs.points : 0;
+  return (
+    <div style={{marginTop:10}}>
+      <div style={{display:"flex",height:6,borderRadius:4,overflow:"hidden",background:"var(--cream)"}}>
+        <div style={{width:`${aw/total*100}%`,background:OV_BLUE}}/>
+        <div style={{width:`${gw/total*100}%`,background:OV_GREEN}}/>
+      </div>
+      <div className="tx tsl" style={{marginTop:5,display:"flex",gap:10,flexWrap:"wrap"}}>
+        {c.apprApplicable && <span>Appraisal {s.avg!=null?`${Math.round(s.avg)}%`:"pending"}</span>}
+        {c.goalsApplicable && <span>Goals {gs.achieved}/{gs.n}</span>}
+      </div>
+    </div>
+  );
+}
+
+const GOAL_ROW_PILL = r => {
+  if(!r.scored) return { cls:"bcl", label:"Optional · not scored" };
+  if(r.state==="notset") return { cls:"bp2", label:"Not added yet" };
+  if(r.state==="running") return { cls:"bcl", label:"Assessed after quarter end" };
+  if(r.state==="toassess") return { cls:"brs", label:"Self-assessment pending" };
+  if(r.state==="rejected") return { cls:"bp2", label:"Sent back to resubmit" };
+  if(r.state==="review") return { cls:"brs", label:`${r.selfStatus==="Completed"?"Achieved":r.selfStatus} · awaiting partner` };
+  if(r.selfStatus===GOAL_ACHIEVED) return { cls:"ba", label:"Achieved" };
+  if(r.selfStatus==="WIP") return { cls:"brs", label:"WIP" };
+  return { cls:"br", label:"Not achieved" };
+};
+
+// "How it's arrived at" panel for one staff member and quarter.
+function OverallBreakdown({ quarter, s, gs, c }) {
+  const both = c.mode==="both";
+  const total = c.wA + c.wG || 100;
+  const apprW = c.mode==="appraisalOnly" ? 100 : OVERALL_W_APPRAISAL;
+  const goalW = c.mode==="goalsOnly" ? 100 : OVERALL_W_GOALS;
+  const apprBar = c.decA ? s.avg*c.wA/100 : 0;
+  const goalBar = c.goalsApplicable ? gs.points : 0;
+  const Panel = ({ children }) => <div style={{background:"var(--cream)",borderRadius:10,padding:"12px 14px",border:"1px solid var(--border)",minWidth:0}}>{children}</div>;
+  const Row = ({ l, r, strong, muted }) => (
+    <div style={{display:"flex",justifyContent:"space-between",gap:10,padding:"7px 0",borderTop:"1px solid var(--border)",fontSize:13,fontWeight:strong?600:400,color:muted?"var(--slate-light)":"var(--navy)"}}>
+      <span style={{minWidth:0}}>{l}</span><span style={{flexShrink:0,fontVariantNumeric:"tabular-nums"}}>{r}</span>
+    </div>
+  );
+  const Head = ({ title, w, color }) => (
+    <div className="fxb" style={{marginBottom:6}}>
+      <span style={{display:"flex",alignItems:"center",gap:7,fontWeight:600,fontSize:13}}><i style={{width:9,height:9,borderRadius:2,background:color,display:"inline-block"}}/>{title}</span>
+      <span className="bdg" style={{background:"#fff",border:"1px solid var(--border)",color:"var(--navy)"}}>{w}% weight</span>
+    </div>
+  );
+  let note = null;
+  if(c.mode==="appraisalOnly") note = `No goals apply this quarter (${gs?.reason||"not applicable"}), so the appraisal average counts 100%.`;
+  else if(c.mode==="goalsOnly") note = "No engagement appraisals this quarter, so goals count 100%.";
+  if(c.partial) note = `${note?note+" ":""}Until every appraisal and self-assessment is in, the score is worked out on the parts available so far, so open items don't pull it down.`;
+  return (
+    <div className="card" style={{padding:"18px 20px"}}>
+      <div className="fxb" style={{alignItems:"flex-start",gap:16,flexWrap:"wrap",marginBottom:12}}>
+        <div>
+          <div className="card-title">{quarter} overall score: how it's arrived at</div>
+          <div className="tx tsl mt4">Performance appraisal {OVERALL_W_APPRAISAL}% + goals {OVERALL_W_GOALS}%</div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          {c.pct!=null && (c.provisional ? <ProvisionalTag/> : <span className="bdg bac">Final</span>)}
+          <span style={{fontFamily:"'Playfair Display',serif",fontSize:30,lineHeight:1}}>{c.pct!=null?`${Math.round(c.pct)}%`:c.provisional?"Pending":"N/A"}</span>
+        </div>
+      </div>
+
+      {c.mode!=="none" && <>
+        <div style={{display:"flex",height:12,borderRadius:6,overflow:"hidden",background:"var(--cream)",border:"1px solid var(--border)"}}>
+          <div style={{width:`${apprBar/total*100}%`,background:OV_BLUE}}/>
+          <div style={{width:`${goalBar/total*100}%`,background:OV_GREEN}}/>
+        </div>
+        <div className="tx tsl" style={{display:"flex",gap:16,flexWrap:"wrap",marginTop:6,marginBottom:14}}>
+          {c.apprApplicable && <span>Appraisal {c.decA?fmtPts(c.apprPts):"pending"} of {OVERALL_W_APPRAISAL}</span>}
+          {c.goalsApplicable && <span>Goals {fmtPts(c.goalPts)} of {OVERALL_W_GOALS}</span>}
+        </div>
+      </>}
+
+      <div style={{display:"grid",gridTemplateColumns:c.apprApplicable&&c.goalsApplicable?"minmax(0,1fr) minmax(0,1fr)":"minmax(0,1fr)",gap:12}}>
+        {c.apprApplicable && (
+          <Panel>
+            <Head title="Performance appraisal" w={apprW} color={OV_BLUE}/>
+            <Row l={`Engagements scored`} r={s.scored}/>
+            {s.na>0 && <Row l="Marked N/A (left out)" r={s.na} muted/>}
+            {s.pending>0 && <Row l="Still open" r={s.pending} muted/>}
+            <Row l="Quarter average" r={s.avg!=null?`${fmtPts(s.avg)}%`:"Pending"} strong/>
+            {both && <Row l={s.avg!=null?`${fmtPts(s.avg)}% × ${OVERALL_W_APPRAISAL}%`:`Average × ${OVERALL_W_APPRAISAL}%`} r={s.avg!=null?fmtPts(c.apprPts):"—"} strong/>}
+          </Panel>
+        )}
+        {c.goalsApplicable && (
+          <Panel>
+            <Head title="Goals" w={goalW} color={OV_GREEN}/>
+            {gs.rows.map(r=>{
+              const pill = GOAL_ROW_PILL(r);
+              return (
+                <div key={r.sl} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,padding:"7px 0",borderTop:"1px solid var(--border)",fontSize:13}}>
+                  <span style={{minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:r.scored?"var(--navy)":"var(--slate-light)"}} title={r.desc}>{r.sl}. {r.desc||"Goal not set"}</span>
+                  <span style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+                    <span className={`bdg ${pill.cls}`}>{pill.label}</span>
+                    <span title={r.scored&&r.decided&&!r.approved?"Counted from the self-assessment, awaiting partner approval":undefined} style={{width:30,textAlign:"right",fontVariantNumeric:"tabular-nums",color:r.scored&&r.approved?"var(--navy)":"var(--slate-light)",fontStyle:r.scored&&r.decided&&!r.approved?"italic":"normal"}}>{r.scored&&r.decided?fmtPts(r.points):"—"}</span>
+                  </span>
+                </div>
+              );
+            })}
+            <Row l={`Each goal worth (${gs.n} scored goal${gs.n>1?"s":""})`} r={fmtPts(gs.each)}/>
+            <Row l={`${gs.achieved} of ${gs.n} achieved${gs.final?"":" (provisional)"}`} r={`${fmtPts(gs.points)} of ${OVERALL_W_GOALS}`} strong/>
+          </Panel>
+        )}
+      </div>
+
+      {c.mode!=="none" && c.pct!=null && (
+        <div style={{marginTop:12,padding:"10px 12px",borderRadius:8,background:"var(--cream)",fontSize:13,border:"1px solid var(--border)"}}>
+          <span className="tsl">Overall = </span>
+          {both && !c.partial && <span>{fmtPts(c.apprPts)} + {fmtPts(c.goalPts)} = {fmtPts(c.apprPts+c.goalPts)}, shown as <strong>{Math.round(c.pct)}%</strong></span>}
+          {both && c.partial && <span>({c.decA?fmtPts(c.apprPts):"0"} + {fmtPts(c.goalPts)}) ÷ {fmtPts(c.decA+c.decG)} points counted so far × 100 = {fmtPts(c.pct)}, shown as <strong>{Math.round(c.pct)}%</strong></span>}
+          {c.mode==="appraisalOnly" && <span>appraisal average {fmtPts(s.avg)}%, shown as <strong>{Math.round(c.pct)}%</strong></span>}
+          {c.mode==="goalsOnly" && <span>{fmtPts(c.goalPts)} of {fmtPts(c.decG)} goal points{c.partial?" counted so far":""} = {fmtPts(c.pct)}%, shown as <strong>{Math.round(c.pct)}%</strong></span>}
+        </div>
+      )}
+      {note && <div className="tx tsl" style={{marginTop:10,lineHeight:1.5}}>{note}</div>}
+      {c.goalsApplicable && <div className="tx tsl" style={{marginTop:6,lineHeight:1.5}}>Goals count from the submitted self-assessment: Completed earns the goal's points, WIP and Zero progress earn 0. Points in grey italics are provisional until a partner approves that entry. A rejected entry drops out until it is resubmitted.{gs.rows.some(r=>!r.scored)?" The optional third goal is not scored.":""}</div>}
+    </div>
+  );
+}
+
+function PerformanceAppraisal({ user, users=[], projects=[], setProjects, tss=[], appraisals=[], setAppraisals, goals=[] }) {
   const isP = user.role==="partner";
   const isMgr = user.role==="manager";
   const rawRequired = useMemo(()=>getRequiredAppraisals(users, projects, tss), [users, projects, tss]);
@@ -6010,6 +6234,9 @@ function PerformanceAppraisal({ user, users=[], projects=[], setProjects, tss=[]
   })();
 
   const fyItems = allItems.filter(i=>i.fy===fy);
+  // v53: goal score for a staff member, used for the overall score (appraisal 70% + goals 30%)
+  const goalFnFor = sid => (gfy, q) => goalScoreFor(gfy, q, sid, goals, users);
+  const hasGoalQuarter = (sid, gfy) => GOAL_QUARTER_ORDER.some(q => goalScoreFor(gfy, q, sid, goals, users).applicable);
   const receivedItems = fyItems.filter(i=>i.r.staffId===user.id);
   const givenItems = fyItems.filter(i=>i.r.staffId!==user.id && i.r.eligibleAppraisers.includes(user.id));
 
@@ -6044,8 +6271,8 @@ function PerformanceAppraisal({ user, users=[], projects=[], setProjects, tss=[]
         <Crumbs staffName={<>{u?.name}{inactive&&<span className="bdg bcl" style={{marginLeft:8}}>Inactive</span>}</>} rootLabel={rootLabel}/>
         <div style={{opacity:inactive?.6:1}}>
           {!selQuarter
-            ? <QuarterTiles fy={fy} items={mine} showAvg={showAvg} onPick={setSelQuarter}/>
-            : <QuarterAppraisalList fy={fy} quarter={selQuarter} items={mine} showAvg={showAvg} onOpen={setSelReq} rowActions={rowActions}/>}
+            ? <QuarterTiles fy={fy} items={mine} showAvg={showAvg} onPick={setSelQuarter} goalFn={goalFnFor(selStaff)}/>
+            : <QuarterAppraisalList fy={fy} quarter={selQuarter} items={mine} showAvg={showAvg} onOpen={setSelReq} rowActions={rowActions} goalFn={goalFnFor(selStaff)}/>}
         </div>
         {pushModal}
       </div>
@@ -6053,9 +6280,9 @@ function PerformanceAppraisal({ user, users=[], projects=[], setProjects, tss=[]
   };
 
   // v41: cards split into Managers and Interns & others, each sorted A–Z by name, separated by a line.
-  const staffCards = (items, showAvg, showRole, history=[]) => {
+  const staffCards = (items, showAvg, showRole, history=[], extraIds=[]) => {
     const nameOf = sid => users.find(x=>x.id===sid)?.name || "";
-    const staffIds = [...new Set(items.map(i=>i.r.staffId))].sort((a,b)=>nameOf(a).localeCompare(nameOf(b), undefined, {sensitivity:"base"}));
+    const staffIds = [...new Set([...items.map(i=>i.r.staffId), ...extraIds])].sort((a,b)=>nameOf(a).localeCompare(nameOf(b), undefined, {sensitivity:"base"}));
     const groups = [
       { key:"mgr",   label:"Managers",          ids: staffIds.filter(sid=>users.find(x=>x.id===sid)?.role==="manager") },
       { key:"other", label:"Interns & others",  ids: staffIds.filter(sid=>users.find(x=>x.id===sid)?.role!=="manager") },
@@ -6069,8 +6296,8 @@ function PerformanceAppraisal({ user, users=[], projects=[], setProjects, tss=[]
       return (
         <div key={sid} className="card" style={{cursor:"pointer",opacity:inactive?.55:1,padding:"16px 18px"}} onClick={()=>{setSelStaff(sid);setSelQuarter(null);}}>
           <div className="fw6" style={{fontSize:15}}>{u?.name}{inactive&&<span className="bdg bcl" style={{marginLeft:8}}>Inactive</span>}</div>
-          <div className="tsl" style={{fontSize:12.5,marginTop:3}}>{showRole&&u?.role?`${u.role.charAt(0).toUpperCase()+u.role.slice(1)} · `:""}{done} of {mine.length} complete</div>
-          <QuarterStrip fy={fy} items={mine} showAvg={showAvg} history={history.filter(i=>i.r.staffId===sid)}/>
+          <div className="tsl" style={{fontSize:12.5,marginTop:3}}>{showRole&&u?.role?`${u.role.charAt(0).toUpperCase()+u.role.slice(1)} · `:""}{mine.length?`${done} of ${mine.length} complete`:"Goals only"}</div>
+          <QuarterStrip fy={fy} items={mine} showAvg={showAvg} history={history.filter(i=>i.r.staffId===sid)} goalFn={showAvg?goalFnFor(sid):null}/>
         </div>
       );
     };
@@ -6103,7 +6330,7 @@ function PerformanceAppraisal({ user, users=[], projects=[], setProjects, tss=[]
           <FYSelector fy={fy} setFy={changeFy} options={fyList}/>
           <TrendLegend/>
         </div>
-        {staffCards(fyItems, true, true, allItems)}
+        {staffCards(fyItems, true, true, allItems, users.filter(u=>u.role!=="partner" && hasGoalQuarter(u.id, fy)).map(u=>u.id))}
       </div>
     );
   }
@@ -6121,16 +6348,16 @@ function PerformanceAppraisal({ user, users=[], projects=[], setProjects, tss=[]
       )}
       {subView==="received" && (
         !selQuarter ? (
-          receivedItems.length===0
+          receivedItems.length===0 && !hasGoalQuarter(user.id, fy)
             ? <div className="es">No appraisals for this financial year yet.</div>
-            : <QuarterTiles fy={fy} items={receivedItems} showAvg={true} onPick={setSelQuarter}/>
+            : <QuarterTiles fy={fy} items={receivedItems} showAvg={true} onPick={setSelQuarter} goalFn={goalFnFor(user.id)}/>
         ) : (
           <div>
             <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16}}>
               <button className="btn bgh bsm" onClick={()=>setSelQuarter(null)}><I n="arrowleft" s={13}/>All quarters</button>
               <span className="ts fw6">{selQuarter} · {quarterLabel(fy,selQuarter)}</span>
             </div>
-            <QuarterAppraisalList fy={fy} quarter={selQuarter} items={receivedItems} showAvg={true} onOpen={setSelReq}/>
+            <QuarterAppraisalList fy={fy} quarter={selQuarter} items={receivedItems} showAvg={true} onOpen={setSelReq} goalFn={goalFnFor(user.id)}/>
           </div>
         )
       )}
@@ -6163,8 +6390,14 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
   const [goalChanging, setGoalChanging] = useState({});
   const [assessChanging, setAssessChanging] = useState({});
   const [goalErr, setGoalErr] = useState("");
-  const reqGoals = requiredGoalCount(fy, quarter);
+  const staffUser = users.find(u=>u.id===staffId);
+  const goalRole = goalRoleOf(rec, staffUser);
+  const reqGoals = requiredGoalCount(fy, quarter, goalRole);
   const hasOptionalGoal = reqGoals<3;
+  const goalWeight = Math.round(OVERALL_W_GOALS/reqGoals); // v53: points each scored goal carries in the overall score
+  const missingGoals = goalMissingCount(rec, staffUser);   // v53: manager submitted 2 goals before goal 3 became mandatory
+  const [newGoal, setNewGoal] = useState({ desc:"", steps:"" });
+  const [newGoalErr, setNewGoalErr] = useState("");
   const isFilled = g => !!(g.desc||"").trim() && !!(g.steps||"").trim();
   const isBlank  = g => !(g.desc||"").trim() && !(g.steps||"").trim();
 
@@ -6197,7 +6430,21 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
     const nextGoals = status==="submitted" ? kept.map(g=>({...g, reviewStatus:"pending", reviewRemark:null})) : kept;
     const keptSl = nextGoals.map(g=>g.sl);
     const nextAssess = status==="submitted" ? (rec.assess||[]).filter(a=>keptSl.includes(a.sl)) : rec.assess;
-    onSave({ ...rec, goals:nextGoals, assess:nextAssess, goalStatus:status, goalSubmittedAt: status==="submitted" ? new Date().toISOString() : rec.goalSubmittedAt });
+    onSave({ ...rec, goals:nextGoals, assess:nextAssess, goalStatus:status, goalSubmittedAt: status==="submitted" ? new Date().toISOString() : rec.goalSubmittedAt,
+      ...(status==="submitted" ? { goalRole } : {}) });
+  };
+  // v53: add the missing mandatory goal(s) to an already-submitted record. Goes to the partner for review like any goal.
+  const addMissingGoal = () => {
+    setNewGoalErr("");
+    if(!newGoal.desc.trim() || !newGoal.steps.trim()) { setNewGoalErr("Fill in both the goal and the steps to achieve it."); return; }
+    const used = (rec.goals||[]).filter(g=>(g.desc||"").trim()).map(g=>g.sl);
+    const sl = [1,2,3].find(x=>!used.includes(x));
+    if(!sl) return;
+    const goalsNext = [...(rec.goals||[]).filter(g=>g.sl!==sl), { sl, desc:newGoal.desc.trim(), steps:newGoal.steps.trim(), reviewStatus:"pending", reviewRemark:null, addedLater:true, addedAt:new Date().toISOString() }].sort((a,b)=>a.sl-b.sl);
+    const assessNext = (rec.assess||[]).some(a=>a.sl===sl) ? rec.assess : [...(rec.assess||[]), { sl, status:"", remark:"" }].sort((a,b)=>a.sl-b.sl);
+    onSave({ ...rec, goals:goalsNext, assess:assessNext, goalRole });
+    addAudit(viewer.id, viewer.name, "GOAL_ADDED", `Added goal ${sl} for ${quarter} FY ${fy} (now mandatory for managers)`);
+    setNewGoal({ desc:"", steps:"" });
   };
   const resubmitGoal = (sl) => {
     const item = goals.find(g=>g.sl===sl);
@@ -6225,9 +6472,11 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
   const resubmitAssess = (sl) => {
     const item = assess.find(a=>a.sl===sl);
     if(!item.status) { alert("Please select a status before resubmitting."); return; }
-    const persisted = rec.assess.find(a=>a.sl===sl);
-    const history = [...(persisted.reviewHistory||[]), { status:persisted.reviewStatus, remark:persisted.reviewRemark, reviewedBy:persisted.reviewedBy, reviewedAt:persisted.reviewedAt }];
-    onSave({ ...rec, assess: rec.assess.map(a=>a.sl===sl ? { ...item, reviewStatus:"pending", reviewRemark:null, reviewHistory:history } : a) });
+    const persisted = rec.assess.find(a=>a.sl===sl) || { sl };
+    const wasDecided = persisted.reviewStatus==="approved" || persisted.reviewStatus==="rejected";
+    const history = wasDecided ? [...(persisted.reviewHistory||[]), { status:persisted.reviewStatus, remark:persisted.reviewRemark||null, reviewedBy:persisted.reviewedBy||null, reviewedAt:persisted.reviewedAt||null }] : (persisted.reviewHistory||[]);
+    const nextItem = { ...item, reviewStatus:"pending", reviewRemark:null, reviewHistory:history };
+    onSave({ ...rec, assess: rec.assess.some(a=>a.sl===sl) ? rec.assess.map(a=>a.sl===sl ? nextItem : a) : [...rec.assess, nextItem] });
   };
   const decideAssess = (sl, decision) => {
     const note = (assessRejectNotes[sl]||"").trim();
@@ -6255,7 +6504,13 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
       {isSelf && !goalSubmitted && hasOptionalGoal && (
         <div className="al al-i">
           <I n="info" s={15}/>
-          <div><strong>Tip:</strong> Goals 1 and 2 are mandatory. Goal 3 is optional: fill in both the goal and its steps, or leave it fully blank.</div>
+          <div><strong>Tip:</strong> Goals 1 and 2 are mandatory and carry {goalWeight}% each of your overall score. Goal 3 is optional and is not scored: fill in both the goal and its steps, or leave it fully blank.</div>
+        </div>
+      )}
+      {isSelf && !goalSubmitted && !hasOptionalGoal && isQuarterOnOrAfter(fy, quarter, GOAL_OPTIONAL_THIRD_FROM) && (
+        <div className="al al-i">
+          <I n="info" s={15}/>
+          <div><strong>Tip:</strong> All 3 goals are mandatory for managers and carry {goalWeight}% each of your overall score.</div>
         </div>
       )}
       {!goalSubmitted && (
@@ -6269,7 +6524,7 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
                 <tr key={g.sl}>
                   <td style={{verticalAlign:"top",paddingTop:16}}>
                     {g.sl}{hasOptionalGoal&&!optional&&<span className="tdn" title="Mandatory"> *</span>}
-                    {optional&&<div className="tx tsl" style={{fontSize:10,marginTop:2}}>Optional</div>}
+                    {optional&&<div className="tx tsl" style={{fontSize:10,marginTop:2}}>Optional · not scored</div>}
                   </td>
                   <td>{isSelf
                     ? <textarea className="fta" style={{minHeight:44}} placeholder={optional?"Optional":""} value={g.desc} onChange={e=>{setGoalErr("");setGoals(prev=>prev.map(x=>x.sl===g.sl?{...x,desc:e.target.value}:x));}}/>
@@ -6308,7 +6563,7 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
             const rowEditable = isSelf && status==="rejected";
             return (
               <div key={g.sl} style={{padding:"10px 0",borderBottom:"1px solid var(--border)"}}>
-                <div className="ts fw6">Goal {g.sl}</div>
+                <div className="ts fw6">Goal {g.sl}{g.sl>reqGoals&&<span className="bdg bcl" style={{marginLeft:8,fontWeight:400}}>Optional · not scored</span>}{persisted.addedLater&&<span className="bdg bac" style={{marginLeft:8,fontWeight:400}}>Added later</span>}</div>
                 {rowEditable ? (
                   <>
                     <textarea className="fta" style={{marginTop:6,minHeight:44}} value={g.desc} onChange={e=>setGoals(prev=>prev.map(x=>x.sl===g.sl?{...x,desc:e.target.value}:x))} placeholder="Goal description"/>
@@ -6362,6 +6617,18 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
             );
           })}
           {hasOptionalGoal && goals.length<3 && <div className="tx tsl">Goal 3 not set (optional).</div>}
+          {missingGoals>0 && (
+            <div style={{padding:"12px 14px",borderRadius:10,border:"1.5px dashed #c4b5fd",background:"#faf5ff"}}>
+              <div className="ts fw6" style={{color:"#6d28d9"}}>Goal 3 is now mandatory for managers</div>
+              <div className="tx tsl" style={{marginTop:4,lineHeight:1.5}}>From {GOAL_OPTIONAL_THIRD_FROM.quarter} FY {GOAL_OPTIONAL_THIRD_FROM.fy}, managers set 3 goals at {goalWeight}% each of the overall score. {isSelf?"Add your third goal below. It goes to a partner for review like the others.":`Waiting for ${staffUser?.name||"them"} to add a third goal. Until then it scores 0.`}</div>
+              {isSelf && <>
+                {newGoalErr && <div className="err" style={{marginTop:10,marginBottom:0}}>{newGoalErr}</div>}
+                <textarea className="fta" style={{marginTop:10,minHeight:44,background:"#fff"}} placeholder="Goal 3" value={newGoal.desc} onChange={e=>{setNewGoalErr("");setNewGoal(v=>({...v,desc:e.target.value}));}}/>
+                <textarea className="fta" style={{marginTop:6,minHeight:44,background:"#fff"}} placeholder="Steps to achieve it" value={newGoal.steps} onChange={e=>{setNewGoalErr("");setNewGoal(v=>({...v,steps:e.target.value}));}}/>
+                <button className="btn bp bsm" style={{marginTop:8}} onClick={addMissingGoal}><I n="send" s={13}/>Submit goal 3 for review</button>
+              </>}
+            </div>
+          )}
         </div>
       )}
 
@@ -6378,10 +6645,11 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
             const a = assess.find(x=>x.sl===g.sl) || {sl:g.sl,status:"",remark:""};
             const persistedA = rec.assess.find(x=>x.sl===g.sl) || a;
             const aStatus = assessSubmitted ? (persistedA.reviewStatus || "pending") : null;
-            const rowEditable = !assessSubmitted || (isSelf && aStatus==="rejected");
+            const unanswered = assessSubmitted && !persistedA.status; // v53: goal added after the self-assessment went in
+            const rowEditable = !assessSubmitted || (isSelf && (aStatus==="rejected" || unanswered));
             return (
               <div key={g.sl} style={{padding:"10px 0",borderBottom:"1px solid var(--border)"}}>
-                <div className="ts fw6">{g.sl}. {g.desc||"—"}</div>
+                <div className="ts fw6">{g.sl}. {g.desc||"—"}{g.sl>reqGoals&&<span className="bdg bcl" style={{marginLeft:8,fontWeight:400}}>Not scored</span>}</div>
                 <div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
                   {["Completed","WIP","Zero progress"].map(s=>(
                     <button key={s} type="button" disabled={!rowEditable} className={`btn bxs ${a.status===s?"bp":"bgh"}`}
@@ -6413,8 +6681,10 @@ function GoalQuarterCard({ fy, quarter, staffId, viewer, users, record, onSave }
                         {isPartnerViewer && !assessChanging[g.sl] && <div style={{marginTop:6}}><button className="btn bgh bxs" onClick={()=>setAssessChanging(p=>({...p,[g.sl]:true}))}><I n="edit" s={12}/>Change decision</button></div>}
                       </div>
                     )}
-                    {aStatus==="pending" && isSelf && <span className="tx tsl">Awaiting partner review</span>}
-                    {((aStatus==="pending" && isPartnerViewer) || (isPartnerViewer && assessChanging[g.sl])) && (
+                    {aStatus==="pending" && isSelf && !unanswered && <span className="tx tsl">Awaiting partner review</span>}
+                    {unanswered && isSelf && <div><button className="btn bp bxs" onClick={()=>resubmitAssess(g.sl)}>Submit</button></div>}
+                    {unanswered && isPartnerViewer && <span className="tx tsl">Waiting for a status on this goal</span>}
+                    {((aStatus==="pending" && isPartnerViewer && !unanswered) || (isPartnerViewer && assessChanging[g.sl])) && (
                       <div>
                         <textarea className="fta" style={{minHeight:34}} placeholder="Remark — optional if approving, required if rejecting"
                           value={assessRejectNotes[g.sl]||""} onChange={e=>setAssessRejectNotes(prev=>({...prev,[g.sl]:e.target.value}))}/>
@@ -8366,6 +8636,7 @@ export default function App() {
       const rec = goals.find(g=>g.fy===fy&&g.quarter===q&&g.staffId===currentUser.id);
       if(!rec || rec.goalStatus!=="submitted") { cnt++; return; }
       if(phaseReviewStatus(rec.goals,true)==="resubmission") { cnt++; return; }
+      if(goalMissingCount(rec, users.find(x=>x.id===currentUser.id)||currentUser)>0) { cnt++; return; } // v53
       if(today>e) {
         if(rec.assessStatus!=="submitted") { cnt++; return; }
         if(phaseReviewStatus(rec.assess,true)==="resubmission") cnt++;
