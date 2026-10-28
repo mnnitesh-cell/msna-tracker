@@ -1,4 +1,4 @@
-// MSNA Time Tracker v54: goal points count from the staff member's submitted self-assessment (Provisional), and become Final once a partner approves; a rejected entry drops out until resubmitted. v53: Overall quarterly score in Performance Appraisal = appraisal average × 70% + goals 30% (achieved and partner-approved goals only), with a "how it's arrived at" panel. From Q3 FY 2026-27 managers set 3 mandatory goals (10% each) and interns 2 (15% each, optional goal 3 not scored); managers who submitted 2 goals in Q3 add goal 3. v52: Engagement Letter gets a "Not applicable" answer (new and older codes; no EL flag, signed EL check skipped at closure). v51: Assigned Work takes several managers per item, all equal. v50: older codes confirm "Signed EL received" instead of draft; EL saves are field-level; failed saves now show a notice. v49: Assigned Work (firm work given by partners to managers, accept/reopen). v48: Engagement Letter tracking (draft EL asked at code creation, EL pending flags, signed EL check at closure). v47: fixes v46 Update button (openDetail called itself). v46: latest update at top of drawer, update line and "New" pills in lists.
+// MSNA Time Tracker v55: score card and Partners' one-on-one discussion are collapsible (choice remembered per browser); the discussion box sits between the score card and the engagement list in each quarter of Performance Appraisal (one per staff per quarter, date + notes, any partner can edit with history kept; confidential: only partners and that staff member can read it, enforced by Firestore rules). v54: goal points count from the staff member's submitted self-assessment (Provisional), and become Final once a partner approves; a rejected entry drops out until resubmitted. v53: Overall quarterly score in Performance Appraisal = appraisal average × 70% + goals 30% (achieved and partner-approved goals only), with a "how it's arrived at" panel. From Q3 FY 2026-27 managers set 3 mandatory goals (10% each) and interns 2 (15% each, optional goal 3 not scored); managers who submitted 2 goals in Q3 add goal 3. v52: Engagement Letter gets a "Not applicable" answer (new and older codes; no EL flag, signed EL check skipped at closure). v51: Assigned Work takes several managers per item, all equal. v50: older codes confirm "Signed EL received" instead of draft; EL saves are field-level; failed saves now show a notice. v49: Assigned Work (firm work given by partners to managers, accept/reopen). v48: Engagement Letter tracking (draft EL asked at code creation, EL pending flags, signed EL check at closure). v47: fixes v46 Update button (openDetail called itself). v46: latest update at top of drawer, update line and "New" pills in lists.
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { initializeApp } from "firebase/app";
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, terminate, clearIndexedDbPersistence, waitForPendingWrites, collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, getDocs, query, where } from "firebase/firestore";
@@ -906,6 +906,7 @@ const I = ({ n, s=18 }) => {
     star:     "M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z",
     arrowleft:"M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20z",
     arrowright:"M4 11h12.17l-5.59-5.59L12 4l8 8-8 8-1.41-1.41L16.17 13H4z",
+    chevron:  "M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z",
     task:     "M19 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.11 0 2-.9 2-2V5c0-1.1-.89-2-2-2zm-9 14l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z",
   };
   return <svg width={s} height={s} viewBox="0 0 24 24" fill="currentColor"><path d={paths[n]||""}/></svg>;
@@ -6011,18 +6012,149 @@ function QuarterTiles({ fy, items, showAvg, onPick, goalFn }) {
   );
 }
 
-function QuarterAppraisalList({ fy, quarter, items, showAvg, onOpen, rowActions, goalFn }) {
+function QuarterAppraisalList({ fy, quarter, items, showAvg, onOpen, rowActions, goalFn, afterScore }) {
   const qItems = items.filter(i=>i.fy===fy && i.quarter===quarter);
   const s = quarterAverage(qItems);
   const gs = showAvg && goalFn ? goalFn(fy, quarter) : null;
   return (
     <div>
       {showAvg && <OverallBreakdown quarter={quarter} s={s} gs={gs} c={combinedScore(s, gs)}/>}
+      {afterScore}
       {qItems.length>0 && showAvg && <div style={{fontSize:11,fontWeight:600,letterSpacing:"1px",textTransform:"uppercase",color:"var(--slate)",margin:"18px 0 10px"}}>Engagement appraisals</div>}
       <div style={{display:"flex",flexDirection:"column",gap:8}}>
         {qItems.map(i=><AppraisalListRow key={i.r.key} r={i.r} ex={i.ex} onClick={()=>onOpen(i.r)} actions={rowActions?rowActions(i):null}/>)}
         {qItems.length===0 && <div className="es" style={{padding:"28px 24px"}}>No engagement appraisals in this quarter.</div>}
       </div>
+    </div>
+  );
+}
+
+// ── v55: collapsible sections. Open/closed is remembered in this browser only (a viewing convenience). ──
+function useCollapsed(key, defaultCollapsed=true) {
+  const lsKey = `msna_collapse_${key}`;
+  const [collapsed, setCollapsed] = useState(()=>{
+    try { const v = localStorage.getItem(lsKey); return v===null ? defaultCollapsed : v==="1"; } catch(e) { return defaultCollapsed; }
+  });
+  const toggle = () => setCollapsed(c=>{ const n=!c; try { localStorage.setItem(lsKey, n?"1":"0"); } catch(e) {} return n; });
+  return [collapsed, toggle, setCollapsed];
+}
+// Clickable header row: whole row toggles, Enter/Space work too. Buttons inside should stopPropagation.
+function CollapseHead({ collapsed, onToggle, children }) {
+  return (
+    <div role="button" tabIndex={0} aria-expanded={!collapsed} onClick={onToggle}
+      onKeyDown={e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); onToggle(); } }}
+      style={{display:"flex",alignItems:"flex-start",gap:10,cursor:"pointer",userSelect:"none",outline:"none"}}>
+      <span title={collapsed?"Expand":"Collapse"} style={{flexShrink:0,marginTop:1,color:"var(--slate)",display:"inline-flex",transition:"transform .15s",transform:collapsed?"rotate(-90deg)":"none"}}><I n="chevron" s={20}/></span>
+      <div style={{flex:1,minWidth:0}}>{children}</div>
+    </div>
+  );
+}
+
+// ── v55: PARTNERS' ONE-ON-ONE DISCUSSION ──
+// Optional, held only in some cases after the quarter's appraisals and self-assessment. One record per staff member
+// per quarter in the "one_on_ones" collection (id staffId-fy-quarter). Confidential: Firestore rules let only partners
+// and that staff member read it, and only partners write it. Any partner can edit; each earlier version is kept in history.
+// Not part of any score or gate.
+const oneOnOneId = (staffId, fy, quarter) => `${staffId}-${fy}-${quarter}`;
+function OneOnOneBox({ user, users=[], staffId, fy, quarter, record }) {
+  const isP = user.role==="partner";
+  const staff = users.find(u=>u.id===staffId);
+  const nameOf = id => users.find(u=>u.id===id)?.name || "A partner";
+  const [, qEnd] = quarterDateRange(fy, quarter);
+  const ended = todayStr() > qEnd;
+  const [editing, setEditing] = useState(false);
+  const [date, setDate] = useState("");
+  const [notes, setNotes] = useState("");
+  const [err, setErr] = useState("");
+  const [showHist, setShowHist] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [collapsed, toggleCollapsed, setCollapsed] = useCollapsed("oneonone", true);
+  useEffect(()=>{ setEditing(false); setErr(""); setShowHist(false); }, [staffId, fy, quarter]);
+
+  if(!isP && !record) return null;                       // staff see the box only when a discussion was recorded
+  if(isP && !record && !ended) return null;              // opens once the quarter is over
+
+  const startEdit = () => { setDate(record?.date || todayStr()); setNotes(record?.notes || ""); setErr(""); setEditing(true); setCollapsed(false); };
+  const save = async () => {
+    if(!date) { setErr("Enter the date of the discussion."); return; }
+    if(date>todayStr()) { setErr("The date can't be in the future."); return; }
+    if(!notes.trim()) { setErr("Write what was discussed."); return; }
+    if(record && record.date===date && record.notes===notes.trim()) { setEditing(false); return; }
+    const now = new Date().toISOString();
+    const id = oneOnOneId(staffId, fy, quarter);
+    const next = record
+      ? { ...record, date, notes:notes.trim(), updatedBy:user.id, updatedAt:now,
+          history:[...(record.history||[]), { date:record.date, notes:record.notes, by:record.updatedBy||record.createdBy, at:record.updatedAt||record.createdAt }] }
+      : { id, staffId, fy, quarter, date, notes:notes.trim(), createdBy:user.id, createdAt:now, updatedBy:user.id, updatedAt:now, history:[] };
+    setSaving(true);
+    await fsSet("one_on_ones", id, next);
+    setSaving(false);
+    // Audit records the action only, never the confidential notes.
+    addAudit(user.id, user.name, record?"EDIT_ONE_ON_ONE":"ADD_ONE_ON_ONE", `${record?"Edited":"Recorded"} partners' one-on-one discussion for ${staff?.name||staffId}, ${quarter} FY ${fy}`);
+    setEditing(false);
+  };
+
+  const edited = record && record.updatedAt && record.updatedAt!==record.createdAt;
+  const hist = [...(record?.history||[])].reverse();
+  return (
+    <div className="card" style={{marginTop:14,padding:"16px 20px",borderColor:record?"var(--gold)":"var(--border)",borderStyle:record||editing?"solid":"dashed"}}>
+      {(()=>{
+        const head = (
+          <div className="fxb" style={{alignItems:"flex-start",gap:12,flexWrap:"wrap"}}>
+            <div style={{minWidth:0}}>
+              <div className="card-title" style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}><I n="users" s={17}/>Partners' one-on-one discussion
+                {record&&<span className="bdg rpa" style={{fontWeight:500}}><I n="calendar" s={11}/>{fmtDate(record.date)}</span>}
+              </div>
+              <div className="tx tsl mt4" style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap"}}>
+                <I n="lock" s={11}/>Confidential · visible only to partners and {isP?(staff?.name||"the staff member"):"you"}
+                {isP&&!record&&!editing&&<span> · Record only if a one-on-one was held. It does not affect the score.</span>}
+              </div>
+              {record && collapsed && !editing && <div className="ts" style={{marginTop:8,color:"var(--slate)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{record.notes.split("\n")[0]}</div>}
+            </div>
+            {isP && !editing && <button className="btn bgh bsm" onClick={e=>{e.stopPropagation();startEdit();}}><I n={record?"edit":"plus"} s={13}/>{record?"Edit":"Record discussion"}</button>}
+          </div>
+        );
+        return record && !editing ? <CollapseHead collapsed={collapsed} onToggle={toggleCollapsed}>{head}</CollapseHead> : head;
+      })()}
+
+      {editing ? (
+        <div style={{marginTop:12,borderTop:"1px solid var(--border)",paddingTop:14}}>
+          {err&&<div className="err">{err}</div>}
+          <div className="fg" style={{maxWidth:220}}><label className="fl">Date of discussion *</label>
+            <input type="date" className="fi" value={date} max={todayStr()} onChange={e=>{setDate(e.target.value);setErr("");}}/>
+          </div>
+          <div className="fg"><label className="fl">What was discussed *</label>
+            <textarea className="fta" style={{minHeight:140}} placeholder="Points discussed, feedback given, and anything agreed" value={notes} onChange={e=>{setNotes(e.target.value);setErr("");}}/>
+          </div>
+          {record&&<div className="tx tsl" style={{marginTop:-8,marginBottom:12}}>The current version is kept in the edit history.</div>}
+          <div style={{display:"flex",justifyContent:"flex-end",gap:10}}>
+            <button className="btn bgh" onClick={()=>setEditing(false)}>Cancel</button>
+            <button className="btn bp" disabled={saving} onClick={save}><I n="check" s={15}/>{saving?"Saving...":"Save discussion"}</button>
+          </div>
+        </div>
+      ) : record && !collapsed ? (
+        <div style={{marginTop:12,borderTop:"1px solid var(--border)",paddingTop:12}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:10}}>
+            <span className="tx tsl">Recorded by {nameOf(record.createdBy)}{edited?` · last edited by ${nameOf(record.updatedBy)} on ${fmtDate(record.updatedAt)}`:""}</span>
+          </div>
+          <div style={{fontSize:13.5,lineHeight:1.65,color:"var(--navy)",whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{record.notes}</div>
+          {isP && hist.length>0 && (
+            <div style={{marginTop:12}}>
+              <button className="btn bgh bxs" onClick={()=>setShowHist(h=>!h)}><I n="history" s={11}/>{showHist?"Hide":"Show"} edit history ({hist.length})</button>
+              {showHist && (
+                <div style={{marginTop:10,display:"flex",flexDirection:"column",gap:8}}>
+                  {hist.map((h,i)=>(
+                    <div key={i} style={{background:"var(--cream)",border:"1px solid var(--border)",borderRadius:8,padding:"10px 12px"}}>
+                      <div className="tx tsl" style={{marginBottom:4}}>Version by {nameOf(h.by)}{h.at?` · ${fmtDate(h.at)}`:""} · discussion dated {fmtDate(h.date)}</div>
+                      <div style={{fontSize:13,whiteSpace:"pre-wrap",wordBreak:"break-word",color:"var(--slate)"}}>{h.notes}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -6063,6 +6195,7 @@ const GOAL_ROW_PILL = r => {
 
 // "How it's arrived at" panel for one staff member and quarter.
 function OverallBreakdown({ quarter, s, gs, c }) {
+  const [collapsed, toggleCollapsed] = useCollapsed("overallscore", true); // v55
   const both = c.mode==="both";
   const total = c.wA + c.wG || 100;
   const apprW = c.mode==="appraisalOnly" ? 100 : OVERALL_W_APPRAISAL;
@@ -6086,11 +6219,12 @@ function OverallBreakdown({ quarter, s, gs, c }) {
   else if(c.mode==="goalsOnly") note = "No engagement appraisals this quarter, so goals count 100%.";
   if(c.partial) note = `${note?note+" ":""}Until every appraisal and self-assessment is in, the score is worked out on the parts available so far, so open items don't pull it down.`;
   return (
-    <div className="card" style={{padding:"18px 20px"}}>
+    <div className="card" style={{padding:"16px 20px"}}>
+      <CollapseHead collapsed={collapsed} onToggle={toggleCollapsed}>
       <div className="fxb" style={{alignItems:"flex-start",gap:16,flexWrap:"wrap",marginBottom:12}}>
         <div>
           <div className="card-title">{quarter} overall score: how it's arrived at</div>
-          <div className="tx tsl mt4">Performance appraisal {OVERALL_W_APPRAISAL}% + goals {OVERALL_W_GOALS}%</div>
+          <div className="tx tsl mt4">Performance appraisal {OVERALL_W_APPRAISAL}% + goals {OVERALL_W_GOALS}%{collapsed?" · click to see the breakdown":""}</div>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
           {c.pct!=null && (c.provisional ? <ProvisionalTag/> : <span className="bdg bac">Final</span>)}
@@ -6108,6 +6242,9 @@ function OverallBreakdown({ quarter, s, gs, c }) {
           {c.goalsApplicable && <span>Goals {fmtPts(c.goalPts)} of {OVERALL_W_GOALS}</span>}
         </div>
       </>}
+      </CollapseHead>
+
+      {!collapsed && <>
 
       <div style={{display:"grid",gridTemplateColumns:c.apprApplicable&&c.goalsApplicable?"minmax(0,1fr) minmax(0,1fr)":"minmax(0,1fr)",gap:12}}>
         {c.apprApplicable && (
@@ -6152,11 +6289,12 @@ function OverallBreakdown({ quarter, s, gs, c }) {
       )}
       {note && <div className="tx tsl" style={{marginTop:10,lineHeight:1.5}}>{note}</div>}
       {c.goalsApplicable && <div className="tx tsl" style={{marginTop:6,lineHeight:1.5}}>Goals count from the submitted self-assessment: Completed earns the goal's points, WIP and Zero progress earn 0. Points in grey italics are provisional until a partner approves that entry. A rejected entry drops out until it is resubmitted.{gs.rows.some(r=>!r.scored)?" The optional third goal is not scored.":""}</div>}
+      </>}
     </div>
   );
 }
 
-function PerformanceAppraisal({ user, users=[], projects=[], setProjects, tss=[], appraisals=[], setAppraisals, goals=[] }) {
+function PerformanceAppraisal({ user, users=[], projects=[], setProjects, tss=[], appraisals=[], setAppraisals, goals=[], oneOnOnes=[] }) {
   const isP = user.role==="partner";
   const isMgr = user.role==="manager";
   const rawRequired = useMemo(()=>getRequiredAppraisals(users, projects, tss), [users, projects, tss]);
@@ -6237,6 +6375,8 @@ function PerformanceAppraisal({ user, users=[], projects=[], setProjects, tss=[]
   // v53: goal score for a staff member, used for the overall score (appraisal 70% + goals 30%)
   const goalFnFor = sid => (gfy, q) => goalScoreFor(gfy, q, sid, goals, users);
   const hasGoalQuarter = (sid, gfy) => GOAL_QUARTER_ORDER.some(q => goalScoreFor(gfy, q, sid, goals, users).applicable);
+  // v55: partners' one-on-one discussion record for a staff member and quarter
+  const oneOnOneFor = (sid, q) => oneOnOnes.find(o=>o.id===oneOnOneId(sid, fy, q));
   const receivedItems = fyItems.filter(i=>i.r.staffId===user.id);
   const givenItems = fyItems.filter(i=>i.r.staffId!==user.id && i.r.eligibleAppraisers.includes(user.id));
 
@@ -6272,7 +6412,8 @@ function PerformanceAppraisal({ user, users=[], projects=[], setProjects, tss=[]
         <div style={{opacity:inactive?.6:1}}>
           {!selQuarter
             ? <QuarterTiles fy={fy} items={mine} showAvg={showAvg} onPick={setSelQuarter} goalFn={goalFnFor(selStaff)}/>
-            : <QuarterAppraisalList fy={fy} quarter={selQuarter} items={mine} showAvg={showAvg} onOpen={setSelReq} rowActions={rowActions} goalFn={goalFnFor(selStaff)}/>}
+            : <QuarterAppraisalList fy={fy} quarter={selQuarter} items={mine} showAvg={showAvg} onOpen={setSelReq} rowActions={rowActions} goalFn={goalFnFor(selStaff)}
+                afterScore={isP ? <OneOnOneBox user={user} users={users} staffId={selStaff} fy={fy} quarter={selQuarter} record={oneOnOneFor(selStaff, selQuarter)}/> : null}/>}
         </div>
         {pushModal}
       </div>
@@ -6357,7 +6498,8 @@ function PerformanceAppraisal({ user, users=[], projects=[], setProjects, tss=[]
               <button className="btn bgh bsm" onClick={()=>setSelQuarter(null)}><I n="arrowleft" s={13}/>All quarters</button>
               <span className="ts fw6">{selQuarter} · {quarterLabel(fy,selQuarter)}</span>
             </div>
-            <QuarterAppraisalList fy={fy} quarter={selQuarter} items={receivedItems} showAvg={true} onOpen={setSelReq} goalFn={goalFnFor(user.id)}/>
+            <QuarterAppraisalList fy={fy} quarter={selQuarter} items={receivedItems} showAvg={true} onOpen={setSelReq} goalFn={goalFnFor(user.id)}
+              afterScore={<OneOnOneBox user={user} users={users} staffId={user.id} fy={fy} quarter={selQuarter} record={oneOnOneFor(user.id, selQuarter)}/>}/>
           </div>
         )
       )}
@@ -8506,6 +8648,13 @@ export default function App() {
     ], emit, colName+" (mine)");
   }) : null, [isManagerUser, currentUser]);
   const [awMeetings, setAwMeetings] = useLS("work_meetings", [], awEnabled);
+  // v55: partners' one-on-one discussions. Confidential: partners load all; everyone else only their own records
+  // (the Firestore rules refuse anything wider). Passed only to Performance Appraisal, never via db_props.
+  const ooEnabled = signedIn && !!currentUser;
+  const ooScope = useMemo(()=> currentUser && currentUser.role!=="partner" ? ((colName, emit) =>
+    listenMerged([query(collection(db, colName), where("staffId","==",currentUser.id))], emit, colName+" (mine)")
+  ) : null, [currentUser]);
+  const [oneOnOnes] = useLS("one_on_ones", [], ooEnabled, ooScope, currentUser ? `${currentUser.role}:${currentUser.id}` : "none");
   // v50: show a notice when a save is refused or fails, instead of the screen quietly flipping back
   const [writeErr,setWriteErr] = useState(null);
   useEffect(()=>{
@@ -8689,7 +8838,7 @@ export default function App() {
             {tab==="week"       &&<WeekView     user={currentUser} {...db_props}/>}
             {tab==="timesheets" &&<Timesheets   user={currentUser} {...db_props}/>}
             {tab==="projects"   &&<Projects     user={currentUser} {...db_props}/>}
-            {tab==="appraisal" &&<PerformanceAppraisal user={currentUser} {...db_props}/>}
+            {tab==="appraisal" &&<PerformanceAppraisal user={currentUser} {...db_props} oneOnOnes={oneOnOnes}/>}
             {tab==="goals"     &&<GoalSetting user={currentUser} {...db_props}/>}
             {tab==="approvals"  &&["partner","manager"].includes(currentUser.role)&&<Approvals user={currentUser} {...db_props}/>}
             {tab==="reports"    &&currentUser.role==="partner"&&<Reports  user={currentUser} {...db_props} setLocked={setLocked}/>}
