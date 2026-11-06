@@ -1,4 +1,4 @@
-// MSNA Time Tracker v56: "Knowledge Transfer" internal time type (tag colleague(s) + mandatory topic; productive, never billable; each person logs their own hours). v55: score card and Partners' one-on-one discussion are collapsible (choice remembered per browser); the discussion box sits between the score card and the engagement list in each quarter of Performance Appraisal (one per staff per quarter, date + notes, any partner can edit with history kept; confidential: only partners and that staff member can read it, enforced by Firestore rules). v54: goal points count from the staff member's submitted self-assessment (Provisional), and become Final once a partner approves; a rejected entry drops out until resubmitted. v53: Overall quarterly score in Performance Appraisal = appraisal average × 70% + goals 30% (achieved and partner-approved goals only), with a "how it's arrived at" panel. From Q3 FY 2026-27 managers set 3 mandatory goals (10% each) and interns 2 (15% each, optional goal 3 not scored); managers who submitted 2 goals in Q3 add goal 3. v52: Engagement Letter gets a "Not applicable" answer (new and older codes; no EL flag, signed EL check skipped at closure). v51: Assigned Work takes several managers per item, all equal. v50: older codes confirm "Signed EL received" instead of draft; EL saves are field-level; failed saves now show a notice. v49: Assigned Work (firm work given by partners to managers, accept/reopen). v48: Engagement Letter tracking (draft EL asked at code creation, EL pending flags, signed EL check at closure). v47: fixes v46 Update button (openDetail called itself). v46: latest update at top of drawer, update line and "New" pills in lists.
+// MSNA Time Tracker v57: signed EL can be recorded any time while a code is open ("Mark signed EL received" button with date received, and in Edit once the draft is shared; partners can clear it); Knowledge Transfer entries need the client name(s). v56: "Knowledge Transfer" internal time type (tag colleague(s) + mandatory topic; productive, never billable; each person logs their own hours). v55: score card and Partners' one-on-one discussion are collapsible (choice remembered per browser); the discussion box sits between the score card and the engagement list in each quarter of Performance Appraisal (one per staff per quarter, date + notes, any partner can edit with history kept; confidential: only partners and that staff member can read it, enforced by Firestore rules). v54: goal points count from the staff member's submitted self-assessment (Provisional), and become Final once a partner approves; a rejected entry drops out until resubmitted. v53: Overall quarterly score in Performance Appraisal = appraisal average × 70% + goals 30% (achieved and partner-approved goals only), with a "how it's arrived at" panel. From Q3 FY 2026-27 managers set 3 mandatory goals (10% each) and interns 2 (15% each, optional goal 3 not scored); managers who submitted 2 goals in Q3 add goal 3. v52: Engagement Letter gets a "Not applicable" answer (new and older codes; no EL flag, signed EL check skipped at closure). v51: Assigned Work takes several managers per item, all equal. v50: older codes confirm "Signed EL received" instead of draft; EL saves are field-level; failed saves now show a notice. v49: Assigned Work (firm work given by partners to managers, accept/reopen). v48: Engagement Letter tracking (draft EL asked at code creation, EL pending flags, signed EL check at closure). v47: fixes v46 Update button (openDetail called itself). v46: latest update at top of drawer, update line and "New" pills in lists.
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { initializeApp } from "firebase/app";
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, terminate, clearIndexedDbPersistence, waitForPendingWrites, collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, getDocs, query, where } from "firebase/firestore";
@@ -32,7 +32,7 @@ const MAX_BACKDATE_DAYS = 30;
 const ENGAGEMENT_CATEGORIES = ["Assurance","Virtual CFO","Compliance","Consulting"];
 const INTERNAL_CATEGORIES = ["Leave","Holiday","Idle","Reading","Knowledge Transfer"];
 // v56: Knowledge Transfer = internal time spent teaching or learning from colleagues.
-// Productive, never billable. Needs at least one tagged colleague (ktWith) and a topic (description).
+// Productive, never billable. Needs at least one tagged colleague (ktWith), the client name(s) (ktClients, v57) and a topic (description).
 const KT_CATEGORY = "Knowledge Transfer";
 const INTERNAL_TYPE_HINTS = { Leave:"Personal/sick leave", Holiday:"Public/firm holiday", Idle:"No billable work", Reading:"Training and development", [KT_CATEGORY]:"Teaching or learning from a colleague" };
 const isKT = t => (t?.category||t?.internalType)===KT_CATEGORY;
@@ -41,9 +41,19 @@ const ktNames = (t, users=[]) => (t?.ktWith||[]).map(id=>users.find(u=>u.id===id
 function KTWithLine({ ts, users }) {
   if(!isKT(ts)) return null;
   const names = ktNames(ts, users);
-  if(!names.length) return null;
-  return <div className="tx mt4" style={{color:"var(--navy-mid)"}}><I n="users" s={11}/> With {names.join(", ")}</div>;
+  const client = (ts.ktClients||"").trim();
+  if(!names.length && !client) return null;
+  return <>
+    {client&&<div className="tx mt4" style={{color:"var(--navy-mid)"}}><I n="folder" s={11}/> Client: {client}</div>}
+    {names.length>0&&<div className="tx mt4" style={{color:"var(--navy-mid)"}}><I n="users" s={11}/> With {names.join(", ")}</div>}
+  </>;
 }
+// v57: CSV prefix for a KT entry's description, e.g. "[Client: ABC Ltd | With Surya A] "
+const ktCsvPrefix = (t, users=[]) => {
+  if(!isKT(t)) return "";
+  const parts = [ (t.ktClients||"").trim() ? `Client: ${t.ktClients.trim()}` : "", ktNames(t,users).length ? `With ${ktNames(t,users).join(", ")}` : "" ].filter(Boolean);
+  return parts.length ? `[${parts.join(" | ")}] ` : "";
+};
 // Searchable multi-select of active colleagues (excludes the person logging the time).
 function KTColleaguePicker({ users=[], meId, value=[], onChange }) {
   const [q,setQ] = useState("");
@@ -696,20 +706,32 @@ function applyELSignedLegacy(user, p) {
   fsUpdate("projects", p.id, { ...elSignedPatch(user, p), elLegacySigned:true })
     .then(ok=>{ if(ok) addAudit(user.id,user.name,"EL_SIGNED_RECEIVED",`Signed engagement letter for ${p.code} confirmed as received (code created before EL tracking)`); });
 }
+// v57: the signed EL can be recorded at any point while the code is open (not only at closure),
+// with the date it was received. Recording it also marks the draft as shared (same as at closure).
+const canMarkSignedEL = (user, p) => EL_OPEN_STATUSES.includes(p?.status) && !p?.elSignedReceived
+  && ["shared","pending"].includes(elDraftState(p)) && canUpdateEL(user, p);
+function applyELSigned(user, p, date) {
+  fsUpdate("projects", p.id, { ...elSignedPatch(user, p), elSignedDate:date })
+    .then(ok=>{ if(ok) addAudit(user.id,user.name,"EL_SIGNED_RECEIVED",`Signed engagement letter for ${p.code} recorded as received on ${fmtDate(date)}`); });
+}
 // v52: mark a code as not needing an engagement letter (new or older codes).
 function applyELNotApplicable(user, p) {
   fsUpdate("projects", p.id, { elDraftShared:"na", elDraftSharedDate:null, elDraftAutoFromSigned:false, elDraftUpdatedBy:user.id, elDraftUpdatedAt:new Date().toISOString() })
     .then(ok=>{ if(ok) addAudit(user.id,user.name,"EL_NOT_APPLICABLE",`Engagement letter for ${p.code} marked as not applicable`); });
 }
 // The right quick action for a flagged code: older codes confirm the signed EL, newer ones mark the draft as shared.
-// v52: both also offer "Not applicable".
-function ELActionButton({ user, p, onShared, onSigned, onNA }) {
-  if(!elNeedsAttention(p) || !canUpdateEL(user,p)) return null;
+// v52: both also offer "Not applicable". v57: newer codes also offer "Mark signed EL received" (onSignedNew) any time.
+function ELActionButton({ user, p, onShared, onSigned, onNA, onSignedNew }) {
+  if(!canUpdateEL(user,p)) return null;
+  const attention = elNeedsAttention(p);
+  const signable = !!onSignedNew && canMarkSignedEL(user,p);
+  if(!attention && !signable) return null;
   return <>
-    {elIsLegacy(p)
+    {attention&&(elIsLegacy(p)
       ? <button className="btn bgh bxs" onClick={()=>onSigned(p)}>Mark signed EL received</button>
-      : <button className="btn bgh bxs" onClick={()=>onShared(p)}>Mark as shared</button>}
-    {onNA&&<button className="btn bgh bxs" title="No engagement letter needed for this code" onClick={()=>onNA(p)}>Not applicable</button>}
+      : <button className="btn bgh bxs" onClick={()=>onShared(p)}>Mark as shared</button>)}
+    {signable&&<button className="btn bgh bxs" title="Record the date the signed engagement letter came back from the client" onClick={()=>onSignedNew(p)}>Mark signed EL received</button>}
+    {attention&&onNA&&<button className="btn bgh bxs" title="No engagement letter needed for this code" onClick={()=>onNA(p)}>Not applicable</button>}
   </>;
 }
 // Fields written when the signed EL is confirmed at closure. A signed EL implies the draft was shared.
@@ -724,7 +746,7 @@ function elSignedPatch(user, p) {
 
 function ELPill({ p }) {
   const st = elDraftState(p);
-  if(p.elSignedReceived) return <span className="bdg ba"><I n="check" s={11}/>Signed EL received</span>;
+  if(p.elSignedReceived) return <span className="bdg ba"><I n="check" s={11}/>Signed EL received{p.elSignedDate?` ${fmtDate(p.elSignedDate)}`:""}</span>;
   if(st==="shared") return <span className="bdg ba"><I n="check" s={11}/>EL shared{p.elDraftSharedDate?` ${fmtDate(p.elDraftSharedDate)}`:""}</span>;
   if(st==="na") return <span className="bdg bcl" title="No engagement letter needed for this code"><I n="block" s={11}/>EL not applicable</span>;
   if(!EL_OPEN_STATUSES.includes(p.status)) return null;
@@ -776,6 +798,34 @@ function ELMarkSharedModal({ project, onSave, onClose }) {
         <div className="md-actions">
           <button className="btn bgh" onClick={onClose}>Cancel</button>
           <button className="btn bp" onClick={go}><I n="check" s={15}/>Mark as shared</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// v57: record the signed EL mid-engagement, with the date it was received.
+function ELSignedModal({ project, onSave, onClose }) {
+  const [date,setDate] = useState(todayStr());
+  const [err,setErr] = useState("");
+  const go = () => {
+    if(!date){ setErr("Enter the date the signed EL was received."); return; }
+    if(date>todayStr()){ setErr("The date cannot be in the future."); return; }
+    onSave(date);
+  };
+  return (
+    <div className="mo" onClick={onClose}>
+      <div className="md" style={{maxWidth:440}} onClick={e=>e.stopPropagation()}>
+        <div className="md-title">Signed EL received</div>
+        <div className="ts tsl mb16"><span className="mono fw6 tnv">{project.code}</span> · {project.clientName} · {project.name}</div>
+        {err&&<div className="err">{err}</div>}
+        <div className="fg"><label className="fl">Date received from the client *</label>
+          <input type="date" className="fi" value={date} max={todayStr()} onChange={e=>{setDate(e.target.value);setErr("");}}/>
+        </div>
+        <div className="tx tsl">The signed EL question will be skipped at closure.{elDraftState(project)!=="shared"?" The draft will also be marked as shared.":""}</div>
+        <div className="md-actions">
+          <button className="btn bgh" onClick={onClose}>Cancel</button>
+          <button className="btn bsc" onClick={go}><I n="check" s={15}/>Signed EL received</button>
         </div>
       </div>
     </div>
@@ -882,6 +932,7 @@ function ELDashboardCard({ user, users=[], projects=[], onOpenProjects }) {
   const [markP,setMarkP] = useState(null);
   const [signP,setSignP] = useState(null);
   const [naP,setNaP] = useState(null); // v52
+  const [signNewP,setSignNewP] = useState(null); // v57
   const [showAll,setShowAll] = useState(false);
   if(user.role==="intern") return null;
   const list = projects
@@ -918,7 +969,7 @@ function ELDashboardCard({ user, users=[], projects=[], onOpenProjects }) {
               </div>
               <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
                 <ELPill p={p}/>
-                <ELActionButton user={user} p={p} onShared={setMarkP} onSigned={setSignP} onNA={setNaP}/>
+                <ELActionButton user={user} p={p} onShared={setMarkP} onSigned={setSignP} onNA={setNaP} onSignedNew={setSignNewP}/>
               </div>
             </div>
           );
@@ -930,6 +981,7 @@ function ELDashboardCard({ user, users=[], projects=[], onOpenProjects }) {
       {markP&&<ELMarkSharedModal project={markP} onClose={()=>setMarkP(null)} onSave={date=>{applyELShared(user,markP,date);setMarkP(null);}}/>}
       {signP&&<ELSignedLegacyModal project={signP} onClose={()=>setSignP(null)} onSave={()=>{applyELSignedLegacy(user,signP);setSignP(null);}}/>}
       {naP&&<ELNotApplicableModal project={naP} onClose={()=>setNaP(null)} onSave={()=>{applyELNotApplicable(user,naP);setNaP(null);}}/>}
+      {signNewP&&<ELSignedModal project={signNewP} onClose={()=>setSignNewP(null)} onSave={date=>{applyELSigned(user,signNewP,date);setSignNewP(null);}}/>}
     </div>
   );
 }
@@ -1504,7 +1556,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
   const [editE,setEE]        = useState(null);
   const [fs,setFs]           = useState("all");
   const [onBehalf,setOB]     = useState(false);
-  const [form,setF]          = useState({date:todayStr(),projectId:"",hours:"",category:"Assurance",description:"",billable:false,onBehalfOfId:"",isInternal:false,internalType:"Leave",internalApprovers:[],internalPartnerApprovers:[],ktWith:[]});
+  const [form,setF]          = useState({date:todayStr(),projectId:"",hours:"",category:"Assurance",description:"",billable:false,onBehalfOfId:"",isInternal:false,internalType:"Leave",internalApprovers:[],internalPartnerApprovers:[],ktWith:[],ktClients:""});
   const [isInternal,setIsInt]= useState(false);
   const [ferr,setFerr]       = useState("");
   // Filters, sort, pagination
@@ -1595,7 +1647,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
       description:"",billable:!internal,  // internal entries are never billable
       onBehalfOfId:"",
       isInternal:internal,internalType:"Leave",
-      internalApprovers:[],internalPartnerApprovers:[],ktWith:[]});
+      internalApprovers:[],internalPartnerApprovers:[],ktWith:[],ktClients:""});
     setFerr("");
     setSM(true);
   };
@@ -1606,7 +1658,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
     setOB(isBehalf);
     setIsInt(internal);
     setEE(ts);
-    setF({date:ts.date,projectId:ts.projectId||"",hours:ts.hours,category:ts.category,description:ts.description||"",billable:ts.billable,onBehalfOfId:ts.onBehalfOfId||"",isInternal:internal,internalType:ts.internalType||"Leave",ktWith:ts.ktWith||[]});
+    setF({date:ts.date,projectId:ts.projectId||"",hours:ts.hours,category:ts.category,description:ts.description||"",billable:ts.billable,onBehalfOfId:ts.onBehalfOfId||"",isInternal:internal,internalType:ts.internalType||"Leave",ktWith:ts.ktWith||[],ktClients:ts.ktClients||""});
     setFerr("");
     setSM(true);
   };
@@ -1616,6 +1668,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
       if(!form.date||!form.hours){ setFerr("Date and hours are required."); return; }
       if(form.internalType===KT_CATEGORY){
         if(!(form.ktWith||[]).length){ setFerr("Select the colleague(s) the knowledge transfer was with."); return; }
+        if(!(form.ktClients||"").trim()){ setFerr("Enter the client name(s) the knowledge transfer related to."); return; }
         if(!form.description.trim()){ setFerr("Enter the topic covered in the knowledge transfer."); return; }
       }
       if(!isP){
@@ -1635,8 +1688,8 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
 
     // v56: colleagues are kept only on Knowledge Transfer entries
     const ktOn = isInternal && form.internalType===KT_CATEGORY;
-    const ktFields = ktOn ? { ktWith:form.ktWith||[] } : (editE?.ktWith ? { ktWith:[] } : {});
-    const { ktWith:_ktForm, ...formRest } = form; // eslint-disable-line no-unused-vars
+    const ktFields = ktOn ? { ktWith:form.ktWith||[], ktClients:(form.ktClients||"").trim() } : (editE?.ktWith||editE?.ktClients ? { ktWith:[], ktClients:"" } : {});
+    const { ktWith:_ktForm, ktClients:_ktCl, ...formRest } = form; // eslint-disable-line no-unused-vars
     // Determine the actual owner of this entry
     const ownerId = (!isInternal && onBehalf) ? form.onBehalfOfId : user.id;
     const dayHrs=tss.filter(t=>t.userId===ownerId&&t.date===form.date&&t.id!==(editE?.id)).reduce((s,t)=>s+t.hours,0);
@@ -1873,6 +1926,10 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
                     <KTColleaguePicker users={users} meId={editE?.userId||user.id} value={form.ktWith||[]} onChange={v=>{setF(f=>({...f,ktWith:v}));setFerr("");}}/>
                     <div className="tx tsl mt4">Each person logs their own hours for the session. Tagging a colleague does not log time for them.</div>
                   </div>
+                  <div className="fg"><label className="fl">Client name(s) *</label>
+                    <input className="fi" placeholder="ABC Industries Pvt Ltd, XYZ Capital" value={form.ktClients||""} onChange={e=>{setF(f=>({...f,ktClients:e.target.value}));setFerr("");}}/>
+                    <div className="tx tsl mt4">Separate multiple clients with commas.</div>
+                  </div>
                   <div className="fg"><label className="fl">Topic covered *</label>
                     <textarea className="fta" placeholder="Walked through GSTR-2B reconciliation and ITC mismatch handling" value={form.description} onChange={e=>setF(f=>({...f,description:e.target.value}))}/>
                   </div>
@@ -2102,18 +2159,22 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
   const [markELP,setMarkELP]  =useState(null); // v48: project whose draft EL is being marked as shared
   const [signELP,setSignELP]  =useState(null); // v50: older code whose signed EL is being confirmed
   const [naELP,setNaELP]      =useState(null); // v52: code being marked as EL not applicable
+  const [signNewELP,setSignNewELP]=useState(null); // v57: signed EL recorded mid-engagement
   const [sortBy,setSortBy]    =useState("code");
   const [sortDir,setSortDir]  =useState("asc");
-  const [form,setF]           =useState({code:"",name:"",clientName:"",description:"",assignedPartnerId:"",budgetHours:"",monthlyBudgetHours:"",engagementFee:"",feeType:"fixed",retainerMonths:"",category:"Assurance",billable:true,assignedStaff:[],assignedManagers:[],assignedPartners:[],elDraftShared:null,elDraftSharedDate:""});
+  const [form,setF]           =useState({code:"",name:"",clientName:"",description:"",assignedPartnerId:"",budgetHours:"",monthlyBudgetHours:"",engagementFee:"",feeType:"fixed",retainerMonths:"",category:"Assurance",billable:true,assignedStaff:[],assignedManagers:[],assignedPartners:[],elDraftShared:null,elDraftSharedDate:"",elSigned:null,elSignedDate:""});
   const [ferr,setFerr]        =useState("");
   const isP=user.role==="partner";
   const isMgr=user.role==="manager";
   const legacyEL = !!editP && elIsLegacy(editP); // v50: older code being edited → ask about the signed EL instead
+  // v57: when editing a code whose draft is shared, the signed EL can be recorded (or, by mistake, cleared) here too
+  const showSignedQ = !!editP && !legacyEL && form.elDraftShared===true;
+  const signedDateOptional = !!editP?.elSignedReceived && !editP?.elSignedDate; // signed at closure / older code: no date on record
   const partners=users.filter(u=>u.role==="partner"&&u.active).slice().sort((a,b)=>a.name.localeCompare(b.name));
   const lastProjectCode=(()=>{const inCat=projects.filter(p=>(p.category||"Assurance")===(form.category||"Assurance"));if(!inCat.length)return null;return inCat.slice().sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||""))[0].code;})();
 
-  const openAdd=()=>{setEditP(null);setF({code:"",name:"",clientName:"",description:"",assignedPartnerId:isP?user.id:"",budgetHours:"",monthlyBudgetHours:"",engagementFee:"",feeType:"fixed",retainerMonths:"",category:"Assurance",billable:true,assignedStaff:[],assignedManagers:[],assignedPartners:[],elDraftShared:null,elDraftSharedDate:""});setFerr("");setSM(true);};
-  const openEdit=(p)=>{setEditP(p);setF({code:p.code,name:p.name,clientName:p.clientName,description:p.description||"",assignedPartnerId:p.assignedPartnerId,budgetHours:p.budgetHours||"",monthlyBudgetHours:p.monthlyBudgetHours||"",engagementFee:p.monthlyFee||p.engagementFee||"",feeType:p.feeType||"fixed",retainerMonths:p.retainerMonths||"",category:p.category||"Assurance",billable:p.billable!==false,assignedStaff:p.assignedStaff||[],assignedManagers:p.assignedManagers||[],assignedPartners:p.assignedPartners||[],elDraftShared:(typeof p.elDraftShared==="boolean"||p.elDraftShared==="na")?p.elDraftShared:null,elDraftSharedDate:p.elDraftSharedDate||""});setFerr("");setSM(true);};
+  const openAdd=()=>{setEditP(null);setF({code:"",name:"",clientName:"",description:"",assignedPartnerId:isP?user.id:"",budgetHours:"",monthlyBudgetHours:"",engagementFee:"",feeType:"fixed",retainerMonths:"",category:"Assurance",billable:true,assignedStaff:[],assignedManagers:[],assignedPartners:[],elDraftShared:null,elDraftSharedDate:"",elSigned:null,elSignedDate:""});setFerr("");setSM(true);};
+  const openEdit=(p)=>{setEditP(p);setF({code:p.code,name:p.name,clientName:p.clientName,description:p.description||"",assignedPartnerId:p.assignedPartnerId,budgetHours:p.budgetHours||"",monthlyBudgetHours:p.monthlyBudgetHours||"",engagementFee:p.monthlyFee||p.engagementFee||"",feeType:p.feeType||"fixed",retainerMonths:p.retainerMonths||"",category:p.category||"Assurance",billable:p.billable!==false,assignedStaff:p.assignedStaff||[],assignedManagers:p.assignedManagers||[],assignedPartners:p.assignedPartners||[],elDraftShared:(typeof p.elDraftShared==="boolean"||p.elDraftShared==="na")?p.elDraftShared:null,elDraftSharedDate:p.elDraftSharedDate||"",elSigned:p.elSignedReceived?true:null,elSignedDate:p.elSignedDate||""});setFerr("");setSM(true);};
 
   const save=()=>{
     if(!form.code||!form.name||!form.clientName||!form.assignedPartnerId){setFerr("Code, name, client and partner are required.");return;}
@@ -2122,6 +2183,8 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
     if(![true,false,"na"].includes(form.elDraftShared)){setFerr("Answer the Engagement Letter question (Yes, No or Not applicable).");return;}
     if(form.elDraftShared===true&&!form.elDraftSharedDate&&!editP?.elDraftAutoFromSigned&&!legacyEL){setFerr("Enter the date the draft Engagement Letter was shared.");return;}
     if(form.elDraftShared===true&&form.elDraftSharedDate>todayStr()){setFerr("The Engagement Letter date cannot be in the future.");return;}
+    if(showSignedQ&&form.elSigned===true&&!form.elSignedDate&&!signedDateOptional){setFerr("Enter the date the signed Engagement Letter was received.");return;}
+    if(showSignedQ&&form.elSigned===true&&form.elSignedDate>todayStr()){setFerr("The signed EL date cannot be in the future.");return;}
     // Calculate total fee: for retainer = monthly fee × months; for fixed = as entered
     const totalEngFee = form.engagementFee ? (
       form.feeType==="retainer" && form.retainerMonths
@@ -2147,12 +2210,27 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
     // v50: older code answered Yes to the signed-EL question → record the signed EL (implies the draft was shared)
     const legacySigned = legacyEL && form.elDraftShared===true ? { ...elSignedPatch(user, editP), elLegacySigned:true } : null;
     if(legacySigned) Object.assign(baseObj, legacySigned);
+    // v57: signed EL recorded, re-dated or cleared from the Edit form
+    let signedAudit = null;
+    if(showSignedQ){
+      if(form.elSigned===true && !editP.elSignedReceived){
+        Object.assign(baseObj, elSignedPatch(user, {...editP, elDraftShared:baseObj.elDraftShared}), { elSignedDate:form.elSignedDate||null });
+        signedAudit = ["EL_SIGNED_RECEIVED",`Signed engagement letter for ${editP.code} recorded as received on ${fmtDate(form.elSignedDate)}`];
+      } else if(form.elSigned===true && (form.elSignedDate||"")!==(editP.elSignedDate||"")){
+        baseObj.elSignedDate = form.elSignedDate||null;
+        signedAudit = ["EL_SIGNED_RECEIVED",`Signed engagement letter date for ${editP.code} changed to ${fmtDate(form.elSignedDate)}`];
+      } else if(form.elSigned===false && editP.elSignedReceived){
+        Object.assign(baseObj, { elSignedReceived:false, elSignedConfirmedBy:null, elSignedConfirmedAt:null, elSignedDate:null, elLegacySigned:false });
+        signedAudit = ["EL_SIGNED_CLEARED",`Signed engagement letter for ${editP.code} marked as not yet received`];
+      }
+    }
     const elChanged = !editP || editP.elDraftShared!==form.elDraftShared || (editP.elDraftSharedDate||"")!==(baseObj.elDraftSharedDate||"");
     const elStamp = elChanged ? {elDraftUpdatedBy:user.id,elDraftUpdatedAt:new Date().toISOString(),...(editP&&editP.elDraftAutoFromSigned&&baseObj.elDraftSharedDate?{elDraftAutoFromSigned:false}:{})} : {};
     const elText = form.elDraftShared==="na"?"not applicable":form.elDraftShared?`shared on ${fmtDate(baseObj.elDraftSharedDate)}`:"not yet shared";
     if(editP){
       setProjects(p=>p.map(x=>x.id===editP.id?{...x,...baseObj,...elStamp,updatedBy:user.id,updatedAt:new Date().toISOString()}:x));
       addAudit(user.id,user.name,"EDIT_PROJECT",`Edited ${editP.code} — ${form.name}`);
+      if(signedAudit) addAudit(user.id,user.name,signedAudit[0],signedAudit[1]);
       if(legacySigned) addAudit(user.id,user.name,"EL_SIGNED_RECEIVED",`Signed engagement letter for ${editP.code} confirmed as received (code created before EL tracking)`);
       else if(elChanged) addAudit(user.id,user.name,form.elDraftShared==="na"?"EL_NOT_APPLICABLE":form.elDraftShared?"EL_DRAFT_SHARED":"EL_DRAFT_PENDING",`${form.elDraftShared==="na"?"Engagement letter":"Draft engagement letter"} for ${editP.code}: ${elText}`);
     } else {
@@ -2344,7 +2422,7 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
                   {p.status==="active"&&p.closeRejectReason&&<div className="tx tdn mt4">↩ Closure request rejected: {p.closeRejectReason}</div>}
                   {showEL&&<div style={{display:"flex",alignItems:"center",gap:6,marginTop:6,flexWrap:"wrap"}}>
                     <ELPill p={p}/>
-                    <ELActionButton user={user} p={p} onShared={setMarkELP} onSigned={setSignELP} onNA={setNaELP}/>
+                    <ELActionButton user={user} p={p} onShared={setMarkELP} onSigned={setSignELP} onNA={setNaELP} onSignedNew={setSignNewELP}/>
                   </div>}
                 </td>
                 <td>{p.clientName}</td>
@@ -2474,6 +2552,21 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
                   {editP?.elDraftAutoFromSigned&&!form.elDraftSharedDate&&<div className="tx tsl mt4">Marked as shared automatically when the signed EL was confirmed. The date is optional here.</div>}
                 </div>
               )}
+              {showSignedQ&&(
+                <div style={{marginTop:14,paddingTop:14,borderTop:"1px solid var(--border)"}}>
+                  <label style={{display:"block",fontSize:13,fontWeight:600,color:"var(--navy)",marginBottom:10,lineHeight:1.45}}>Has the signed Engagement Letter been received from the client?</label>
+                  <YesNo value={form.elSigned} onChange={v=>setF(f=>({...f,elSigned:v,elSignedDate:v===true?(f.elSignedDate||(signedDateOptional?"":todayStr())):""}))}/>
+                  {form.elSigned===true&&(
+                    <div style={{marginTop:12}}>
+                      <label className="fl">Date received{signedDateOptional?"":" *"}</label>
+                      <input type="date" className="fi" style={{maxWidth:220,background:"#fff"}} max={todayStr()} value={form.elSignedDate} onChange={e=>setF(f=>({...f,elSignedDate:e.target.value}))}/>
+                      {signedDateOptional&&<div className="tx tsl mt4">Confirmed earlier without a date. Add one if you have it.</div>}
+                    </div>
+                  )}
+                  {form.elSigned===false&&!editP?.elSignedReceived&&<div className="tx tsl" style={{marginTop:8}}>Optional for now. It will be asked again at closure.</div>}
+                  {form.elSigned===false&&editP?.elSignedReceived&&<div className="al al-w" style={{marginTop:12,marginBottom:0}}><I n="alert" s={14}/><div>This clears the signed EL already on record. It will be asked again at closure.</div></div>}
+                </div>
+              )}
               {form.elDraftShared==="na"&&(
                 <div className="tx tsl" style={{marginTop:10,lineHeight:1.5}}>No engagement letter is needed for this code (for example, a small-value engagement). No EL flag is raised and the signed EL question is skipped at closure.</div>
               )}
@@ -2588,6 +2681,7 @@ function Projects({ user, projects=[], setProjects, users=[], tss=[], appraisals
       {markELP&&<ELMarkSharedModal project={markELP} onClose={()=>setMarkELP(null)} onSave={date=>{applyELShared(user,markELP,date);setMarkELP(null);}}/>}
       {signELP&&<ELSignedLegacyModal project={signELP} onClose={()=>setSignELP(null)} onSave={()=>{applyELSignedLegacy(user,signELP);setSignELP(null);}}/>}
       {naELP&&<ELNotApplicableModal project={naELP} onClose={()=>setNaELP(null)} onSave={()=>{applyELNotApplicable(user,naELP);setNaELP(null);}}/>}
+      {signNewELP&&<ELSignedModal project={signNewELP} onClose={()=>setSignNewELP(null)} onSave={date=>{applyELSigned(user,signNewELP,date);setSignNewELP(null);}}/>}
     </div>
   );
 }
@@ -2987,7 +3081,7 @@ function Reports({ user, users=[], projects=[], tss=[], locked:lockedMonths=[], 
         t.category||"",
         t.hours,
         t.billable?"Yes":"No",
-        `"${((isKT(t)&&ktNames(t,users).length?`[With ${ktNames(t,users).join(", ")}] `:"")+(t.description||"")).replace(/"/g,'""')}"`,
+        `"${(ktCsvPrefix(t,users)+(t.description||"")).replace(/"/g,'""')}"`,
         t.status,
       ]);
     });
