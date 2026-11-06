@@ -1,4 +1,4 @@
-// MSNA Time Tracker v55: score card and Partners' one-on-one discussion are collapsible (choice remembered per browser); the discussion box sits between the score card and the engagement list in each quarter of Performance Appraisal (one per staff per quarter, date + notes, any partner can edit with history kept; confidential: only partners and that staff member can read it, enforced by Firestore rules). v54: goal points count from the staff member's submitted self-assessment (Provisional), and become Final once a partner approves; a rejected entry drops out until resubmitted. v53: Overall quarterly score in Performance Appraisal = appraisal average × 70% + goals 30% (achieved and partner-approved goals only), with a "how it's arrived at" panel. From Q3 FY 2026-27 managers set 3 mandatory goals (10% each) and interns 2 (15% each, optional goal 3 not scored); managers who submitted 2 goals in Q3 add goal 3. v52: Engagement Letter gets a "Not applicable" answer (new and older codes; no EL flag, signed EL check skipped at closure). v51: Assigned Work takes several managers per item, all equal. v50: older codes confirm "Signed EL received" instead of draft; EL saves are field-level; failed saves now show a notice. v49: Assigned Work (firm work given by partners to managers, accept/reopen). v48: Engagement Letter tracking (draft EL asked at code creation, EL pending flags, signed EL check at closure). v47: fixes v46 Update button (openDetail called itself). v46: latest update at top of drawer, update line and "New" pills in lists.
+// MSNA Time Tracker v56: "Knowledge Transfer" internal time type (tag colleague(s) + mandatory topic; productive, never billable; each person logs their own hours). v55: score card and Partners' one-on-one discussion are collapsible (choice remembered per browser); the discussion box sits between the score card and the engagement list in each quarter of Performance Appraisal (one per staff per quarter, date + notes, any partner can edit with history kept; confidential: only partners and that staff member can read it, enforced by Firestore rules). v54: goal points count from the staff member's submitted self-assessment (Provisional), and become Final once a partner approves; a rejected entry drops out until resubmitted. v53: Overall quarterly score in Performance Appraisal = appraisal average × 70% + goals 30% (achieved and partner-approved goals only), with a "how it's arrived at" panel. From Q3 FY 2026-27 managers set 3 mandatory goals (10% each) and interns 2 (15% each, optional goal 3 not scored); managers who submitted 2 goals in Q3 add goal 3. v52: Engagement Letter gets a "Not applicable" answer (new and older codes; no EL flag, signed EL check skipped at closure). v51: Assigned Work takes several managers per item, all equal. v50: older codes confirm "Signed EL received" instead of draft; EL saves are field-level; failed saves now show a notice. v49: Assigned Work (firm work given by partners to managers, accept/reopen). v48: Engagement Letter tracking (draft EL asked at code creation, EL pending flags, signed EL check at closure). v47: fixes v46 Update button (openDetail called itself). v46: latest update at top of drawer, update line and "New" pills in lists.
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { initializeApp } from "firebase/app";
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, terminate, clearIndexedDbPersistence, waitForPendingWrites, collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, getDocs, query, where } from "firebase/firestore";
@@ -30,7 +30,63 @@ const secondaryAuth = getAuth(initializeApp(firebaseConfig, "secondary"));
 const ADMIN_EMAIL = "nitesh@msna.co.in";
 const MAX_BACKDATE_DAYS = 30;
 const ENGAGEMENT_CATEGORIES = ["Assurance","Virtual CFO","Compliance","Consulting"];
-const INTERNAL_CATEGORIES = ["Leave","Holiday","Idle","Reading"];
+const INTERNAL_CATEGORIES = ["Leave","Holiday","Idle","Reading","Knowledge Transfer"];
+// v56: Knowledge Transfer = internal time spent teaching or learning from colleagues.
+// Productive, never billable. Needs at least one tagged colleague (ktWith) and a topic (description).
+const KT_CATEGORY = "Knowledge Transfer";
+const INTERNAL_TYPE_HINTS = { Leave:"Personal/sick leave", Holiday:"Public/firm holiday", Idle:"No billable work", Reading:"Training and development", [KT_CATEGORY]:"Teaching or learning from a colleague" };
+const isKT = t => (t?.category||t?.internalType)===KT_CATEGORY;
+// Names of the colleagues tagged on a KT entry, for display under the description.
+const ktNames = (t, users=[]) => (t?.ktWith||[]).map(id=>users.find(u=>u.id===id)?.name).filter(Boolean);
+function KTWithLine({ ts, users }) {
+  if(!isKT(ts)) return null;
+  const names = ktNames(ts, users);
+  if(!names.length) return null;
+  return <div className="tx mt4" style={{color:"var(--navy-mid)"}}><I n="users" s={11}/> With {names.join(", ")}</div>;
+}
+// Searchable multi-select of active colleagues (excludes the person logging the time).
+function KTColleaguePicker({ users=[], meId, value=[], onChange }) {
+  const [q,setQ] = useState("");
+  const [open,setOpen] = useState(false);
+  const pool = users.filter(u=>u.active!==false && u.id!==meId).slice().sort((a,b)=>a.name.localeCompare(b.name));
+  const picked = value.map(id=>pool.find(u=>u.id===id)||users.find(u=>u.id===id)).filter(Boolean);
+  const matches = pool.filter(u=>!value.includes(u.id) && (!q.trim() || u.name.toLowerCase().includes(q.trim().toLowerCase()))).slice(0,8);
+  const add = id => { onChange([...value,id]); setQ(""); };
+  const remove = id => onChange(value.filter(x=>x!==id));
+  const roleCls = r => r==="partner"?"rpa":r==="manager"?"rma":"ria";
+  return (
+    <div style={{position:"relative"}}>
+      <div onClick={()=>setOpen(true)} style={{display:"flex",flexWrap:"wrap",gap:6,alignItems:"center",padding:"7px 10px",minHeight:44,border:"1.5px solid",borderColor:open?"var(--navy-mid)":"var(--border)",borderRadius:"var(--r)",background:open?"#fff":"var(--cream)",cursor:"text",transition:"border-color .2s"}}>
+        {picked.map(u=>(
+          <span key={u.id} className="bdg bac" style={{fontSize:12.5,padding:"4px 6px 4px 10px"}}>
+            {u.name}
+            <button type="button" aria-label={`Remove ${u.name}`} onClick={e=>{e.stopPropagation();remove(u.id);}}
+              style={{border:"none",background:"transparent",color:"inherit",cursor:"pointer",display:"inline-flex",padding:0,marginLeft:2}}><I n="x" s={13}/></button>
+          </span>
+        ))}
+        <input value={q} placeholder={picked.length?"Add another…":"Type a name…"}
+          onChange={e=>{setQ(e.target.value);setOpen(true);}} onFocus={()=>setOpen(true)} onBlur={()=>setTimeout(()=>setOpen(false),150)}
+          onKeyDown={e=>{ if(e.key==="Enter"){ e.preventDefault(); if(matches[0]) add(matches[0].id); } else if(e.key==="Backspace"&&!q&&value.length) remove(value[value.length-1]); }}
+          style={{flex:1,minWidth:120,border:"none",outline:"none",background:"transparent",fontFamily:"'DM Sans',sans-serif",fontSize:14,color:"var(--navy)",padding:"3px 2px"}}/>
+      </div>
+      {open&&matches.length>0&&(
+        <div style={{position:"absolute",left:0,right:0,top:"calc(100% + 4px)",background:"#fff",border:"1px solid var(--border)",borderRadius:"var(--r)",boxShadow:"var(--sh-md)",zIndex:20,maxHeight:240,overflowY:"auto"}}>
+          {matches.map(u=>(
+            <div key={u.id} onMouseDown={e=>{e.preventDefault();add(u.id);}}
+              style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,padding:"9px 12px",cursor:"pointer",fontSize:13,borderBottom:"1px solid var(--border)"}}
+              onMouseEnter={e=>{e.currentTarget.style.background="var(--cream)";}} onMouseLeave={e=>{e.currentTarget.style.background="#fff";}}>
+              <span className="fw6">{u.name}</span>
+              <span className={`bdg ${roleCls(u.role)}`}>{u.role.charAt(0).toUpperCase()+u.role.slice(1)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {open&&q.trim()&&matches.length===0&&(
+        <div style={{position:"absolute",left:0,right:0,top:"calc(100% + 4px)",background:"#fff",border:"1px solid var(--border)",borderRadius:"var(--r)",padding:"10px 12px",fontSize:13,color:"var(--slate)",zIndex:20}}>No colleague matches "{q.trim()}".</div>
+      )}
+    </div>
+  );
+}
 // eslint-disable-next-line no-unused-vars
 const TASK_CATEGORIES = [...ENGAGEMENT_CATEGORIES,...INTERNAL_CATEGORIES];
 
@@ -1372,7 +1428,7 @@ function Dashboard({ user, users=[], projects=[], tss=[], paActions=[], onOpenAc
 // ══════════════════════════════════════════════════════════════
 // WEEK VIEW
 // ══════════════════════════════════════════════════════════════
-function WeekView({ user, tss=[], projects=[] }) {
+function WeekView({ user, tss=[], projects=[], users=[] }) {
   const [offset,setOffset]=useState(0);
   const week=getWeekDates(offset); const td=todayStr();
   const mine=tss.filter(t=>t.userId===user.id);
@@ -1427,7 +1483,7 @@ function WeekView({ user, tss=[], projects=[] }) {
                 <td className="ts">{ts.category}</td>
                 <td className="fw6">{fmtHrs(ts.hours)}h</td>
                 <td>{ts.billable?<span className="tsc fw6">✓</span>:<span className="tsl">—</span>}</td>
-                <td className="ts tsl" style={{maxWidth:180}}>{ts.description}</td>
+                <td className="ts tsl" style={{maxWidth:180}}>{ts.description}<KTWithLine ts={ts} users={users}/></td>
                 <td>
                   <span className={`bdg ${ts.status==="approved"?"ba":ts.status==="rejected"?"br":ts.status==="resubmitted"?"brs":"bp2"}`}>{ts.status}</span>
                   {ts.status==="rejected"&&ts.rejectReason&&<div className="tx tdn mt4">{ts.rejectReason}</div>}
@@ -1448,7 +1504,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
   const [editE,setEE]        = useState(null);
   const [fs,setFs]           = useState("all");
   const [onBehalf,setOB]     = useState(false);
-  const [form,setF]          = useState({date:todayStr(),projectId:"",hours:"",category:"Assurance",description:"",billable:false,onBehalfOfId:"",isInternal:false,internalType:"Leave",internalApprovers:[],internalPartnerApprovers:[]});
+  const [form,setF]          = useState({date:todayStr(),projectId:"",hours:"",category:"Assurance",description:"",billable:false,onBehalfOfId:"",isInternal:false,internalType:"Leave",internalApprovers:[],internalPartnerApprovers:[],ktWith:[]});
   const [isInternal,setIsInt]= useState(false);
   const [ferr,setFerr]       = useState("");
   // Filters, sort, pagination
@@ -1539,7 +1595,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
       description:"",billable:!internal,  // internal entries are never billable
       onBehalfOfId:"",
       isInternal:internal,internalType:"Leave",
-      internalApprovers:[],internalPartnerApprovers:[]});
+      internalApprovers:[],internalPartnerApprovers:[],ktWith:[]});
     setFerr("");
     setSM(true);
   };
@@ -1550,7 +1606,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
     setOB(isBehalf);
     setIsInt(internal);
     setEE(ts);
-    setF({date:ts.date,projectId:ts.projectId||"",hours:ts.hours,category:ts.category,description:ts.description||"",billable:ts.billable,onBehalfOfId:ts.onBehalfOfId||"",isInternal:internal,internalType:ts.internalType||"Leave"});
+    setF({date:ts.date,projectId:ts.projectId||"",hours:ts.hours,category:ts.category,description:ts.description||"",billable:ts.billable,onBehalfOfId:ts.onBehalfOfId||"",isInternal:internal,internalType:ts.internalType||"Leave",ktWith:ts.ktWith||[]});
     setFerr("");
     setSM(true);
   };
@@ -1558,6 +1614,10 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
   const save = () => {
     if(isInternal){
       if(!form.date||!form.hours){ setFerr("Date and hours are required."); return; }
+      if(form.internalType===KT_CATEGORY){
+        if(!(form.ktWith||[]).length){ setFerr("Select the colleague(s) the knowledge transfer was with."); return; }
+        if(!form.description.trim()){ setFerr("Enter the topic covered in the knowledge transfer."); return; }
+      }
       if(!isP){
         if(!isMgr&&(form.internalApprovers||[]).length===0){ setFerr("Please select at least one manager approver."); return; }
         if((form.internalPartnerApprovers||[]).length===0){ setFerr("Please select at least one partner approver."); return; }
@@ -1573,6 +1633,10 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
     if(form.date>todayStr()){ setFerr("Cannot log time for a future date."); return; }
     if(lockedMonths.includes(monthKey(form.date))){ setFerr(`${monthLabel(monthKey(form.date))} is locked. Contact the Admin.`); return; }
 
+    // v56: colleagues are kept only on Knowledge Transfer entries
+    const ktOn = isInternal && form.internalType===KT_CATEGORY;
+    const ktFields = ktOn ? { ktWith:form.ktWith||[] } : (editE?.ktWith ? { ktWith:[] } : {});
+    const { ktWith:_ktForm, ...formRest } = form; // eslint-disable-line no-unused-vars
     // Determine the actual owner of this entry
     const ownerId = (!isInternal && onBehalf) ? form.onBehalfOfId : user.id;
     const dayHrs=tss.filter(t=>t.userId===ownerId&&t.date===form.date&&t.id!==(editE?.id)).reduce((s,t)=>s+t.hours,0);
@@ -1588,7 +1652,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
       // When a partner edits an already-approved entry, preserve original approval but record the edit
       const isPartnerEditOfApproved = user.role==="partner" && editE.status==="approved" && !onBehalf;
       const editedEntry = {
-        ...form, hours:h, status:newStatus,
+        ...formRest, ...ktFields, hours:h, status:newStatus,
         // Internal entries are NEVER billable
         billable: (editE.isInternal || isInternal) ? false : form.billable,
         userId: ownerId,
@@ -1609,7 +1673,8 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
       const newEntry = {
         id:genId(),
         userId: ownerId,
-        ...form, hours:h,
+        ...formRest, hours:h,
+        ...ktFields,
         // Internal entries are NEVER billable regardless of form state
         billable: isInternal ? false : form.billable,
         // Internal entries: auto-approve if partner, otherwise pending
@@ -1746,6 +1811,7 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
                 <td>{ts.billable?<span className="tsc fw6">✓</span>:<span className="tsl">—</span>}</td>
                 <td className="ts tsl" style={{maxWidth:180}}>
                   {ts.description}
+                  <KTWithLine ts={ts} users={users}/>
                   {isOnBehalf&&!isP&&<div className="tx tsl mt4">Filed by {ts.filedByName}</div>}
                   {(ts.status==="rejected"||ts.status==="rejected_partner")&&ts.rejectReason&&<div className="tx tdn mt4">↩ {ts.rejectReason}</div>}
                 </td>
@@ -1789,20 +1855,32 @@ function Timesheets({ user, tss=[], setTss, users=[], projects=[], locked:locked
                 <div className="fg">
                   <label className="fl">Type</label>
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-                    {INTERNAL_CATEGORIES.map(cat=>(
-                      <label key={cat} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",borderRadius:8,border:"1.5px solid",borderColor:form.internalType===cat?"var(--navy)":"var(--border)",background:form.internalType===cat?"var(--cream)":"#fff",cursor:"pointer"}}>
+                    {INTERNAL_CATEGORIES.map((cat,ci)=>(
+                      <label key={cat} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",borderRadius:8,border:"1.5px solid",borderColor:form.internalType===cat?"var(--navy)":"var(--border)",background:form.internalType===cat?"var(--cream)":"#fff",cursor:"pointer",
+                        ...(ci===INTERNAL_CATEGORIES.length-1&&INTERNAL_CATEGORIES.length%2===1?{gridColumn:"1 / -1"}:{})}}>
                         <input type="radio" name="internalType" checked={form.internalType===cat} onChange={()=>setF(f=>({...f,internalType:cat,category:cat}))} style={{accentColor:"var(--navy)"}}/>
                         <div>
                           <div style={{fontSize:13,fontWeight:form.internalType===cat?600:400,color:"var(--navy)"}}>{cat}</div>
-                          <div style={{fontSize:11,color:"var(--slate)"}}>{cat==="Leave"?"Personal/sick leave":cat==="Holiday"?"Public/firm holiday":cat==="Idle"?"No billable work":"Training & development"}</div>
+                          <div style={{fontSize:11,color:"var(--slate)"}}>{INTERNAL_TYPE_HINTS[cat]||""}</div>
                         </div>
                       </label>
                     ))}
                   </div>
                 </div>
-                <div className="fg"><label className="fl">Description (optional)</label>
-                  <textarea className="fta" placeholder="Brief notes..." value={form.description} onChange={e=>setF(f=>({...f,description:e.target.value}))}/>
-                </div>
+                {form.internalType===KT_CATEGORY?(<>
+                  <div className="fg">
+                    <label className="fl">With colleague(s) *</label>
+                    <KTColleaguePicker users={users} meId={editE?.userId||user.id} value={form.ktWith||[]} onChange={v=>{setF(f=>({...f,ktWith:v}));setFerr("");}}/>
+                    <div className="tx tsl mt4">Each person logs their own hours for the session. Tagging a colleague does not log time for them.</div>
+                  </div>
+                  <div className="fg"><label className="fl">Topic covered *</label>
+                    <textarea className="fta" placeholder="Walked through GSTR-2B reconciliation and ITC mismatch handling" value={form.description} onChange={e=>setF(f=>({...f,description:e.target.value}))}/>
+                  </div>
+                </>):(
+                  <div className="fg"><label className="fl">Description (optional)</label>
+                    <textarea className="fta" placeholder="Brief notes..." value={form.description} onChange={e=>setF(f=>({...f,description:e.target.value}))}/>
+                  </div>
+                )}
                 {/* Approver selection for internal time */}
                 {!isP&&(
                   <div style={{background:"var(--cream)",borderRadius:8,padding:"12px 14px",border:"1px solid var(--border)"}}>
@@ -2738,7 +2816,7 @@ function Approvals({ user, tss=[], setTss, users=[], projects=[] }) {
                     <td><div className="fw6 mono">{p?.code}</div><div className="tx tsl">{p?.clientName} — {p?.name}</div></td>
                     <td className="ts">{ts.category}</td>
                     <td className="fw6">{fmtHrs(ts.hours)}h{ts.billable&&<div className="tx tgo">{fmtCurrency(ts.hours*rate)}</div>}</td>
-                    <td className="ts tsl" style={{maxWidth:170}}>{ts.description}</td>
+                    <td className="ts tsl" style={{maxWidth:170}}>{ts.description}<KTWithLine ts={ts} users={users}/></td>
                     <td style={{whiteSpace:"nowrap"}}>
                       {ts.isInternal
                         ?(ts.internalPartnerApprovers?.length>0
@@ -2909,7 +2987,7 @@ function Reports({ user, users=[], projects=[], tss=[], locked:lockedMonths=[], 
         t.category||"",
         t.hours,
         t.billable?"Yes":"No",
-        `"${(t.description||"").replace(/"/g,'""')}"`,
+        `"${((isKT(t)&&ktNames(t,users).length?`[With ${ktNames(t,users).join(", ")}] `:"")+(t.description||"")).replace(/"/g,'""')}"`,
         t.status,
       ]);
     });
@@ -5150,10 +5228,10 @@ function ChangePassword({ user, setTab }) {
 // PRODUCTIVITY DASHBOARD (Partner only)
 // ══════════════════════════════════════════════════════════════
 function ProductivityDashboard({ users=[], projects=[], tss=[] }) {
-  // Productive = engagement work + Reading (self-development counts)
+  // Productive = engagement work + Reading + Knowledge Transfer (self-development counts)
   // Non-productive = Leave, Holiday, Idle only
-  const PRODUCTIVE_CATS = ["Assurance","Virtual CFO","Compliance","Consulting","Reading"];
-  const NON_BILLABLE_CATS = ["Leave","Holiday","Idle","Reading"]; // Reading: productive but never billable
+  const PRODUCTIVE_CATS = ["Assurance","Virtual CFO","Compliance","Consulting","Reading",KT_CATEGORY];
+  const NON_BILLABLE_CATS = ["Leave","Holiday","Idle","Reading",KT_CATEGORY]; // Reading and KT: productive but never billable
   const NON_PRODUCTIVE_CATS = ["Leave","Holiday","Idle"]; // Idle/Leave card only — excludes Reading, which is productive
 
   // ── Period filter ──
@@ -5264,7 +5342,7 @@ function ProductivityDashboard({ users=[], projects=[], tss=[] }) {
 
   const CAT_COLORS = {
     "Assurance":"#0f6e56","Virtual CFO":"#185fa5","Compliance":"#534ab7",
-    "Consulting":"#ba7517","Reading":"#888780","Leave":"#d85a30","Idle":"#b4b2a9","Holiday":"#d4537e"
+    "Consulting":"#ba7517","Reading":"#888780","Knowledge Transfer":"#639922","Leave":"#d85a30","Idle":"#b4b2a9","Holiday":"#d4537e"
   };
 
   // ── Canvas chart refs ──
@@ -5568,7 +5646,7 @@ function ProductivityDashboard({ users=[], projects=[], tss=[] }) {
       {/* ── Legend: productivity definition ── */}
       <div className="al al-i" style={{marginTop:16}}>
         <I n="info" s={16}/>
-        <div><strong>Productivity definition:</strong> Productive hours = Assurance + Virtual CFO + Compliance + Consulting + Reading. Leave, Holiday and Idle are excluded. Billable hours = productive/engagement hours explicitly marked billable (Reading is always non-billable). Only approved timesheet entries are counted.</div>
+        <div><strong>Productivity definition:</strong> Productive hours = Assurance + Virtual CFO + Compliance + Consulting + Reading + Knowledge Transfer. Leave, Holiday and Idle are excluded. Billable hours = productive/engagement hours explicitly marked billable (Reading and Knowledge Transfer are always non-billable). Only approved timesheet entries are counted.</div>
       </div>
 
       </>)}
